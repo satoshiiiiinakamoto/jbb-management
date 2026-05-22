@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>JBB Management — Internal Dashboard</title>
+<meta name="description" content="JBB Management's Program — Internal management for Jewel Beauty Bandung." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Noto+Sans+KR:wght@300;400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --mauve:#7a667e;
+    --mauve-2:#8e7d99;
+    --mauve-3:#a39bb0;
+    --mauve-soft:#e6dce8;
+    --mauve-tint:#f3eef5;
+    --plum:#3d2e44;
+    --plum-deep:#241a2c;
+    --gold:#c9a961;
+    --gold-deep:#a8884a;
+    --gold-soft:#e8d4a8;
+    --ivory:#faf8f5;
+    --cream:#f7f2ee;
+    --paper:#fdfbf9;
+    --ink:#1f1722;
+    --muted:#7a6f80;
+    --line:rgba(122,102,126,0.14);
+    --line-strong:rgba(122,102,126,0.24);
+    --green:#4a7c59;
+    --red:#a85555;
+    --amber:#b8893d;
+    --shadow-sm:0 4px 12px rgba(61,46,68,0.06);
+    --shadow-md:0 16px 40px rgba(61,46,68,0.10);
+    --shadow-lg:0 32px 80px -20px rgba(61,46,68,0.20);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:'Plus Jakarta Sans',sans-serif;
+    background:var(--paper);
+    color:var(--ink);
+    line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  .serif{font-family:'Cormorant Garamond',serif;font-weight:400;letter-spacing:-0.01em}
+  .mono{font-family:'JetBrains Mono',monospace}
+  .ko{font-family:'Noto Sans KR',sans-serif;font-weight:300}
+  button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+  input,select,textarea{font-family:inherit;font-size:14px}
+  a{color:inherit;text-decoration:none}
+
+  /* Buttons */
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    padding:11px 22px;border-radius:100px;
+    font-size:13px;font-weight:500;letter-spacing:0.02em;
+    transition:all .2s ease;cursor:pointer;
+    white-space:nowrap;
+  }
+  .btn-primary{background:var(--mauve);color:#fff}
+  .btn-primary:hover{background:var(--plum);transform:translateY(-1px)}
+  .btn-dark{background:var(--plum-deep);color:var(--ivory)}
+  .btn-dark:hover{background:var(--plum)}
+  .btn-gold{background:var(--gold);color:var(--plum-deep)}
+  .btn-gold:hover{background:var(--gold-deep);color:var(--ivory)}
+  .btn-ghost{
+    color:var(--mauve);background:transparent;
+    border:1px solid var(--line-strong);
+  }
+  .btn-ghost:hover{background:var(--mauve);color:#fff;border-color:var(--mauve)}
+  .btn-danger{color:var(--red);background:transparent;border:1px solid rgba(168,85,85,0.3)}
+  .btn-danger:hover{background:var(--red);color:#fff}
+  .btn-sm{padding:7px 14px;font-size:12px}
+  .btn-lg{padding:15px 30px;font-size:15px}
+  .btn-block{width:100%}
+  .btn:disabled{opacity:0.5;cursor:not-allowed}
+
+  /* Eyebrow label */
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:10px;
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;letter-spacing:0.18em;text-transform:uppercase;
+    color:var(--mauve);font-weight:500;
+  }
+  .eyebrow::before{content:'';width:24px;height:1px;background:var(--mauve)}
+
+  /* Display heading */
+  .display{
+    font-family:'Cormorant Garamond',serif;
+    font-weight:300;letter-spacing:-0.02em;
+    line-height:1.05;color:var(--plum-deep);
+  }
+  .display em{font-style:italic;color:var(--mauve);font-weight:400}
+
+  /* Containers */
+  .container{max-width:1240px;margin:0 auto;padding:0 24px}
+  .container-narrow{max-width:480px;margin:0 auto;padding:0 24px}
+
+  /* Form */
+  .form-group{margin-bottom:18px}
+  .form-label{
+    display:block;font-size:11px;font-weight:500;
+    letter-spacing:0.1em;text-transform:uppercase;
+    color:var(--muted);margin-bottom:8px;
+    font-family:'JetBrains Mono',monospace;
+  }
+  .form-input,.form-select,.form-textarea{
+    width:100%;padding:12px 16px;
+    border:1px solid var(--line-strong);
+    border-radius:8px;background:var(--paper);
+    color:var(--ink);font-size:14px;
+    transition:all .2s;
+  }
+  .form-input:focus,.form-select:focus,.form-textarea:focus{
+    outline:none;border-color:var(--mauve);
+    box-shadow:0 0 0 3px var(--mauve-tint);
+  }
+  .form-input:disabled,.form-select:disabled{background:var(--cream);opacity:0.7}
+  .form-textarea{min-height:80px;resize:vertical}
+  .form-hint{font-size:12px;color:var(--muted);margin-top:6px}
+  .form-error{font-size:12px;color:var(--red);margin-top:6px}
+
+  /* Auth page */
+  .auth-page{
+    min-height:100vh;display:flex;align-items:center;justify-content:center;
+    padding:24px;
+    background:linear-gradient(135deg,var(--mauve-tint) 0%,var(--paper) 100%);
+  }
+  .auth-card{
+    background:var(--paper);
+    border-radius:24px;
+    padding:48px 36px;
+    box-shadow:var(--shadow-lg);
+    width:100%;max-width:420px;
+  }
+  .auth-logo{
+    font-family:'Plus Jakarta Sans',sans-serif;
+    font-size:42px;font-weight:300;letter-spacing:-0.03em;
+    color:var(--mauve);text-align:center;margin-bottom:4px;
+  }
+  .auth-sub{
+    font-family:'Noto Sans KR',sans-serif;
+    font-size:14px;color:var(--mauve);text-align:center;
+    font-weight:300;margin-bottom:24px;
+  }
+  .auth-title{
+    font-family:'Cormorant Garamond',serif;
+    font-size:28px;font-weight:400;color:var(--plum-deep);
+    text-align:center;margin-bottom:8px;
+  }
+  .auth-desc{
+    font-size:14px;color:var(--muted);text-align:center;margin-bottom:32px;
+  }
+
+  /* Top nav (after login) */
+  .topnav{
+    position:sticky;top:0;z-index:100;
+    background:rgba(253,251,249,0.92);
+    backdrop-filter:blur(20px);
+    -webkit-backdrop-filter:blur(20px);
+    border-bottom:1px solid var(--line);
+  }
+  .topnav-inner{
+    max-width:1240px;margin:0 auto;
+    padding:14px 24px;
+    display:flex;align-items:center;gap:24px;
+  }
+  .topnav-brand{
+    font-family:'Plus Jakarta Sans',sans-serif;
+    font-size:20px;font-weight:300;letter-spacing:-0.02em;
+    color:var(--mauve);
+  }
+  .topnav-brand .ko{font-size:12px;margin-left:6px;color:var(--mauve-2)}
+  .topnav-tabs{
+    display:flex;gap:4px;flex:1;overflow-x:auto;
+    scrollbar-width:none;
+  }
+  .topnav-tabs::-webkit-scrollbar{display:none}
+  .topnav-tab{
+    padding:8px 16px;border-radius:100px;
+    font-size:13px;font-weight:500;color:var(--muted);
+    white-space:nowrap;transition:all .2s;
+  }
+  .topnav-tab:hover{color:var(--mauve);background:var(--mauve-tint)}
+  .topnav-tab.active{background:var(--mauve);color:#fff}
+  .topnav-user{
+    display:flex;align-items:center;gap:12px;
+    padding:6px 14px;border-radius:100px;
+    background:var(--mauve-tint);
+    font-size:12px;color:var(--plum);
+  }
+  .topnav-user-name{font-weight:500;display:none}
+  @media(min-width:768px){.topnav-user-name{display:inline}}
+  .topnav-logout{
+    color:var(--muted);font-size:11px;
+    padding:4px 8px;border-radius:6px;transition:all .2s;
+  }
+  .topnav-logout:hover{color:var(--red);background:rgba(168,85,85,0.08)}
+
+  /* Page wrapper */
+  .page{
+    max-width:1240px;margin:0 auto;padding:32px 24px 80px;
+  }
+  .page-header{margin-bottom:32px}
+  .page-title{
+    font-family:'Cormorant Garamond',serif;
+    font-size:32px;font-weight:400;color:var(--plum-deep);
+    margin-bottom:4px;
+  }
+  .page-sub{font-size:14px;color:var(--muted)}
+
+  /* Card */
+  .card{
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-radius:16px;
+    padding:24px;
+    margin-bottom:20px;
+  }
+  .card-title{
+    font-family:'Cormorant Garamond',serif;
+    font-size:20px;font-weight:500;color:var(--plum-deep);
+    margin-bottom:6px;
+  }
+  .card-sub{font-size:13px;color:var(--muted);margin-bottom:20px}
+
+  /* Metric */
+  .metrics-grid{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+    gap:12px;margin-bottom:24px;
+  }
+  .metric{
+    background:var(--cream);
+    border-radius:12px;padding:16px 18px;
+  }
+  .metric-label{
+    font-family:'JetBrains Mono',monospace;
+    font-size:10px;letter-spacing:0.1em;text-transform:uppercase;
+    color:var(--muted);margin-bottom:6px;
+  }
+  .metric-value{
+    font-family:'Cormorant Garamond',serif;
+    font-size:24px;font-weight:500;color:var(--plum-deep);
+    line-height:1.1;
+  }
+  .metric-sub{font-size:11px;color:var(--muted);margin-top:4px}
+
+  /* Form grid */
+  .form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .form-row-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+  @media(max-width:640px){
+    .form-row,.form-row-3{grid-template-columns:1fr}
+  }
+
+  /* Table */
+  .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .table{width:100%;border-collapse:collapse;font-size:13px}
+  .table th{
+    font-family:'JetBrains Mono',monospace;
+    font-size:10px;font-weight:500;letter-spacing:0.1em;
+    text-transform:uppercase;color:var(--muted);
+    text-align:left;padding:10px 12px;
+    border-bottom:1px solid var(--line);
+    white-space:nowrap;
+  }
+  .table td{
+    padding:12px;border-bottom:1px solid var(--line);
+    color:var(--ink);vertical-align:top;
+  }
+  .table tr:last-child td{border-bottom:none}
+  .table tr:hover td{background:var(--mauve-tint)}
+  .table-numeric{text-align:right;font-variant-numeric:tabular-nums}
+
+  /* Badge */
+  .badge{
+    display:inline-block;padding:2px 10px;border-radius:20px;
+    font-size:11px;font-weight:500;letter-spacing:0.02em;
+    font-family:'JetBrains Mono',monospace;
+  }
+  .badge-mauve{background:var(--mauve-tint);color:var(--mauve)}
+  .badge-gold{background:var(--gold-soft);color:var(--gold-deep)}
+  .badge-green{background:#e0ede4;color:var(--green)}
+  .badge-amber{background:#f4e8d4;color:var(--amber)}
+  .badge-red{background:#f0dada;color:var(--red)}
+
+  /* Empty state */
+  .empty{
+    text-align:center;padding:48px 24px;
+    color:var(--muted);
+  }
+  .empty-title{
+    font-family:'Cormorant Garamond',serif;
+    font-size:20px;color:var(--plum);margin-bottom:8px;
+  }
+  .empty-sub{font-size:13px}
+
+  /* Loading */
+  .loader{
+    display:inline-block;width:18px;height:18px;
+    border:2px solid var(--mauve-tint);
+    border-top-color:var(--mauve);
+    border-radius:50%;
+    animation:spin 0.7s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .loader-page{
+    min-height:60vh;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:14px;color:var(--muted);font-size:13px;
+  }
+
+  /* Toast */
+  .toast-stack{
+    position:fixed;bottom:24px;right:24px;z-index:1000;
+    display:flex;flex-direction:column;gap:10px;
+    max-width:340px;
+  }
+  .toast{
+    background:var(--plum-deep);color:var(--ivory);
+    padding:14px 18px;border-radius:12px;
+    font-size:13px;box-shadow:var(--shadow-md);
+    animation:slideIn 0.3s ease;
+  }
+  .toast-success{background:var(--green)}
+  .toast-error{background:var(--red)}
+  @keyframes slideIn{from{transform:translateX(40px);opacity:0}to{transform:translateX(0);opacity:1}}
+
+  /* Footer */
+  .app-footer{
+    text-align:center;padding:32px 24px;
+    border-top:1px solid var(--line);
+    margin-top:60px;
+    color:var(--muted);font-size:12px;
+    font-family:'JetBrains Mono',monospace;letter-spacing:0.05em;
+  }
+  .app-footer .ko{font-family:'Noto Sans KR',sans-serif;color:var(--mauve)}
+
+  /* Section divider */
+  .section-divider{
+    height:1px;background:var(--line);margin:24px 0;
+  }
+
+  /* Responsive */
+  @media(max-width:640px){
+    .page{padding:20px 16px 60px}
+    .page-title{font-size:26px}
+    .card{padding:18px}
+    .topnav-inner{padding:12px 16px;gap:12px}
+    .topnav-brand{font-size:18px}
+    .metric-value{font-size:20px}
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.25.6/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+
+<script src="config.js"></script>
+
+<script type="text/babel" src="lib.jsx"></script>
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="pages.jsx"></script>
+<script type="text/babel" src="app.jsx"></script>
+</body>
+</html>
