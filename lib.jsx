@@ -50,6 +50,15 @@ const SERVICES = [
   { name: 'Pedicure', category: 'nail', baseCommission: 10 },
 ];
 
+const JOB_TITLES = [
+  'Owner',
+  'Senior Therapist',
+  'Lash Technician',
+  'Nail Artist',
+  'Beauty Therapist',
+  'Kasir',
+];
+
 function isOvertime(timeStr) {
   if (!timeStr) return false;
   const h = parseInt(timeStr.split(':')[0]);
@@ -115,9 +124,40 @@ async function getMyProfile() {
   return { ...profile, email: user.email };
 }
 
+// ===== Employee CRUD =====
+
+async function listEmployees() {
+  const { data, error } = await sb
+    .from('employees')
+    .select('*')
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+async function updateEmployee(id, patch) {
+  const { data, error } = await sb
+    .from('employees')
+    .update(patch)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function deactivateEmployee(id) {
+  return updateEmployee(id, { is_active: false });
+}
+
+async function reactivateEmployee(id) {
+  return updateEmployee(id, { is_active: true });
+}
+
 // Expose to window
 Object.assign(window, {
-  sb, SERVICES, fmtRp, fmtNumber, fmtDate, fmtTime, todayStr, currentMonth,
+  sb, SERVICES, JOB_TITLES, fmtRp, fmtNumber, fmtDate, fmtTime, todayStr, currentMonth,
   isOvertime, getCommissionRate, toast, useToasts,
   loginWithEmail, logout, getCurrentSession, getMyProfile,
+  listEmployees, updateEmployee, deactivateEmployee, reactivateEmployee,
 });

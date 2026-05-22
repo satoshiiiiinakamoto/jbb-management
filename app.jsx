@@ -14,7 +14,6 @@ function App() {
     if (s) {
       const p = await getMyProfile();
       if (!p) {
-        // User exists in auth but no employee row
         await logout();
         toast('Akun belum terdaftar sebagai karyawan. Hubungi admin.', 'error');
         setSession(null);
@@ -43,7 +42,7 @@ function App() {
   }, []);
 
   // Check ENV
-  const envMissing = !window.__ENV.SUPABASE_URL || window.__ENV.SUPABASE_URL.includes('REPLACE_WITH');
+  const envMissing = !window.__ENV.SUPABASE_URL || window.__ENV.SUPABASE_URL.includes('GANTI');
   if (envMissing) {
     return (
       <div className="auth-page">
@@ -74,18 +73,28 @@ function App() {
   }
 
   // Build tabs based on role
-  const tabs = profile.role === 'admin'
-    ? [{ id: 'dashboard', label: 'Dashboard' }]
-    : [{ id: 'dashboard', label: 'Dashboard' }];
+  const adminTabs = [
+    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'employees', label: 'Karyawan' },
+  ];
+  const employeeTabs = [
+    { id: 'dashboard', label: 'Dashboard' },
+  ];
+  const tabs = profile.role === 'admin' ? adminTabs : employeeTabs;
+
+  // Render active page
+  let pageContent;
+  if (profile.role === 'admin') {
+    if (page === 'employees') pageContent = <EmployeesPage profile={profile}/>;
+    else pageContent = <AdminDashboard profile={profile} setPage={setPage}/>;
+  } else {
+    pageContent = <EmployeeDashboard profile={profile}/>;
+  }
 
   return (
     <>
       <TopNav profile={profile} page={page} setPage={setPage} tabs={tabs}/>
-      {profile.role === 'admin' ? (
-        <AdminDashboard profile={profile}/>
-      ) : (
-        <EmployeeDashboard profile={profile}/>
-      )}
+      {pageContent}
       <AppFooter/>
       <ToastStack/>
     </>
