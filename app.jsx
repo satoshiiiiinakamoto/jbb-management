@@ -6,6 +6,8 @@ function App() {
   const [session, setSession] = useStateA(null);
   const [profile, setProfile] = useStateA(null);
   const [page, setPage] = useStateA('dashboard');
+  const [branches, setBranches] = useStateA([]);
+  const [currentBranchId, setCurrentBranchId] = useStateA(null);
 
   async function bootstrap() {
     setLoading(true);
@@ -18,11 +20,28 @@ function App() {
         toast('Akun belum terdaftar sebagai karyawan. Hubungi admin.', 'error');
         setSession(null);
         setProfile(null);
-      } else {
-        setProfile(p);
+        setLoading(false);
+        return;
+      }
+      setProfile(p);
+
+      // Load branches list
+      try {
+        const bs = await listBranches();
+        setBranches(bs);
+
+        // For non-super, lock the branch context to their own
+        if (p.role !== 'super_admin') {
+          setCurrentBranchId(p.branch_id);
+        }
+        // Super admin starts with "Semua Cabang" (null = all)
+      } catch (err) {
+        console.error('Branch load error:', err);
       }
     } else {
       setProfile(null);
+      setBranches([]);
+      setCurrentBranchId(null);
     }
     setLoading(false);
   }
@@ -33,6 +52,8 @@ function App() {
       if (event === 'SIGNED_OUT') {
         setSession(null);
         setProfile(null);
+        setBranches([]);
+        setCurrentBranchId(null);
       }
       if (event === 'SIGNED_IN' && s) {
         bootstrap();
@@ -52,7 +73,7 @@ function App() {
           <h2 className="auth-title">Setup Required</h2>
           <p className="auth-desc">
             File <code style={{background:'var(--mauve-tint)',padding:'2px 6px',borderRadius:4,fontSize:12}}>config.js</code> belum
-            ada atau credential Supabase belum diisi. Cek panduan setup ya!
+            ada atau credential Supabase belum diisi.
           </p>
         </div>
       </div>
@@ -73,27 +94,51 @@ function App() {
   }
 
   // Build tabs based on role
-  const adminTabs = [
+  const superTabs = [
+    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'employees', label: 'Karyawan' },
+    { id: 'branches', label: 'Cabang' },
+  ];
+  const branchAdminTabs = [
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'employees', label: 'Karyawan' },
   ];
   const employeeTabs = [
     { id: 'dashboard', label: 'Dashboard' },
   ];
-  const tabs = profile.role === 'admin' ? adminTabs : employeeTabs;
+
+  let tabs;
+  if (profile.role === 'super_admin') tabs = superTabs;
+  else if (profile.role === 'branch_admin') tabs = branchAdminTabs;
+  else tabs = employeeTabs;
 
   // Render active page
   let pageContent;
-  if (profile.role === 'admin') {
-    if (page === 'employees') pageContent = <EmployeesPage profile={profile}/>;
-    else pageContent = <AdminDashboard profile={profile} setPage={setPage}/>;
+  const isAdmin = profile.role === 'super_admin' || profile.role === 'branch_admin';
+
+  if (isAdmin) {
+    if (page === 'employees') {
+      pageContent = <EmployeesPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
+    } else if (page === 'branches' && profile.role === 'super_admin') {
+      pageContent = <BranchesPage profile={profile}/>;
+    } else {
+      pageContent = <AdminDashboard profile={profile} setPage={setPage} currentBranchId={currentBranchId} branches={branches}/>;
+    }
   } else {
     pageContent = <EmployeeDashboard profile={profile}/>;
   }
 
   return (
     <>
-      <TopNav profile={profile} page={page} setPage={setPage} tabs={tabs}/>
+      <TopNav
+        profile={profile}
+        page={page}
+        setPage={setPage}
+        tabs={tabs}
+        currentBranchId={currentBranchId}
+        setCurrentBranchId={setCurrentBranchId}
+        branches={branches}
+      />
       {pageContent}
       <AppFooter/>
       <ToastStack/>

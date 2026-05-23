@@ -1,14 +1,18 @@
 // ===== Shared UI components =====
 const { useState, useEffect, useRef } = React;
 
-// ----- Topnav -----
-function TopNav({ profile, page, setPage, tabs }) {
+// ----- Topnav with branch switcher -----
+function TopNav({ profile, page, setPage, tabs, currentBranchId, setCurrentBranchId, branches }) {
+  const isSuper = profile.role === 'super_admin';
+  const currentBranch = branches.find(b => b.id === currentBranchId);
+
   return (
     <nav className="topnav">
       <div className="topnav-inner">
         <div className="topnav-brand">
           JBB<span className="ko">아름다움</span>
         </div>
+
         <div className="topnav-tabs">
           {tabs.map(t => (
             <button
@@ -20,10 +24,41 @@ function TopNav({ profile, page, setPage, tabs }) {
             </button>
           ))}
         </div>
-        <div style={{display:'flex',alignItems:'center',gap:8}}>
+
+        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+          {isSuper && branches.length > 0 ? (
+            <select
+              className="form-select"
+              style={{
+                padding:'6px 12px',fontSize:12,fontWeight:500,
+                background:'var(--mauve-tint)',border:'none',
+                borderRadius:100,color:'var(--plum)',
+                minWidth:160,cursor:'pointer'
+              }}
+              value={currentBranchId || ''}
+              onChange={e => setCurrentBranchId(e.target.value || null)}
+            >
+              <option value="">Semua Cabang</option>
+              {branches.map(b => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
+            </select>
+          ) : currentBranch ? (
+            <div style={{
+              padding:'6px 14px',borderRadius:100,
+              background:'var(--mauve-tint)',
+              fontSize:12,color:'var(--plum)',fontWeight:500
+            }}>
+              📍 {currentBranch.name}
+            </div>
+          ) : null}
+
           <div className="topnav-user">
             <span className="topnav-user-name">{profile.full_name}</span>
-            <span className="badge badge-mauve" style={{padding:'1px 8px'}}>{profile.role}</span>
+            <span className="badge badge-mauve" style={{padding:'1px 8px'}}>
+              {profile.role === 'super_admin' ? 'super' :
+               profile.role === 'branch_admin' ? 'admin' : 'staff'}
+            </span>
           </div>
           <button className="topnav-logout" onClick={() => logout()}>
             Logout
@@ -103,7 +138,7 @@ function ToastStack() {
 function AppFooter() {
   return (
     <footer className="app-footer">
-      JBB <span className="ko">아름다움</span> · Management Program v.2.0
+      JBB <span className="ko">아름다움</span> · Management Program v.2.1
       <div style={{marginTop:4,fontSize:11}}>PT Wicaksono Berkarya Sejahtera</div>
     </footer>
   );
@@ -132,4 +167,15 @@ function Metric({ label, value, sub }) {
   );
 }
 
-Object.assign(window, { TopNav, PageHeader, Card, Empty, Loader, ToastStack, AppFooter, Field, Metric });
+// ----- Branch badge -----
+function BranchBadge({ branch }) {
+  if (!branch) return null;
+  const cls = branch.status === 'franchise' ? 'badge-gold' : 'badge-mauve';
+  return (
+    <span className={'badge ' + cls} title={branch.city}>
+      {branch.name}
+    </span>
+  );
+}
+
+Object.assign(window, { TopNav, PageHeader, Card, Empty, Loader, ToastStack, AppFooter, Field, Metric, BranchBadge });

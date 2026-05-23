@@ -52,11 +52,18 @@ const SERVICES = [
 
 const JOB_TITLES = [
   'Owner',
+  'Manager',
   'Senior Therapist',
   'Lash Technician',
   'Nail Artist',
   'Beauty Therapist',
   'Kasir',
+];
+
+const ROLES = [
+  { value: 'super_admin', label: 'Super Admin (Owner JBB Group)' },
+  { value: 'branch_admin', label: 'Branch Admin (Manager Cabang)' },
+  { value: 'employee', label: 'Karyawan' },
 ];
 
 function isOvertime(timeStr) {
@@ -69,6 +76,11 @@ function getCommissionRate(serviceName, timeStr) {
   const svc = SERVICES.find(s => s.name === serviceName);
   if (!svc) return 0;
   return svc.baseCommission + (isOvertime(timeStr) ? 5 : 0);
+}
+
+function getRoleLabel(role) {
+  const r = ROLES.find(x => x.value === role);
+  return r ? r.label : role;
 }
 
 // ----- Toast notifications -----
@@ -114,7 +126,7 @@ async function getMyProfile() {
   if (!user) return null;
   const { data: profile, error } = await sb
     .from('employees')
-    .select('*')
+    .select('*, branch:branches(id, name, city, status)')
     .eq('id', user.id)
     .single();
   if (error) {
@@ -124,13 +136,42 @@ async function getMyProfile() {
   return { ...profile, email: user.email };
 }
 
-// ===== Employee CRUD =====
+// ===== Branch helpers =====
 
-async function listEmployees() {
+async function listBranches() {
   const { data, error } = await sb
-    .from('employees')
+    .from('branches')
     .select('*')
+    .order('name', { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+// Helper: tentukan role-based access
+function canAccessAllBranches(profile) {
+  return profile?.role === 'super_admin';
+}
+
+function canManageBranch(profile, branchId) {
+  if (profile?.role === 'super_admin') return true;
+  if (profile?.role === 'branch_admin' && profile?.branch_id === branchId) return true;
+  return false;
+}
+
+// ===== Employee CRUD (now branch-aware) =====
+
+async function listEmployees(branchId = null) {
+  let query = sb
+    .from('employees')
+    .select('*, branch:branches(id, name, city)')
     .order('created_at', { ascending: true });
+
+  // If branchId specified, filter (super admin doing manual filter)
+  if (branchId) {
+    query = query.eq('branch_id', branchId);
+  }
+
+  const { data, error } = await query;
   if (error) throw error;
   return data || [];
 }
@@ -156,8 +197,10 @@ async function reactivateEmployee(id) {
 
 // Expose to window
 Object.assign(window, {
-  sb, SERVICES, JOB_TITLES, fmtRp, fmtNumber, fmtDate, fmtTime, todayStr, currentMonth,
-  isOvertime, getCommissionRate, toast, useToasts,
+  sb, SERVICES, JOB_TITLES, ROLES,
+  fmtRp, fmtNumber, fmtDate, fmtTime, todayStr, currentMonth,
+  isOvertime, getCommissionRate, getRoleLabel, toast, useToasts,
   loginWithEmail, logout, getCurrentSession, getMyProfile,
+  listBranches, canAccessAllBranches, canManageBranch,
   listEmployees, updateEmployee, deactivateEmployee, reactivateEmployee,
 });

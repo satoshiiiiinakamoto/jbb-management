@@ -1,4 +1,4 @@
-// ===== Pages: Login + Dashboards + Employees =====
+// ===== Pages: Login + Dashboards + Employees + Branches =====
 const { useState: useStateP, useEffect: useEffectP } = React;
 
 // ----- Login page -----
@@ -73,11 +73,29 @@ function LoginPage({ onLoggedIn }) {
   );
 }
 
-// ----- Admin dashboard -----
-function AdminDashboard({ profile, setPage }) {
+// ----- Admin Dashboard -----
+function AdminDashboard({ profile, setPage, currentBranchId, branches }) {
+  const isSuper = profile.role === 'super_admin';
+  const currentBranch = branches.find(b => b.id === currentBranchId);
+  const scopeLabel = currentBranchId
+    ? currentBranch?.name || ''
+    : isSuper ? 'Semua Cabang (JBB Group)' : '';
+
   return (
     <div className="page">
-      <PageHeader title="Dashboard Admin" sub={`Halo, ${profile.full_name}`}/>
+      <PageHeader
+        title={isSuper ? 'Dashboard JBB Group' : 'Dashboard Cabang'}
+        sub={`Halo, ${profile.full_name}`}
+      />
+
+      <div style={{marginBottom:20,padding:'12px 16px',background:'var(--mauve-tint)',borderRadius:10,fontSize:13,color:'var(--plum)'}}>
+        <strong>Scope saat ini:</strong> {scopeLabel}
+        {isSuper && !currentBranchId && (
+          <div style={{fontSize:12,marginTop:4,color:'var(--muted)'}}>
+            Pilih cabang dari dropdown di pojok kanan atas untuk fokus ke satu cabang.
+          </div>
+        )}
+      </div>
 
       <div className="metrics-grid">
         <Metric label="Omset Hari Ini" value={fmtRp(0)} sub="0 transaksi"/>
@@ -88,17 +106,26 @@ function AdminDashboard({ profile, setPage }) {
 
       <Card title="Mulai dari sini" sub="Aplikasi sedang berkembang bertahap">
         <p style={{fontSize:14,color:'var(--muted)',lineHeight:1.7,marginBottom:14}}>
-          Sekarang sudah masuk <strong>Tahap B1</strong> — Manajemen Karyawan sudah aktif. Klik tab <strong>Karyawan</strong> di atas untuk mulai mengelola data karyawan.
+          {isSuper ? (
+            <>Sekarang multi-cabang sudah aktif. Kamu bisa lihat semua cabang JBB Group atau pilih salah satu dari dropdown.</>
+          ) : (
+            <>Kamu mengelola cabang {currentBranch?.name}. Klik tab Karyawan untuk mulai mengelola data tim cabangmu.</>
+          )}
         </p>
         <button className="btn btn-primary" onClick={() => setPage('employees')}>
           Buka Karyawan →
         </button>
+        {isSuper && (
+          <button className="btn btn-ghost" style={{marginLeft:8}} onClick={() => setPage('branches')}>
+            Lihat Semua Cabang
+          </button>
+        )}
         <div className="section-divider"/>
         <div style={{fontSize:13,color:'var(--muted)'}}>
           <p style={{marginBottom:8}}><strong>Coming next:</strong></p>
           <ul style={{paddingLeft:20,lineHeight:1.8}}>
-            <li>Tahap B2: Input transaksi & auto komisi</li>
-            <li>Tahap B3: Daftar transaksi dengan filter</li>
+            <li>Tahap B2: Input transaksi & auto komisi (per cabang)</li>
+            <li>Tahap B3: Daftar transaksi dengan filter cabang & tanggal</li>
             <li>Tahap C: Laporan harian & rekap gaji bulanan</li>
           </ul>
         </div>
@@ -107,8 +134,85 @@ function AdminDashboard({ profile, setPage }) {
   );
 }
 
-// ----- Employees page -----
-function EmployeesPage({ profile }) {
+// ----- Branches list page (super_admin only) -----
+function BranchesPage({ profile }) {
+  const [branches, setBranches] = useStateP([]);
+  const [loading, setLoading] = useStateP(true);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const data = await listBranches();
+      setBranches(data);
+    } catch (err) {
+      toast('Gagal memuat cabang: ' + err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffectP(() => { load(); }, []);
+
+  return (
+    <div className="page">
+      <PageHeader title="Cabang" sub="JBB Group"/>
+
+      <Card>
+        {loading ? (
+          <Loader text="Memuat daftar cabang..."/>
+        ) : !branches.length ? (
+          <Empty title="Belum ada cabang"/>
+        ) : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Kode</th>
+                  <th>Nama</th>
+                  <th>Kota</th>
+                  <th>Status</th>
+                  <th className="table-numeric">Profit Sharing</th>
+                  <th>WhatsApp</th>
+                  <th>Berdiri</th>
+                </tr>
+              </thead>
+              <tbody>
+                {branches.map(b => (
+                  <tr key={b.id}>
+                    <td>
+                      <span style={{fontFamily:'JetBrains Mono, monospace',fontSize:12,color:'var(--muted)'}}>
+                        {b.id}
+                      </span>
+                    </td>
+                    <td style={{fontWeight:500}}>{b.name}</td>
+                    <td>{b.city}</td>
+                    <td>
+                      {b.status === 'inhouse' ? (
+                        <span className="badge badge-mauve">In-house</span>
+                      ) : (
+                        <span className="badge badge-gold">Franchise</span>
+                      )}
+                    </td>
+                    <td className="table-numeric">
+                      {b.status === 'franchise' ? `${b.profit_sharing_pct}%` : '—'}
+                    </td>
+                    <td style={{fontSize:12,fontFamily:'JetBrains Mono, monospace',color:'var(--muted)'}}>
+                      {b.whatsapp}
+                    </td>
+                    <td>{b.established_year}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ----- Employees page (branch-aware) -----
+function EmployeesPage({ profile, currentBranchId, branches }) {
   const [employees, setEmployees] = useStateP([]);
   const [loading, setLoading] = useStateP(true);
   const [editingId, setEditingId] = useStateP(null);
@@ -116,10 +220,14 @@ function EmployeesPage({ profile }) {
   const [saving, setSaving] = useStateP(false);
   const [showInactive, setShowInactive] = useStateP(false);
 
+  const isSuper = profile.role === 'super_admin';
+
   async function load() {
     setLoading(true);
     try {
-      const data = await listEmployees();
+      // Super admin can filter by branch; branch admin always sees own branch (RLS handles it)
+      const filterBranch = isSuper ? currentBranchId : null;
+      const data = await listEmployees(filterBranch);
       setEmployees(data);
     } catch (err) {
       toast('Gagal memuat data: ' + err.message, 'error');
@@ -128,7 +236,7 @@ function EmployeesPage({ profile }) {
     }
   }
 
-  useEffectP(() => { load(); }, []);
+  useEffectP(() => { load(); }, [currentBranchId]);
 
   function startEdit(emp) {
     setEditingId(emp.id);
@@ -138,6 +246,7 @@ function EmployeesPage({ profile }) {
       job_title: emp.job_title,
       base_salary: emp.base_salary,
       meal_allowance: emp.meal_allowance,
+      branch_id: emp.branch_id,
     });
   }
 
@@ -147,7 +256,6 @@ function EmployeesPage({ profile }) {
   }
 
   async function saveEdit(id) {
-    // Validation
     if (!editForm.full_name?.trim()) {
       toast('Nama wajib diisi', 'error'); return;
     }
@@ -165,13 +273,19 @@ function EmployeesPage({ profile }) {
 
     setSaving(true);
     try {
-      await updateEmployee(id, {
+      const patch = {
         full_name: editForm.full_name.trim(),
         username: editForm.username.trim(),
         job_title: editForm.job_title,
         base_salary: salary,
         meal_allowance: meal,
-      });
+      };
+      // Super admin can also move karyawan ke cabang lain
+      if (isSuper && editForm.branch_id) {
+        patch.branch_id = editForm.branch_id;
+      }
+
+      await updateEmployee(id, patch);
       toast('Data karyawan tersimpan', 'success');
       cancelEdit();
       load();
@@ -207,9 +321,15 @@ function EmployeesPage({ profile }) {
     ? employees
     : employees.filter(e => e.is_active !== false);
 
+  const headerSub = isSuper
+    ? (currentBranchId
+        ? `${branches.find(b => b.id === currentBranchId)?.name || ''}`
+        : 'Semua Cabang')
+    : 'Kelola Data';
+
   return (
     <div className="page">
-      <PageHeader title="Karyawan" sub="Kelola Data">
+      <PageHeader title="Karyawan" sub={headerSub}>
         <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,color:'var(--muted)',cursor:'pointer'}}>
           <input
             type="checkbox"
@@ -223,7 +343,7 @@ function EmployeesPage({ profile }) {
 
       <Card>
         <div style={{marginBottom:16,padding:'12px 14px',background:'var(--mauve-tint)',borderRadius:8,fontSize:13,color:'var(--plum)',lineHeight:1.6}}>
-          <strong>Catatan:</strong> Untuk menambah karyawan baru, buat akun di Supabase Authentication terlebih dahulu, lalu data akan otomatis muncul di sini setelah login pertama. Edit data di tabel ini dengan klik tombol <strong>Edit</strong>.
+          <strong>Catatan:</strong> Untuk menambah karyawan baru, buat akun di Supabase Authentication terlebih dahulu, lalu daftarkan di tabel <code style={{fontSize:12,fontFamily:'JetBrains Mono, monospace'}}>employees</code> via SQL. Edit data di tabel ini dengan klik tombol <strong>Edit</strong>.
         </div>
 
         {loading ? (
@@ -236,6 +356,7 @@ function EmployeesPage({ profile }) {
               <thead>
                 <tr>
                   <th>Nama</th>
+                  {isSuper && <th>Cabang</th>}
                   <th>Username</th>
                   <th>Jabatan</th>
                   <th className="table-numeric">Gaji Pokok</th>
@@ -262,10 +383,27 @@ function EmployeesPage({ profile }) {
                         ) : (
                           <div>
                             <div style={{fontWeight:500}}>{emp.full_name}</div>
-                            {emp.role === 'admin' && <span className="badge badge-gold" style={{marginTop:2,display:'inline-block'}}>admin</span>}
+                            {emp.role === 'super_admin' && <span className="badge badge-gold" style={{marginTop:2,display:'inline-block'}}>super</span>}
+                            {emp.role === 'branch_admin' && <span className="badge badge-mauve" style={{marginTop:2,display:'inline-block'}}>admin</span>}
                           </div>
                         )}
                       </td>
+                      {isSuper && (
+                        <td>
+                          {isEditing ? (
+                            <select
+                              className="form-select"
+                              style={{padding:'6px 10px',fontSize:13}}
+                              value={editForm.branch_id}
+                              onChange={e => setEditForm({...editForm, branch_id: e.target.value})}
+                            >
+                              {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                            </select>
+                          ) : (
+                            <BranchBadge branch={emp.branch}/>
+                          )}
+                        </td>
+                      )}
                       <td>
                         {isEditing ? (
                           <input
@@ -343,7 +481,7 @@ function EmployeesPage({ profile }) {
                               <button className="btn btn-ghost btn-sm" onClick={() => handleReactivate(emp)}>
                                 Aktifkan
                               </button>
-                            ) : emp.role !== 'admin' ? (
+                            ) : emp.role !== 'super_admin' ? (
                               <button className="btn btn-danger btn-sm" onClick={() => handleDeactivate(emp)}>
                                 Nonaktifkan
                               </button>
@@ -360,40 +498,44 @@ function EmployeesPage({ profile }) {
         )}
       </Card>
 
-      <Card title="Cara Tambah Karyawan Baru" sub="Panduan singkat">
+      <Card title="Cara Tambah Karyawan Baru" sub="Untuk Super Admin / Branch Admin">
         <ol style={{paddingLeft:20,lineHeight:1.9,fontSize:13,color:'var(--muted)'}}>
           <li>Buka <a href="https://supabase.com/dashboard" target="_blank" style={{color:'var(--mauve)',textDecoration:'underline'}}>Supabase Dashboard</a> → project jbb-management</li>
           <li>Klik <strong>Authentication → Users → Add user → Create new user</strong></li>
           <li>Isi email karyawan (contoh: <code style={{background:'var(--mauve-tint)',padding:'1px 6px',borderRadius:4,fontSize:12}}>desi@jbb.local</code>) + password</li>
           <li>Centang <strong>Auto Confirm User</strong> → klik <strong>Create user</strong></li>
-          <li>Buka <strong>SQL Editor</strong> → jalankan query untuk daftarkan sebagai karyawan:</li>
+          <li>Buka <strong>SQL Editor</strong> → jalankan query (ganti email & branch_id sesuai kebutuhan):</li>
         </ol>
         <pre style={{background:'var(--cream)',padding:'12px 14px',borderRadius:8,fontSize:12,overflow:'auto',marginTop:10,fontFamily:'JetBrains Mono, monospace',lineHeight:1.6}}>
 {`insert into public.employees
-  (id, username, full_name, role, job_title, base_salary, meal_allowance)
+  (id, username, full_name, role, job_title,
+   base_salary, meal_allowance, branch_id)
 select
   id, 'desi', 'Desi Kurniawan', 'employee',
-  'Lash Technician', 1500000, 300000
+  'Lash Technician', 1500000, 300000, 'bdg'
 from auth.users
 where email = 'desi@jbb.local';`}
         </pre>
         <p style={{fontSize:12,color:'var(--muted)',marginTop:10,lineHeight:1.6}}>
-          Setelah query berhasil, refresh halaman ini → karyawan baru akan muncul di tabel atas. Edit data-nya dari sini.
+          <strong>branch_id</strong> tersedia: <code>bdg</code> (Bandung), <code>smr</code> (Summarecon), <code>jgj</code> (Jogja), <code>jmb</code> (Jambon), <code>cms</code> (Ciamis), <code>vli</code> (VIALI Tangerang)
+        </p>
+        <p style={{fontSize:12,color:'var(--muted)',marginTop:6,lineHeight:1.6}}>
+          <strong>role</strong> tersedia: <code>employee</code> (default), <code>branch_admin</code> (manager cabang), <code>super_admin</code> (owner JBB Group)
         </p>
       </Card>
     </div>
   );
 }
 
-// ----- Employee dashboard -----
+// ----- Employee dashboard (regular staff view) -----
 function EmployeeDashboard({ profile }) {
   return (
     <div className="page">
-      <PageHeader title={`Halo, ${profile.full_name.split(' ')[0]}`} sub="Dashboard Karyawan"/>
+      <PageHeader title={`Halo, ${profile.full_name.split(' ')[0]}`} sub={`${profile.branch?.name || ''}`}/>
 
       <Card title="Selamat Datang" sub="Fitur lengkap akan segera tersedia">
         <p style={{fontSize:14,color:'var(--muted)',lineHeight:1.7}}>
-          Kamu login sebagai <strong>karyawan</strong>. Saat ini sistem masih dalam tahap pembangunan.
+          Kamu login sebagai <strong>karyawan</strong> di {profile.branch?.name}. Saat ini sistem masih dalam tahap pembangunan.
         </p>
         <div className="section-divider"/>
         <div style={{fontSize:13,color:'var(--muted)'}}>
@@ -414,6 +556,10 @@ function EmployeeDashboard({ profile }) {
             <div style={{fontWeight:500}}>{profile.full_name}</div>
           </div>
           <div>
+            <div style={{fontSize:11,color:'var(--muted)',marginBottom:4,letterSpacing:'0.05em',textTransform:'uppercase'}}>Cabang</div>
+            <div>{profile.branch?.name || '-'}</div>
+          </div>
+          <div>
             <div style={{fontSize:11,color:'var(--muted)',marginBottom:4,letterSpacing:'0.05em',textTransform:'uppercase'}}>Jabatan</div>
             <div>{profile.job_title}</div>
           </div>
@@ -431,4 +577,4 @@ function EmployeeDashboard({ profile }) {
   );
 }
 
-Object.assign(window, { LoginPage, AdminDashboard, EmployeesPage, EmployeeDashboard });
+Object.assign(window, { LoginPage, AdminDashboard, BranchesPage, EmployeesPage, EmployeeDashboard });
