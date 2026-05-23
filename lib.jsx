@@ -43,19 +43,8 @@ function currentMonth() {
 }
 
 // =====================================================
-// SERVICES CATALOG with commission rules
+// SERVICES CATALOG
 // =====================================================
-// commission_type:
-//   'percent'       -> commission = price × rate%
-//   'fixed_amount'  -> commission = manual input (Rp)
-//
-// Overtime rule (jam mulai ≥ 18:00):
-//   percent  -> rate += 5
-//   fixed_amount for sulam alis:
-//     - branch 'bdg' (Bandung): no bonus
-//     - others: +Rp 5,000
-// =====================================================
-
 const SERVICES = [
   { name: 'Korean Natural (Eyelash)', category: 'lash', commission_type: 'percent', baseRate: 5 },
   { name: 'Skinny Volume (Eyelash)', category: 'lash', commission_type: 'percent', baseRate: 5 },
@@ -94,7 +83,6 @@ const ROLES = [
 // =====================================================
 // Commission calculator
 // =====================================================
-
 function isOvertime(timeStr) {
   if (!timeStr) return false;
   const h = parseInt(timeStr.split(':')[0]);
@@ -105,9 +93,6 @@ function getServiceDef(serviceName) {
   return SERVICES.find(s => s.name === serviceName);
 }
 
-// Calculate commission for an item
-// For percent: returns { rate, amount }
-// For fixed_amount: caller passes fixedAmount; we just adjust for overtime
 function calcCommission({ serviceName, price, fixedAmount, isOT, branchId }) {
   const svc = getServiceDef(serviceName);
   if (!svc) return { rate: 0, amount: 0, type: 'percent' };
@@ -118,7 +103,6 @@ function calcCommission({ serviceName, price, fixedAmount, isOT, branchId }) {
     return { rate, amount, type: 'percent' };
   }
 
-  // Fixed amount (sulam alis)
   let amount = Number(fixedAmount) || 0;
   if (isOT && branchId !== 'bdg') {
     amount += 5000;
@@ -241,6 +225,35 @@ async function reactivateEmployee(id) {
 }
 
 // =====================================================
+// CREATE EMPLOYEE (via Edge Function)
+// =====================================================
+async function createEmployee(payload) {
+  // payload: { email, password, full_name, username, job_title, role, base_salary, meal_allowance, branch_id }
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error('Sesi login tidak ditemukan');
+
+  const url = `${SUPABASE_URL}/functions/v1/create-employee`;
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${session.access_token}`,
+      'apikey': SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const result = await resp.json();
+
+  if (!resp.ok || result.error) {
+    throw new Error(result.error || `HTTP ${resp.status}`);
+  }
+
+  return result.employee;
+}
+
+// =====================================================
 // Clients
 // =====================================================
 async function findClientByPhone(branchId, phone) {
@@ -271,35 +284,23 @@ async function upsertClient(branchId, fullName, phone) {
 // =====================================================
 // Transactions
 // =====================================================
-
-// Create transaction with multiple items (multi-treatment per invoice)
 async function createTransaction({
-  branchId,
-  clientName,
-  clientPhone,
-  date,
-  startTime,
-  isHomeService,
-  homeServiceFee,
-  notes,
-  items,           // [{ employee_id, service_name, price, commission_amount, commission_type, commission_rate, notes }]
-  createdBy,
+  branchId, clientName, clientPhone, date, startTime,
+  isHomeService, homeServiceFee, notes, items, createdBy,
 }) {
   const isOT = isOvertime(startTime);
   const totalAmount = items.reduce((sum, it) => sum + (Number(it.price) || 0), 0);
   const totalCommission = items.reduce((sum, it) => sum + (Number(it.commission_amount) || 0), 0);
 
-  // 1. Upsert client (if phone provided OR name provided)
   let clientId = null;
   if (clientName && clientName.trim()) {
     try {
       clientId = await upsertClient(branchId, clientName.trim(), clientPhone);
     } catch (err) {
-      console.warn('Client upsert failed, continuing without client_id:', err);
+      console.warn('Client upsert failed:', err);
     }
   }
 
-  // 2. Insert transaction header
   const { data: trx, error: trxErr } = await sb
     .from('transactions')
     .insert({
@@ -322,7 +323,6 @@ async function createTransaction({
 
   if (trxErr) throw trxErr;
 
-  // 3. Insert items
   const itemRows = items.map(it => {
     const svc = getServiceDef(it.service_name);
     return {
@@ -344,7 +344,6 @@ async function createTransaction({
     .insert(itemRows);
 
   if (itemErr) {
-    // Rollback: delete the transaction header
     await sb.from('transactions').delete().eq('id', trx.id);
     throw itemErr;
   }
@@ -373,10 +372,7 @@ async function getTodayStats(branchId = null) {
     .eq('date', today);
   if (branchId) query = query.eq('branch_id', branchId);
   const { data, error } = await query;
-  if (error) {
-    console.error('Today stats error:', error);
-    return { count: 0, total: 0, commission: 0 };
-  }
+  if (error) return { count: 0, total: 0, commission: 0 };
   return {
     count: (data || []).length,
     total: (data || []).reduce((s, r) => s + Number(r.total_amount || 0), 0),
@@ -398,10 +394,7 @@ async function getMonthStats(branchId = null) {
     .lt('date', nextFirst);
   if (branchId) query = query.eq('branch_id', branchId);
   const { data, error } = await query;
-  if (error) {
-    console.error('Month stats error:', error);
-    return { total: 0 };
-  }
+  if (error) return { total: 0 };
   return {
     total: (data || []).reduce((s, r) => s + Number(r.total_amount || 0), 0),
   };
@@ -415,7 +408,7 @@ Object.assign(window, {
   toast, useToasts,
   loginWithEmail, logout, getCurrentSession, getMyProfile,
   listBranches, canAccessAllBranches, canManageBranch,
-  listEmployees, updateEmployee, deactivateEmployee, reactivateEmployee,
+  listEmployees, updateEmployee, deactivateEmployee, reactivateEmployee, createEmployee,
   findClientByPhone, upsertClient,
   createTransaction, listRecentTransactions, getTodayStats, getMonthStats,
 });
