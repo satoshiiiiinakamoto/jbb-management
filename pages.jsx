@@ -298,7 +298,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
       {!effectiveBranchId && (
         <Card>
           <div style={{padding:'16px',background:'#f0dada',color:'var(--red)',borderRadius:8,fontSize:13}}>
-            <strong>⚠️ Pilih cabang dulu</strong> dari dropdown di pojok kanan atas untuk input transaksi.
+            <strong>⚠️ Pilih cabang dulu</strong> dari dropdown di pojok kanan atas.
           </div>
         </Card>
       )}
@@ -465,7 +465,7 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
       const filterBranch = isSuper ? currentBranchId : profile.branch_id;
       setTrxs(await listRecentTransactions(filterBranch, 50));
     } catch (err) {
-      toast('Gagal memuat: ' + err.message, 'error');
+      toast('Gagal: ' + err.message, 'error');
     } finally {
       setLoading(false);
     }
@@ -533,13 +533,12 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
 }
 
 // =====================================================
-// ADD EMPLOYEE MODAL
+// ADD EMPLOYEE MODAL (with relaxed salary for Owner/Manager)
 // =====================================================
 function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, currentBranchId }) {
   const isSuper = profile.role === 'super_admin';
   const [submitting, setSubmitting] = useStateP(false);
 
-  // Determine default branch
   const defaultBranchId = useMemoP(() => {
     if (isSuper) return currentBranchId || profile.branch_id;
     return profile.branch_id;
@@ -557,6 +556,8 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
     branch_id: defaultBranchId,
   });
 
+  const salaryOptional = isSalaryOptional(form.job_title);
+
   useEffectP(() => {
     if (open) {
       setForm(f => ({ ...f, branch_id: defaultBranchId }));
@@ -568,11 +569,23 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
   }
 
   function generatePassword() {
-    // Generate simple password: 8 chars, alphanumeric
     const chars = 'abcdefghijkmnpqrstuvwxyz23456789';
     let pw = '';
     for (let i = 0; i < 8; i++) pw += chars[Math.floor(Math.random() * chars.length)];
     update({ password: pw });
+  }
+
+  // When job title changes, auto-clear salary fields for Owner/Manager
+  function handleJobTitleChange(newTitle) {
+    if (isSalaryOptional(newTitle)) {
+      update({ job_title: newTitle, base_salary: '', meal_allowance: '' });
+    } else {
+      update({
+        job_title: newTitle,
+        base_salary: form.base_salary || 1500000,
+        meal_allowance: form.meal_allowance || 0,
+      });
+    }
   }
 
   async function handleSubmit(e) {
@@ -584,8 +597,19 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
     if (!form.username.trim()) { toast('Username wajib diisi', 'error'); return; }
     if (!form.branch_id) { toast('Cabang wajib dipilih', 'error'); return; }
 
-    const salary = Number(form.base_salary);
-    if (isNaN(salary) || salary < 1000000) { toast('Gaji pokok minimal Rp 1.000.000', 'error'); return; }
+    // Salary validation: only required for non-Owner/Manager
+    let salary = 0;
+    let meal = 0;
+    if (salaryOptional) {
+      salary = Number(form.base_salary) || 0;
+      meal = Number(form.meal_allowance) || 0;
+    } else {
+      salary = Number(form.base_salary);
+      meal = Number(form.meal_allowance) || 0;
+      if (isNaN(salary) || salary < 1000000) {
+        toast('Gaji pokok minimal Rp 1.000.000 untuk jabatan ini', 'error'); return;
+      }
+    }
 
     setSubmitting(true);
     try {
@@ -597,13 +621,12 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
         job_title: form.job_title,
         role: form.role,
         base_salary: salary,
-        meal_allowance: Number(form.meal_allowance) || 0,
+        meal_allowance: meal,
         branch_id: form.branch_id,
       });
       toast('Karyawan berhasil ditambahkan! 🎉', 'success');
       onSuccess();
       onClose();
-      // Reset form
       setForm({
         email: '', password: '', full_name: '', username: '',
         job_title: 'Lash Technician', role: 'employee',
@@ -642,10 +665,10 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
 
         <form onSubmit={handleSubmit}>
           <div style={{padding:'12px 14px',background:'var(--mauve-tint)',borderRadius:8,fontSize:12,color:'var(--plum)',marginBottom:18,lineHeight:1.6}}>
-            <strong>Tips:</strong> Karyawan akan langsung bisa login dengan email & password yang kamu set. Setelah dibuat, kasih tahu email & password ke karyawan via WA.
+            <strong>Tips:</strong> Karyawan akan langsung bisa login. Kasih tahu email & password ke karyawan via WA.
           </div>
 
-          <Field label="Email Login *" hint="Email untuk login. Bisa pakai format desi@jbb.local kalau ga ada email asli.">
+          <Field label="Email Login *" hint="Bisa pakai format desi@jbb.local kalau ga ada email asli.">
             <input type="email" className="form-input" value={form.email}
               onChange={e => update({ email: e.target.value })}
               placeholder="desi@jbb.local" required autoComplete="off"/>
@@ -656,9 +679,7 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
               <input type="text" className="form-input" value={form.password}
                 onChange={e => update({ password: e.target.value })}
                 placeholder="••••••••" required minLength={6} style={{flex:1}}/>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={generatePassword}>
-                Generate
-              </button>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={generatePassword}>Generate</button>
             </div>
           </Field>
 
@@ -685,7 +706,7 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
             </Field>
             <Field label="Jabatan *">
               <select className="form-select" value={form.job_title}
-                onChange={e => update({ job_title: e.target.value })} required>
+                onChange={e => handleJobTitleChange(e.target.value)} required>
                 {JOB_TITLES.map(t => <option key={t} value={t}>{t}</option>)}
               </select>
             </Field>
@@ -700,23 +721,30 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
             </select>
           </Field>
 
+          {salaryOptional ? (
+            <div style={{padding:'12px 14px',background:'var(--cream)',borderRadius:8,fontSize:12,color:'var(--muted)',lineHeight:1.6,marginBottom:14}}>
+              💡 Untuk jabatan <strong>{form.job_title}</strong>, gaji pokok & uang makan biasanya tidak diisi (compensation lewat profit sharing atau tunjangan lain). Bisa dikosongkan atau diisi sesuai kebijakan internal.
+            </div>
+          ) : null}
+
           <div className="form-row">
-            <Field label="Gaji Pokok (Rp) *" hint="Minimal Rp 1.000.000">
+            <Field label={`Gaji Pokok (Rp) ${salaryOptional ? '' : '*'}`} hint={salaryOptional ? 'Opsional untuk Owner/Manager' : 'Minimal Rp 1.000.000'}>
               <input type="number" className="form-input" value={form.base_salary}
                 onChange={e => update({ base_salary: e.target.value })}
-                min="1000000" step="100000" required/>
+                min={salaryOptional ? "0" : "1000000"} step="100000"
+                required={!salaryOptional}
+                placeholder={salaryOptional ? '0 (opsional)' : '1500000'}/>
             </Field>
-            <Field label="Uang Makan (Rp)" hint="Opsional, max Rp 500.000">
+            <Field label="Uang Makan (Rp)" hint={salaryOptional ? 'Opsional' : 'Opsional, max Rp 500.000'}>
               <input type="number" className="form-input" value={form.meal_allowance}
                 onChange={e => update({ meal_allowance: e.target.value })}
-                min="0" max="500000" step="50000"/>
+                min="0" max="500000" step="50000"
+                placeholder="0"/>
             </Field>
           </div>
 
           <div style={{display:'flex',gap:10,justifyContent:'flex-end',marginTop:20,flexWrap:'wrap'}}>
-            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={submitting}>
-              Batal
-            </button>
+            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={submitting}>Batal</button>
             <button type="submit" className="btn btn-primary" disabled={submitting}>
               {submitting ? <span className="loader" style={{borderTopColor:'#fff',borderColor:'rgba(255,255,255,0.3)'}}/> : 'Tambah Karyawan'}
             </button>
@@ -728,7 +756,76 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
 }
 
 // =====================================================
-// EMPLOYEES PAGE (with Add button)
+// DELETE CONFIRM MODAL
+// =====================================================
+function DeleteConfirmModal({ open, employee, onClose, onConfirm, deleting }) {
+  const [confirmText, setConfirmText] = useStateP('');
+  const expected = employee?.full_name || '';
+  const canDelete = confirmText.trim() === expected.trim();
+
+  useEffectP(() => {
+    if (open) setConfirmText('');
+  }, [open]);
+
+  if (!open || !employee) return null;
+
+  return (
+    <div style={{
+      position:'fixed',inset:0,background:'rgba(36,26,44,0.6)',
+      display:'flex',alignItems:'center',justifyContent:'center',
+      zIndex:1001,padding:20,backdropFilter:'blur(4px)',
+    }} onClick={onClose}>
+      <div style={{
+        background:'var(--paper)',borderRadius:20,padding:32,
+        width:'100%',maxWidth:480,
+        boxShadow:'var(--shadow-lg)',
+      }} onClick={e => e.stopPropagation()}>
+
+        <div style={{marginBottom:16}}>
+          <div className="eyebrow" style={{marginBottom:6,color:'var(--red)'}}>⚠️ Konfirmasi Hapus</div>
+          <h2 style={{fontFamily:'Cormorant Garamond, serif',fontSize:26,fontWeight:400,color:'var(--plum-deep)'}}>
+            Hapus Karyawan Permanen?
+          </h2>
+        </div>
+
+        <div style={{padding:'14px 16px',background:'#f0dada',color:'var(--red)',borderRadius:8,fontSize:13,marginBottom:16,lineHeight:1.6}}>
+          <strong>Peringatan:</strong> Aksi ini akan menghapus permanen akun <strong>{employee.full_name}</strong> dari database & login. Tidak bisa di-undo.
+          <br/><br/>
+          <strong>Catatan:</strong> Kalau karyawan ini sudah punya transaksi tercatat, sistem akan menolak penghapusan untuk menjaga integritas laporan. Gunakan tombol <strong>Nonaktifkan</strong> saja.
+        </div>
+
+        <Field label={`Ketik nama lengkap "${expected}" untuk konfirmasi`}>
+          <input
+            type="text"
+            className="form-input"
+            value={confirmText}
+            onChange={e => setConfirmText(e.target.value)}
+            placeholder={expected}
+            autoFocus
+          />
+        </Field>
+
+        <div style={{display:'flex',gap:10,justifyContent:'flex-end',marginTop:20,flexWrap:'wrap'}}>
+          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={deleting}>
+            Batal
+          </button>
+          <button
+            type="button"
+            className="btn btn-danger"
+            onClick={onConfirm}
+            disabled={!canDelete || deleting}
+            style={canDelete && !deleting ? {background:'var(--red)',color:'#fff',borderColor:'var(--red)'} : {}}
+          >
+            {deleting ? <span className="loader" style={{borderTopColor:'#fff',borderColor:'rgba(255,255,255,0.3)'}}/> : 'Hapus Permanen'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================
+// EMPLOYEES PAGE
 // =====================================================
 function EmployeesPage({ profile, currentBranchId, branches }) {
   const [employees, setEmployees] = useStateP([]);
@@ -738,6 +835,8 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
   const [saving, setSaving] = useStateP(false);
   const [showInactive, setShowInactive] = useStateP(false);
   const [showAddModal, setShowAddModal] = useStateP(false);
+  const [deleteTarget, setDeleteTarget] = useStateP(null);
+  const [deleting, setDeleting] = useStateP(false);
 
   const isSuper = profile.role === 'super_admin';
 
@@ -773,10 +872,24 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
   async function saveEdit(id) {
     if (!editForm.full_name?.trim()) { toast('Nama wajib diisi', 'error'); return; }
     if (!editForm.username?.trim()) { toast('Username wajib diisi', 'error'); return; }
-    const salary = Number(editForm.base_salary);
-    const meal = Number(editForm.meal_allowance) || 0;
-    if (isNaN(salary) || salary < 1000000) { toast('Gaji pokok minimal Rp 1.000.000', 'error'); return; }
-    if (meal < 0 || meal > 500000) { toast('Uang makan: Rp 0 – Rp 500.000', 'error'); return; }
+
+    const salaryOptional = isSalaryOptional(editForm.job_title);
+    let salary = 0;
+    let meal = 0;
+
+    if (salaryOptional) {
+      salary = Number(editForm.base_salary) || 0;
+      meal = Number(editForm.meal_allowance) || 0;
+    } else {
+      salary = Number(editForm.base_salary);
+      meal = Number(editForm.meal_allowance) || 0;
+      if (isNaN(salary) || salary < 1000000) {
+        toast('Gaji pokok minimal Rp 1.000.000 untuk jabatan ini', 'error'); return;
+      }
+      if (meal < 0 || meal > 500000) {
+        toast('Uang makan: Rp 0 – Rp 500.000', 'error'); return;
+      }
+    }
 
     setSaving(true);
     try {
@@ -807,6 +920,25 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
   async function handleReactivate(emp) {
     try { await reactivateEmployee(emp.id); toast('Karyawan diaktifkan kembali', 'success'); load(); }
     catch (err) { toast('Gagal: ' + err.message, 'error'); }
+  }
+
+  async function handleDeleteConfirm() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await deleteEmployee(deleteTarget.id);
+      toast('Karyawan dihapus permanen', 'success');
+      setDeleteTarget(null);
+      load();
+    } catch (err) {
+      if (err.hasTransactions) {
+        toast(err.message, 'error');
+      } else {
+        toast('Gagal: ' + (err.message || err), 'error');
+      }
+    } finally {
+      setDeleting(false);
+    }
   }
 
   const visibleEmployees = showInactive ? employees : employees.filter(e => e.is_active !== false);
@@ -848,6 +980,7 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
                 {visibleEmployees.map(emp => {
                   const isEditing = editingId === emp.id;
                   const totalFixed = (emp.base_salary || 0) + (emp.meal_allowance || 0);
+                  const editSalaryOptional = isEditing && isSalaryOptional(editForm.job_title);
                   return (
                     <tr key={emp.id}>
                       <td>
@@ -891,16 +1024,20 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
                       <td className="table-numeric">
                         {isEditing ? (
                           <input type="number" className="form-input" style={{padding:'6px 10px',fontSize:13,textAlign:'right',width:130}}
-                            value={editForm.base_salary} onChange={e => setEditForm({...editForm, base_salary: e.target.value})}/>
-                        ) : fmtRp(emp.base_salary)}
+                            value={editForm.base_salary || ''}
+                            onChange={e => setEditForm({...editForm, base_salary: e.target.value})}
+                            placeholder={editSalaryOptional ? 'opsional' : ''}/>
+                        ) : fmtRpOrDash(emp.base_salary)}
                       </td>
                       <td className="table-numeric">
                         {isEditing ? (
                           <input type="number" className="form-input" style={{padding:'6px 10px',fontSize:13,textAlign:'right',width:120}}
-                            value={editForm.meal_allowance} onChange={e => setEditForm({...editForm, meal_allowance: e.target.value})}/>
-                        ) : (emp.meal_allowance ? fmtRp(emp.meal_allowance) : <span style={{color:'var(--muted)'}}>—</span>)}
+                            value={editForm.meal_allowance || ''}
+                            onChange={e => setEditForm({...editForm, meal_allowance: e.target.value})}
+                            placeholder="0"/>
+                        ) : fmtRpOrDash(emp.meal_allowance)}
                       </td>
-                      <td className="table-numeric" style={{fontWeight:500}}>{fmtRp(totalFixed)}</td>
+                      <td className="table-numeric" style={{fontWeight:500}}>{totalFixed > 0 ? fmtRp(totalFixed) : <span style={{color:'var(--muted)',fontWeight:400}}>—</span>}</td>
                       <td>
                         {emp.is_active === false
                           ? <span className="badge badge-red">nonaktif</span>
@@ -915,13 +1052,23 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
                             <button className="btn btn-ghost btn-sm" onClick={cancelEdit} disabled={saving}>Batal</button>
                           </div>
                         ) : (
-                          <div style={{display:'flex',gap:6}}>
+                          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                             <button className="btn btn-ghost btn-sm" onClick={() => startEdit(emp)}>Edit</button>
-                            {emp.is_active === false
-                              ? <button className="btn btn-ghost btn-sm" onClick={() => handleReactivate(emp)}>Aktifkan</button>
-                              : emp.role !== 'super_admin'
-                                ? <button className="btn btn-danger btn-sm" onClick={() => handleDeactivate(emp)}>Nonaktifkan</button>
-                                : null}
+                            {emp.is_active === false ? (
+                              <button className="btn btn-ghost btn-sm" onClick={() => handleReactivate(emp)}>Aktifkan</button>
+                            ) : emp.role !== 'super_admin' && emp.id !== profile.id ? (
+                              <button className="btn btn-danger btn-sm" onClick={() => handleDeactivate(emp)}>Nonaktifkan</button>
+                            ) : null}
+                            {emp.role !== 'super_admin' && emp.id !== profile.id && (
+                              <button
+                                className="btn btn-danger btn-sm"
+                                onClick={() => setDeleteTarget(emp)}
+                                title="Hapus permanen (hanya bisa jika belum ada transaksi)"
+                                style={{background:'var(--red)',color:'#fff',borderColor:'var(--red)'}}
+                              >
+                                🗑
+                              </button>
+                            )}
                           </div>
                         )}
                       </td>
@@ -941,6 +1088,14 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
         profile={profile}
         branches={branches}
         currentBranchId={currentBranchId}
+      />
+
+      <DeleteConfirmModal
+        open={!!deleteTarget}
+        employee={deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={handleDeleteConfirm}
+        deleting={deleting}
       />
     </div>
   );
@@ -963,5 +1118,6 @@ function EmployeeDashboard({ profile }) {
 Object.assign(window, {
   LoginPage, AdminDashboard, BranchesPage,
   NewTransactionPage, TransactionsPage,
-  EmployeesPage, EmployeeDashboard, AddEmployeeModal
+  EmployeesPage, EmployeeDashboard,
+  AddEmployeeModal, DeleteConfirmModal
 });

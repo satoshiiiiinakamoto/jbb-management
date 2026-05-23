@@ -13,6 +13,11 @@ function fmtRp(n) {
   return 'Rp ' + Math.round(Number(n)).toLocaleString('id-ID');
 }
 
+function fmtRpOrDash(n) {
+  if (!n || n === 0 || isNaN(n)) return '—';
+  return fmtRp(n);
+}
+
 function fmtNumber(n) {
   if (n === null || n === undefined || isNaN(n)) return '0';
   return Math.round(Number(n)).toLocaleString('id-ID');
@@ -73,6 +78,13 @@ const JOB_TITLES = [
   'Beauty Therapist',
   'Kasir',
 ];
+
+// Jabatan yang tidak wajib gaji pokok (biasanya owner/manager dapat profit sharing, bukan gaji)
+const SALARY_OPTIONAL_TITLES = ['Owner', 'Manager'];
+
+function isSalaryOptional(jobTitle) {
+  return SALARY_OPTIONAL_TITLES.includes(jobTitle);
+}
 
 const ROLES = [
   { value: 'super_admin', label: 'Super Admin (Owner JBB Group)' },
@@ -228,12 +240,10 @@ async function reactivateEmployee(id) {
 // CREATE EMPLOYEE (via Edge Function)
 // =====================================================
 async function createEmployee(payload) {
-  // payload: { email, password, full_name, username, job_title, role, base_salary, meal_allowance, branch_id }
   const { data: { session } } = await sb.auth.getSession();
   if (!session) throw new Error('Sesi login tidak ditemukan');
 
   const url = `${SUPABASE_URL}/functions/v1/create-employee`;
-
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
@@ -245,12 +255,38 @@ async function createEmployee(payload) {
   });
 
   const result = await resp.json();
-
   if (!resp.ok || result.error) {
     throw new Error(result.error || `HTTP ${resp.status}`);
   }
-
   return result.employee;
+}
+
+// =====================================================
+// DELETE EMPLOYEE (permanent, via Edge Function)
+// =====================================================
+async function deleteEmployee(employeeId) {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error('Sesi login tidak ditemukan');
+
+  const url = `${SUPABASE_URL}/functions/v1/delete-employee`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${session.access_token}`,
+      'apikey': SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ employee_id: employeeId }),
+  });
+
+  const result = await resp.json();
+  if (!resp.ok || result.error) {
+    const err = new Error(result.error || `HTTP ${resp.status}`);
+    err.hasTransactions = result.has_transactions;
+    err.transactionCount = result.transaction_count;
+    throw err;
+  }
+  return result;
 }
 
 // =====================================================
@@ -308,8 +344,7 @@ async function createTransaction({
       client_id: clientId,
       client_name_snapshot: clientName?.trim() || null,
       client_phone_snapshot: clientPhone?.trim() || null,
-      date,
-      start_time: startTime,
+      date, start_time: startTime,
       is_overtime: isOT,
       is_home_service: !!isHomeService,
       home_service_fee: Number(homeServiceFee) || 0,
@@ -318,8 +353,7 @@ async function createTransaction({
       notes: notes || null,
       created_by: createdBy,
     })
-    .select()
-    .single();
+    .select().single();
 
   if (trxErr) throw trxErr;
 
@@ -339,15 +373,11 @@ async function createTransaction({
     };
   });
 
-  const { error: itemErr } = await sb
-    .from('transaction_items')
-    .insert(itemRows);
-
+  const { error: itemErr } = await sb.from('transaction_items').insert(itemRows);
   if (itemErr) {
     await sb.from('transactions').delete().eq('id', trx.id);
     throw itemErr;
   }
-
   return trx;
 }
 
@@ -395,20 +425,19 @@ async function getMonthStats(branchId = null) {
   if (branchId) query = query.eq('branch_id', branchId);
   const { data, error } = await query;
   if (error) return { total: 0 };
-  return {
-    total: (data || []).reduce((s, r) => s + Number(r.total_amount || 0), 0),
-  };
+  return { total: (data || []).reduce((s, r) => s + Number(r.total_amount || 0), 0) };
 }
 
 // Expose
 Object.assign(window, {
-  sb, SERVICES, JOB_TITLES, ROLES,
-  fmtRp, fmtNumber, fmtDate, fmtTime, todayStr, nowTimeStr, currentMonth,
-  isOvertime, getServiceDef, calcCommission, getRoleLabel,
+  sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
+  fmtRp, fmtRpOrDash, fmtNumber, fmtDate, fmtTime, todayStr, nowTimeStr, currentMonth,
+  isOvertime, isSalaryOptional, getServiceDef, calcCommission, getRoleLabel,
   toast, useToasts,
   loginWithEmail, logout, getCurrentSession, getMyProfile,
   listBranches, canAccessAllBranches, canManageBranch,
-  listEmployees, updateEmployee, deactivateEmployee, reactivateEmployee, createEmployee,
+  listEmployees, updateEmployee, deactivateEmployee, reactivateEmployee,
+  createEmployee, deleteEmployee,
   findClientByPhone, upsertClient,
   createTransaction, listRecentTransactions, getTodayStats, getMonthStats,
 });
