@@ -25,16 +25,12 @@ function App() {
       }
       setProfile(p);
 
-      // Load branches list
       try {
         const bs = await listBranches();
         setBranches(bs);
-
-        // For non-super, lock the branch context to their own
         if (p.role !== 'super_admin') {
           setCurrentBranchId(p.branch_id);
         }
-        // Super admin starts with "Semua Cabang" (null = all)
       } catch (err) {
         console.error('Branch load error:', err);
       }
@@ -62,7 +58,6 @@ function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Check ENV
   const envMissing = !window.__ENV.SUPABASE_URL || window.__ENV.SUPABASE_URL.includes('GANTI');
   if (envMissing) {
     return (
@@ -96,11 +91,15 @@ function App() {
   // Build tabs based on role
   const superTabs = [
     { id: 'dashboard', label: 'Dashboard' },
+    { id: 'newTransaction', label: 'Input Transaksi' },
+    { id: 'transactions', label: 'Transaksi' },
     { id: 'employees', label: 'Karyawan' },
     { id: 'branches', label: 'Cabang' },
   ];
   const branchAdminTabs = [
     { id: 'dashboard', label: 'Dashboard' },
+    { id: 'newTransaction', label: 'Input Transaksi' },
+    { id: 'transactions', label: 'Transaksi' },
     { id: 'employees', label: 'Karyawan' },
   ];
   const employeeTabs = [
@@ -112,17 +111,30 @@ function App() {
   else if (profile.role === 'branch_admin') tabs = branchAdminTabs;
   else tabs = employeeTabs;
 
-  // Render active page
+  // Route pages
   let pageContent;
   const isAdmin = profile.role === 'super_admin' || profile.role === 'branch_admin';
 
   if (isAdmin) {
-    if (page === 'employees') {
-      pageContent = <EmployeesPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
-    } else if (page === 'branches' && profile.role === 'super_admin') {
-      pageContent = <BranchesPage profile={profile}/>;
-    } else {
-      pageContent = <AdminDashboard profile={profile} setPage={setPage} currentBranchId={currentBranchId} branches={branches}/>;
+    switch (page) {
+      case 'newTransaction':
+        pageContent = <NewTransactionPage profile={profile} currentBranchId={currentBranchId} branches={branches} setPage={setPage}/>;
+        break;
+      case 'transactions':
+        pageContent = <TransactionsPage profile={profile} currentBranchId={currentBranchId} branches={branches} setPage={setPage}/>;
+        break;
+      case 'employees':
+        pageContent = <EmployeesPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
+        break;
+      case 'branches':
+        if (profile.role === 'super_admin') {
+          pageContent = <BranchesPage/>;
+        } else {
+          pageContent = <AdminDashboard profile={profile} setPage={setPage} currentBranchId={currentBranchId} branches={branches}/>;
+        }
+        break;
+      default:
+        pageContent = <AdminDashboard profile={profile} setPage={setPage} currentBranchId={currentBranchId} branches={branches}/>;
     }
   } else {
     pageContent = <EmployeeDashboard profile={profile}/>;

@@ -7,7 +7,7 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: true, autoRefreshToken: true }
 });
 
-// ----- Currency formatter -----
+// ----- Formatters -----
 function fmtRp(n) {
   if (n === null || n === undefined || isNaN(n)) return 'Rp 0';
   return 'Rp ' + Math.round(Number(n)).toLocaleString('id-ID');
@@ -33,21 +33,46 @@ function todayStr() {
   return new Date().toISOString().split('T')[0];
 }
 
+function nowTimeStr() {
+  const d = new Date();
+  return d.toTimeString().slice(0, 5);
+}
+
 function currentMonth() {
   return new Date().toISOString().slice(0, 7);
 }
 
-// ----- Services catalog -----
+// =====================================================
+// SERVICES CATALOG with commission rules
+// =====================================================
+// commission_type:
+//   'percent'       -> commission = price × rate%
+//   'fixed_amount'  -> commission = manual input (Rp)
+//
+// Overtime rule (jam mulai ≥ 18:00):
+//   percent  -> rate += 5
+//   fixed_amount for sulam alis:
+//     - branch 'bdg' (Bandung): no bonus
+//     - others: +Rp 5,000
+// =====================================================
+
 const SERVICES = [
-  { name: 'Eyelash Extension', category: 'lash', baseCommission: 5 },
-  { name: 'Lash Lift', category: 'lash', baseCommission: 5 },
-  { name: 'Brow Lamination', category: 'lash', baseCommission: 5 },
-  { name: 'Sulam Alis', category: 'lash', baseCommission: 5 },
-  { name: 'Korean Vit C Glow', category: 'lash', baseCommission: 5 },
-  { name: 'Korean BB Glow', category: 'lash', baseCommission: 5 },
-  { name: 'Nail Art', category: 'nail', baseCommission: 10 },
-  { name: 'Manicure', category: 'nail', baseCommission: 10 },
-  { name: 'Pedicure', category: 'nail', baseCommission: 10 },
+  { name: 'Korean Natural (Eyelash)', category: 'lash', commission_type: 'percent', baseRate: 5 },
+  { name: 'Skinny Volume (Eyelash)', category: 'lash', commission_type: 'percent', baseRate: 5 },
+  { name: 'Russian Volume (Eyelash)', category: 'lash', commission_type: 'percent', baseRate: 5 },
+  { name: 'Anime Volume (Eyelash)', category: 'lash', commission_type: 'percent', baseRate: 5 },
+  { name: 'Lash Lift', category: 'lash', commission_type: 'percent', baseRate: 5 },
+  { name: 'Brow Lamination', category: 'brow', commission_type: 'percent', baseRate: 5 },
+  { name: 'Brow Bomber', category: 'brow', commission_type: 'percent', baseRate: 5 },
+  { name: 'Sulam Alis', category: 'brow', commission_type: 'fixed_amount', baseRate: 0 },
+  { name: 'Korean Vit C Glow', category: 'facial', commission_type: 'percent', baseRate: 5 },
+  { name: 'Korean BB Glow', category: 'facial', commission_type: 'percent', baseRate: 5 },
+  { name: 'Nail Art', category: 'nail', commission_type: 'percent', baseRate: 10 },
+  { name: 'Nail Polish (Polos)', category: 'nail', commission_type: 'percent', baseRate: 10 },
+  { name: 'Nail Extension', category: 'nail', commission_type: 'percent', baseRate: 10 },
+  { name: 'Manicure', category: 'nail', commission_type: 'percent', baseRate: 10 },
+  { name: 'Pedicure', category: 'nail', commission_type: 'percent', baseRate: 10 },
+  { name: 'Menipedi', category: 'nail', commission_type: 'percent', baseRate: 10 },
 ];
 
 const JOB_TITLES = [
@@ -66,16 +91,39 @@ const ROLES = [
   { value: 'employee', label: 'Karyawan' },
 ];
 
+// =====================================================
+// Commission calculator
+// =====================================================
+
 function isOvertime(timeStr) {
   if (!timeStr) return false;
   const h = parseInt(timeStr.split(':')[0]);
   return h >= 18;
 }
 
-function getCommissionRate(serviceName, timeStr) {
-  const svc = SERVICES.find(s => s.name === serviceName);
-  if (!svc) return 0;
-  return svc.baseCommission + (isOvertime(timeStr) ? 5 : 0);
+function getServiceDef(serviceName) {
+  return SERVICES.find(s => s.name === serviceName);
+}
+
+// Calculate commission for an item
+// For percent: returns { rate, amount }
+// For fixed_amount: caller passes fixedAmount; we just adjust for overtime
+function calcCommission({ serviceName, price, fixedAmount, isOT, branchId }) {
+  const svc = getServiceDef(serviceName);
+  if (!svc) return { rate: 0, amount: 0, type: 'percent' };
+
+  if (svc.commission_type === 'percent') {
+    const rate = svc.baseRate + (isOT ? 5 : 0);
+    const amount = Math.round((Number(price) || 0) * rate / 100);
+    return { rate, amount, type: 'percent' };
+  }
+
+  // Fixed amount (sulam alis)
+  let amount = Number(fixedAmount) || 0;
+  if (isOT && branchId !== 'bdg') {
+    amount += 5000;
+  }
+  return { rate: 0, amount, type: 'fixed_amount' };
 }
 
 function getRoleLabel(role) {
@@ -83,7 +131,9 @@ function getRoleLabel(role) {
   return r ? r.label : role;
 }
 
-// ----- Toast notifications -----
+// =====================================================
+// Toast
+// =====================================================
 const toastListeners = new Set();
 function toast(message, type = 'default') {
   const t = { id: Math.random().toString(36), message, type };
@@ -105,7 +155,9 @@ function useToasts() {
   return items;
 }
 
-// ----- Auth helpers -----
+// =====================================================
+// Auth
+// =====================================================
 async function loginWithEmail(email, password) {
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
   if (error) throw error;
@@ -136,8 +188,9 @@ async function getMyProfile() {
   return { ...profile, email: user.email };
 }
 
-// ===== Branch helpers =====
-
+// =====================================================
+// Branches
+// =====================================================
 async function listBranches() {
   const { data, error } = await sb
     .from('branches')
@@ -147,7 +200,6 @@ async function listBranches() {
   return data || [];
 }
 
-// Helper: tentukan role-based access
 function canAccessAllBranches(profile) {
   return profile?.role === 'super_admin';
 }
@@ -158,19 +210,16 @@ function canManageBranch(profile, branchId) {
   return false;
 }
 
-// ===== Employee CRUD (now branch-aware) =====
-
-async function listEmployees(branchId = null) {
+// =====================================================
+// Employees
+// =====================================================
+async function listEmployees(branchId = null, activeOnly = true) {
   let query = sb
     .from('employees')
     .select('*, branch:branches(id, name, city)')
-    .order('created_at', { ascending: true });
-
-  // If branchId specified, filter (super admin doing manual filter)
-  if (branchId) {
-    query = query.eq('branch_id', branchId);
-  }
-
+    .order('full_name', { ascending: true });
+  if (branchId) query = query.eq('branch_id', branchId);
+  if (activeOnly) query = query.eq('is_active', true);
   const { data, error } = await query;
   if (error) throw error;
   return data || [];
@@ -178,11 +227,7 @@ async function listEmployees(branchId = null) {
 
 async function updateEmployee(id, patch) {
   const { data, error } = await sb
-    .from('employees')
-    .update(patch)
-    .eq('id', id)
-    .select()
-    .single();
+    .from('employees').update(patch).eq('id', id).select().single();
   if (error) throw error;
   return data;
 }
@@ -195,12 +240,182 @@ async function reactivateEmployee(id) {
   return updateEmployee(id, { is_active: true });
 }
 
-// Expose to window
+// =====================================================
+// Clients
+// =====================================================
+async function findClientByPhone(branchId, phone) {
+  if (!phone || !phone.trim()) return null;
+  const { data, error } = await sb
+    .from('clients')
+    .select('*')
+    .eq('branch_id', branchId)
+    .eq('phone', phone.trim())
+    .maybeSingle();
+  if (error) {
+    console.error('Find client error:', error);
+    return null;
+  }
+  return data;
+}
+
+async function upsertClient(branchId, fullName, phone) {
+  const { data, error } = await sb.rpc('upsert_client', {
+    p_branch_id: branchId,
+    p_full_name: fullName,
+    p_phone: phone || null,
+  });
+  if (error) throw error;
+  return data;
+}
+
+// =====================================================
+// Transactions
+// =====================================================
+
+// Create transaction with multiple items (multi-treatment per invoice)
+async function createTransaction({
+  branchId,
+  clientName,
+  clientPhone,
+  date,
+  startTime,
+  isHomeService,
+  homeServiceFee,
+  notes,
+  items,           // [{ employee_id, service_name, price, commission_amount, commission_type, commission_rate, notes }]
+  createdBy,
+}) {
+  const isOT = isOvertime(startTime);
+  const totalAmount = items.reduce((sum, it) => sum + (Number(it.price) || 0), 0);
+  const totalCommission = items.reduce((sum, it) => sum + (Number(it.commission_amount) || 0), 0);
+
+  // 1. Upsert client (if phone provided OR name provided)
+  let clientId = null;
+  if (clientName && clientName.trim()) {
+    try {
+      clientId = await upsertClient(branchId, clientName.trim(), clientPhone);
+    } catch (err) {
+      console.warn('Client upsert failed, continuing without client_id:', err);
+    }
+  }
+
+  // 2. Insert transaction header
+  const { data: trx, error: trxErr } = await sb
+    .from('transactions')
+    .insert({
+      branch_id: branchId,
+      client_id: clientId,
+      client_name_snapshot: clientName?.trim() || null,
+      client_phone_snapshot: clientPhone?.trim() || null,
+      date,
+      start_time: startTime,
+      is_overtime: isOT,
+      is_home_service: !!isHomeService,
+      home_service_fee: Number(homeServiceFee) || 0,
+      total_amount: totalAmount,
+      total_commission: totalCommission + (isHomeService ? (Number(homeServiceFee) || 0) : 0),
+      notes: notes || null,
+      created_by: createdBy,
+    })
+    .select()
+    .single();
+
+  if (trxErr) throw trxErr;
+
+  // 3. Insert items
+  const itemRows = items.map(it => {
+    const svc = getServiceDef(it.service_name);
+    return {
+      transaction_id: trx.id,
+      branch_id: branchId,
+      employee_id: it.employee_id,
+      service_name: it.service_name,
+      service_category: svc?.category || 'other',
+      price: Number(it.price) || 0,
+      commission_type: it.commission_type,
+      commission_rate: Number(it.commission_rate) || 0,
+      commission_amount: Number(it.commission_amount) || 0,
+      notes: it.notes || null,
+    };
+  });
+
+  const { error: itemErr } = await sb
+    .from('transaction_items')
+    .insert(itemRows);
+
+  if (itemErr) {
+    // Rollback: delete the transaction header
+    await sb.from('transactions').delete().eq('id', trx.id);
+    throw itemErr;
+  }
+
+  return trx;
+}
+
+async function listRecentTransactions(branchId = null, limit = 20) {
+  let query = sb
+    .from('transactions')
+    .select('*, items:transaction_items(*, employee:employees(full_name)), branch:branches(name)')
+    .order('date', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (branchId) query = query.eq('branch_id', branchId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+async function getTodayStats(branchId = null) {
+  const today = todayStr();
+  let query = sb
+    .from('transactions')
+    .select('total_amount, total_commission')
+    .eq('date', today);
+  if (branchId) query = query.eq('branch_id', branchId);
+  const { data, error } = await query;
+  if (error) {
+    console.error('Today stats error:', error);
+    return { count: 0, total: 0, commission: 0 };
+  }
+  return {
+    count: (data || []).length,
+    total: (data || []).reduce((s, r) => s + Number(r.total_amount || 0), 0),
+    commission: (data || []).reduce((s, r) => s + Number(r.total_commission || 0), 0),
+  };
+}
+
+async function getMonthStats(branchId = null) {
+  const ym = currentMonth();
+  const firstDay = ym + '-01';
+  const nextMonth = new Date(ym + '-01');
+  nextMonth.setMonth(nextMonth.getMonth() + 1);
+  const nextFirst = nextMonth.toISOString().split('T')[0];
+
+  let query = sb
+    .from('transactions')
+    .select('total_amount')
+    .gte('date', firstDay)
+    .lt('date', nextFirst);
+  if (branchId) query = query.eq('branch_id', branchId);
+  const { data, error } = await query;
+  if (error) {
+    console.error('Month stats error:', error);
+    return { total: 0 };
+  }
+  return {
+    total: (data || []).reduce((s, r) => s + Number(r.total_amount || 0), 0),
+  };
+}
+
+// Expose
 Object.assign(window, {
   sb, SERVICES, JOB_TITLES, ROLES,
-  fmtRp, fmtNumber, fmtDate, fmtTime, todayStr, currentMonth,
-  isOvertime, getCommissionRate, getRoleLabel, toast, useToasts,
+  fmtRp, fmtNumber, fmtDate, fmtTime, todayStr, nowTimeStr, currentMonth,
+  isOvertime, getServiceDef, calcCommission, getRoleLabel,
+  toast, useToasts,
   loginWithEmail, logout, getCurrentSession, getMyProfile,
   listBranches, canAccessAllBranches, canManageBranch,
   listEmployees, updateEmployee, deactivateEmployee, reactivateEmployee,
+  findClientByPhone, upsertClient,
+  createTransaction, listRecentTransactions, getTodayStats, getMonthStats,
 });
