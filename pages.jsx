@@ -1417,6 +1417,435 @@ function ReportsPage({ profile, currentBranchId, branches }) {
   );
 }
 
+// =====================================================
+// ADJUST ATTENDANCE MODAL — input absensi & penyesuaian per karyawan
+// =====================================================
+function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, currentAdjustment, branchId, adjustedBy, leaveBalance }) {
+  const [form, setForm] = useStateP({
+    standard_work_days: 26,
+    annual_leave_days: 0,
+    sick_leave_certified_days: 0,
+    unpaid_leave_days: 0,
+    bonus: 0,
+    extra_deduction: 0,
+    notes: '',
+  });
+  const [saving, setSaving] = useStateP(false);
+
+  useEffectP(() => {
+    if (open && currentAdjustment) {
+      setForm({
+        standard_work_days: currentAdjustment.standard_work_days || 26,
+        annual_leave_days: currentAdjustment.annual_leave_days || 0,
+        sick_leave_certified_days: currentAdjustment.sick_leave_certified_days || 0,
+        unpaid_leave_days: currentAdjustment.unpaid_leave_days || 0,
+        bonus: currentAdjustment.bonus || 0,
+        extra_deduction: currentAdjustment.extra_deduction || 0,
+        notes: currentAdjustment.notes || '',
+      });
+    } else if (open) {
+      setForm({
+        standard_work_days: 26,
+        annual_leave_days: 0,
+        sick_leave_certified_days: 0,
+        unpaid_leave_days: 0,
+        bonus: 0,
+        extra_deduction: 0,
+        notes: '',
+      });
+    }
+  }, [open, currentAdjustment]);
+
+  function update(patch) {
+    setForm(prev => ({ ...prev, ...patch }));
+  }
+
+  // Live preview
+  const preview = useMemoP(() => {
+    if (!employee) return null;
+    const baseSalary = Number(employee.base_salary) || 0;
+    const unpaid = Number(form.unpaid_leave_days) || 0;
+    const standardDays = Number(form.standard_work_days) || 26;
+    const actualSalary = unpaid > 0
+      ? Math.round(baseSalary * (1 - unpaid / standardDays))
+      : baseSalary;
+    const deduction = baseSalary - actualSalary;
+    return { actualSalary, deduction };
+  }, [form, employee]);
+
+  // Annual leave check
+  const annualLeaveUsedOther = (leaveBalance?.used_days || 0) - (currentAdjustment?.annual_leave_days || 0);
+  const annualLeaveRemaining = (leaveBalance?.total_quota || 7) - annualLeaveUsedOther - (Number(form.annual_leave_days) || 0);
+  const annualLeaveOverQuota = annualLeaveRemaining < 0;
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!employee) return;
+
+    const annualLeave = Number(form.annual_leave_days) || 0;
+    const sickCertified = Number(form.sick_leave_certified_days) || 0;
+    const unpaid = Number(form.unpaid_leave_days) || 0;
+
+    if (annualLeave < 0 || sickCertified < 0 || unpaid < 0) {
+      toast('Hari absen tidak boleh negatif', 'error');
+      return;
+    }
+    if (annualLeaveOverQuota) {
+      if (!window.confirm(`Cuti tahunan melebihi jatah ${leaveBalance?.total_quota || 7} hari/tahun. Sisa hanya ${Math.max(0, (leaveBalance?.total_quota || 7) - annualLeaveUsedOther)} hari. Lanjut tetap simpan?`)) {
+        return;
+      }
+    }
+
+    setSaving(true);
+    try {
+      await upsertPayrollAdjustment({
+        employee_id: employee.id,
+        branch_id: branchId,
+        period_start: period.period_start,
+        period_end: period.period_end,
+        standard_work_days: Number(form.standard_work_days) || 26,
+        annual_leave_days: annualLeave,
+        sick_leave_certified_days: sickCertified,
+        unpaid_leave_days: unpaid,
+        bonus: Number(form.bonus) || 0,
+        extra_deduction: Number(form.extra_deduction) || 0,
+        notes: form.notes || null,
+        adjusted_by: adjustedBy,
+      });
+      toast('Absensi tersimpan ✓', 'success');
+      onSuccess();
+      onClose();
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open || !employee) return null;
+
+  return (
+    <div style={{
+      position:'fixed',inset:0,background:'rgba(36,26,44,0.6)',
+      display:'flex',alignItems:'center',justifyContent:'center',
+      zIndex:1000,padding:20,backdropFilter:'blur(4px)',
+    }} onClick={onClose}>
+      <div style={{
+        background:'var(--paper)',borderRadius:20,padding:32,
+        width:'100%',maxWidth:640,maxHeight:'90vh',overflowY:'auto',
+        boxShadow:'var(--shadow-lg)',
+      }} onClick={e => e.stopPropagation()}>
+
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:20}}>
+          <div>
+            <div className="eyebrow" style={{marginBottom:6}}>Absensi & Penyesuaian</div>
+            <h2 style={{fontFamily:'Cormorant Garamond, serif',fontSize:26,fontWeight:400,color:'var(--plum-deep)'}}>
+              {employee.full_name}
+            </h2>
+            <p style={{fontSize:12,color:'var(--muted)',marginTop:4}}>
+              {employee.job_title} · Gaji pokok {fmtRp(employee.base_salary)}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="btn btn-ghost btn-sm">✕</button>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          <div style={{padding:'12px 14px',background:'var(--mauve-tint)',borderRadius:8,fontSize:12,color:'var(--plum)',marginBottom:18,lineHeight:1.6}}>
+            <strong>Aturan JBB:</strong><br/>
+            • Cuti tahunan, sakit + surat dokter → <strong>tidak potong gaji</strong><br/>
+            • Sakit tanpa surat, izin pribadi, mangkir → <strong>potong gaji</strong> (per hari)<br/>
+            • Standar hari kerja: 26 hari/bulan
+          </div>
+
+          <Field label="Standar Hari Kerja" hint="Default 26 hari (libur 1x/minggu)">
+            <input type="number" className="form-input" value={form.standard_work_days}
+              onChange={e => update({ standard_work_days: e.target.value })}
+              min="20" max="31"/>
+          </Field>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:14,marginBottom:14}}>
+            <Field
+              label="Cuti Tahunan (hari)"
+              hint={leaveBalance ? `Sisa: ${Math.max(0, annualLeaveRemaining)}/${leaveBalance.total_quota || 7}` : 'Jatah 7 hari/tahun'}
+              error={annualLeaveOverQuota ? '⚠️ Melebihi jatah!' : null}
+            >
+              <input type="number" className="form-input" value={form.annual_leave_days}
+                onChange={e => update({ annual_leave_days: e.target.value })}
+                min="0" max="31"
+                style={annualLeaveOverQuota ? {borderColor:'var(--red)',background:'#fdf0f0'} : {}}/>
+            </Field>
+            <Field label="Sakit + Surat Dokter" hint="Tidak potong gaji">
+              <input type="number" className="form-input" value={form.sick_leave_certified_days}
+                onChange={e => update({ sick_leave_certified_days: e.target.value })}
+                min="0" max="31"/>
+            </Field>
+            <Field label="Izin / Sakit tanpa Surat / Mangkir" hint="POTONG GAJI" error={null}>
+              <input type="number" className="form-input" value={form.unpaid_leave_days}
+                onChange={e => update({ unpaid_leave_days: e.target.value })}
+                min="0" max="31"
+                style={Number(form.unpaid_leave_days) > 0 ? {borderColor:'var(--amber)',background:'#fdf6e3'} : {}}/>
+            </Field>
+          </div>
+
+          {/* PREVIEW */}
+          {preview && Number(form.unpaid_leave_days) > 0 && (
+            <div style={{
+              padding:'12px 14px',background:'#fdf6e3',borderRadius:8,
+              fontSize:13,color:'var(--plum)',marginBottom:18,lineHeight:1.7,
+              border:'1px solid var(--amber)'
+            }}>
+              <strong>⚠️ Potongan gaji aktif:</strong><br/>
+              Gaji pokok {fmtRp(employee.base_salary)} → <strong style={{color:'var(--red)'}}>{fmtRp(preview.actualSalary)}</strong><br/>
+              <span style={{fontSize:11,color:'var(--muted)'}}>
+                Formula: {fmtRp(employee.base_salary)} × (1 − {form.unpaid_leave_days}/{form.standard_work_days}) = potongan {fmtRp(preview.deduction)}
+              </span>
+            </div>
+          )}
+
+          <div className="form-row">
+            <Field label="Bonus (Rp)" hint="THR, insentif, dll. Opsional">
+              <input type="number" className="form-input" value={form.bonus}
+                onChange={e => update({ bonus: e.target.value })}
+                min="0" step="10000" placeholder="0"/>
+            </Field>
+            <Field label="Potongan Tambahan (Rp)" hint="Denda telat, kasbon, dll. Opsional">
+              <input type="number" className="form-input" value={form.extra_deduction}
+                onChange={e => update({ extra_deduction: e.target.value })}
+                min="0" step="10000" placeholder="0"/>
+            </Field>
+          </div>
+
+          <Field label="Catatan" hint="Opsional">
+            <textarea className="form-textarea" rows="2" value={form.notes}
+              onChange={e => update({ notes: e.target.value })}
+              placeholder="Misal: cuti H-1 untuk acara keluarga, sakit demam dapat surat dokter..."/>
+          </Field>
+
+          <div style={{display:'flex',gap:10,justifyContent:'flex-end',marginTop:20,flexWrap:'wrap'}}>
+            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>Batal</button>
+            <button type="submit" className="btn btn-primary" disabled={saving}>
+              {saving ? <span className="loader" style={{borderTopColor:'#fff',borderColor:'rgba(255,255,255,0.3)'}}/> : 'Simpan Absensi'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================
+// PAYROLL PAGE — Tahap C2
+// =====================================================
+function PayrollPage({ profile, currentBranchId, branches }) {
+  const isSuper = profile.role === 'super_admin';
+  const effectiveBranchId = isSuper ? currentBranchId : profile.branch_id;
+
+  // Period selection
+  const periodOptions = useMemoP(() => listRecentPayrollPeriods(12), []);
+  const [selectedPeriodId, setSelectedPeriodId] = useStateP(periodOptions[0]?.id);
+  const selectedPeriod = useMemoP(
+    () => periodOptions.find(p => p.id === selectedPeriodId) || periodOptions[0],
+    [selectedPeriodId, periodOptions]
+  );
+
+  const [employees, setEmployees] = useStateP([]);
+  const [commissions, setCommissions] = useStateP({});
+  const [adjustments, setAdjustments] = useStateP([]);
+  const [leaveBalances, setLeaveBalances] = useStateP([]);
+  const [loading, setLoading] = useStateP(true);
+  const [adjustTarget, setAdjustTarget] = useStateP(null);
+
+  async function loadData() {
+    if (!selectedPeriod) return;
+    setLoading(true);
+    try {
+      const branchFilter = effectiveBranchId;
+      const [emps, comms, adjs, balances] = await Promise.all([
+        listPayrollEligibleEmployees(branchFilter),
+        getPeriodCommissionByEmployee(selectedPeriod.period_start, selectedPeriod.period_end, branchFilter),
+        listPayrollAdjustments(selectedPeriod.period_start, branchFilter),
+        getAnnualLeaveBalances(selectedPeriod.year, branchFilter),
+      ]);
+      setEmployees(emps);
+      setCommissions(comms);
+      setAdjustments(adjs);
+      setLeaveBalances(balances);
+    } catch (err) {
+      toast('Gagal memuat: ' + err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffectP(() => { loadData(); }, [selectedPeriodId, effectiveBranchId]);
+
+  // Build payroll rows
+  const rows = useMemoP(() => {
+    return employees.map(emp => {
+      const commData = commissions[emp.id];
+      const adjData = adjustments.find(a => a.employee_id === emp.id);
+      const leaveData = leaveBalances.find(b => b.employee_id === emp.id);
+      const payroll = calculatePayroll({ employee: emp, commissions: commData, adjustment: adjData });
+      return { employee: emp, payroll, adjustment: adjData, leaveBalance: leaveData };
+    });
+  }, [employees, commissions, adjustments, leaveBalances]);
+
+  // Totals
+  const totals = useMemoP(() => {
+    return rows.reduce((acc, r) => ({
+      base: acc.base + r.payroll.base_salary_actual,
+      meal: acc.meal + r.payroll.meal_allowance,
+      commission: acc.commission + r.payroll.treatment_commission + r.payroll.hs_commission,
+      bonus: acc.bonus + r.payroll.bonus,
+      deduction: acc.deduction + r.payroll.extra_deduction,
+      total: acc.total + r.payroll.total,
+    }), { base: 0, meal: 0, commission: 0, bonus: 0, deduction: 0, total: 0 });
+  }, [rows]);
+
+  const scopeLabel = effectiveBranchId
+    ? branches.find(b => b.id === effectiveBranchId)?.name
+    : (isSuper ? 'Semua Cabang' : '—');
+
+  function openAdjust(row) {
+    setAdjustTarget({
+      employee: row.employee,
+      adjustment: row.adjustment,
+      leaveBalance: row.leaveBalance,
+    });
+  }
+
+  return (
+    <div className="page">
+      <PageHeader title="Rekap Gaji" sub={scopeLabel}/>
+
+      <Card title="Pilih Periode" sub="Periode payroll 26 → 25 bulan berikutnya">
+        <div className="form-row">
+          <Field label="Bulan Gajian">
+            <select className="form-select" value={selectedPeriodId}
+              onChange={e => setSelectedPeriodId(e.target.value)}>
+              {periodOptions.map(p => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Periode">
+            <input type="text" className="form-input" disabled
+              value={selectedPeriod ? `${fmtDate(selectedPeriod.period_start)} – ${fmtDate(selectedPeriod.period_end)}` : ''}
+              style={{background:'var(--mauve-tint)',color:'var(--plum)',fontWeight:500}}/>
+          </Field>
+        </div>
+      </Card>
+
+      {/* SUMMARY */}
+      <div className="metrics-grid" style={{marginBottom:20}}>
+        <Metric label="Total Karyawan" value={loading ? '...' : rows.length} sub="dalam payroll"/>
+        <Metric label="Total Gaji Pokok" value={loading ? '...' : fmtRp(totals.base + totals.meal)} sub="setelah pemotongan"/>
+        <Metric label="Total Komisi" value={loading ? '...' : fmtRp(totals.commission)} sub="treatment + home service"/>
+        <Metric label="Total Payroll" value={loading ? '...' : fmtRp(totals.total)} sub={scopeLabel}/>
+      </div>
+
+      <Card title="Detail Per Karyawan" sub="Owner & Manager tidak masuk rekap (profit sharing)">
+        {loading ? <Loader text="Menghitung..."/> :
+         !rows.length ? <Empty title="Belum ada karyawan" sub="Tambah karyawan dengan jabatan selain Owner/Manager."/> : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Karyawan</th>
+                  {isSuper && !effectiveBranchId && <th>Cabang</th>}
+                  <th className="table-numeric">Gapok</th>
+                  <th className="table-numeric">U. Makan</th>
+                  <th className="table-numeric">Komisi</th>
+                  <th>Absensi</th>
+                  <th className="table-numeric">Bonus</th>
+                  <th className="table-numeric">Potongan</th>
+                  <th className="table-numeric" style={{minWidth:110}}>TOTAL</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(({ employee: emp, payroll: p, adjustment: adj, leaveBalance: lb }) => (
+                  <tr key={emp.id}>
+                    <td>
+                      <div style={{fontWeight:500}}>{emp.full_name}</div>
+                      <span className="badge badge-mauve" style={{fontSize:10,marginTop:2}}>{emp.job_title}</span>
+                    </td>
+                    {isSuper && !effectiveBranchId && (
+                      <td><span className="badge badge-mauve" style={{fontSize:10}}>{emp.branch?.name}</span></td>
+                    )}
+                    <td className="table-numeric">
+                      {p.salary_deduction > 0 ? (
+                        <div>
+                          <div style={{fontWeight:500}}>{fmtRp(p.base_salary_actual)}</div>
+                          <div style={{fontSize:10,color:'var(--red)',fontFamily:'JetBrains Mono, monospace'}}>
+                            −{fmtRp(p.salary_deduction)}
+                          </div>
+                        </div>
+                      ) : (
+                        fmtRpOrDash(p.base_salary_actual)
+                      )}
+                    </td>
+                    <td className="table-numeric">{fmtRpOrDash(p.meal_allowance)}</td>
+                    <td className="table-numeric">
+                      <div style={{fontWeight:500,color:'var(--mauve)'}}>{fmtRp(p.treatment_commission + p.hs_commission)}</div>
+                      {p.hs_commission > 0 && (
+                        <div style={{fontSize:10,color:'var(--muted)'}}>HS: {fmtRp(p.hs_commission)}</div>
+                      )}
+                    </td>
+                    <td style={{fontSize:11}}>
+                      {p.annual_leave_days > 0 && <div style={{color:'var(--green)'}}>Cuti: {p.annual_leave_days}h</div>}
+                      {p.sick_leave_certified_days > 0 && <div style={{color:'var(--mauve)'}}>Sakit+S: {p.sick_leave_certified_days}h</div>}
+                      {p.unpaid_leave_days > 0 && <div style={{color:'var(--red)'}}>Unpaid: {p.unpaid_leave_days}h</div>}
+                      {!p.annual_leave_days && !p.sick_leave_certified_days && !p.unpaid_leave_days && (
+                        <span style={{color:'var(--muted)'}}>Full</span>
+                      )}
+                    </td>
+                    <td className="table-numeric">{p.bonus > 0 ? <span style={{color:'var(--green)'}}>+{fmtRp(p.bonus)}</span> : '—'}</td>
+                    <td className="table-numeric">{p.extra_deduction > 0 ? <span style={{color:'var(--red)'}}>−{fmtRp(p.extra_deduction)}</span> : '—'}</td>
+                    <td className="table-numeric" style={{fontWeight:600,fontSize:14,color:'var(--plum-deep)'}}>
+                      {fmtRp(p.total)}
+                    </td>
+                    <td>
+                      <button className="btn btn-ghost btn-sm" onClick={() => openAdjust({ employee: emp, payroll: p, adjustment: adj, leaveBalance: lb })}>
+                        {adj ? 'Edit' : 'Input'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+
+                {/* TOTAL ROW */}
+                <tr style={{background:'var(--mauve-tint)',fontWeight:600}}>
+                  <td colSpan={isSuper && !effectiveBranchId ? 2 : 1} style={{fontWeight:600}}>TOTAL</td>
+                  <td className="table-numeric">{fmtRp(totals.base)}</td>
+                  <td className="table-numeric">{fmtRp(totals.meal)}</td>
+                  <td className="table-numeric" style={{color:'var(--mauve)'}}>{fmtRp(totals.commission)}</td>
+                  <td></td>
+                  <td className="table-numeric" style={{color:'var(--green)'}}>{totals.bonus > 0 ? `+${fmtRp(totals.bonus)}` : '—'}</td>
+                  <td className="table-numeric" style={{color:'var(--red)'}}>{totals.deduction > 0 ? `−${fmtRp(totals.deduction)}` : '—'}</td>
+                  <td className="table-numeric" style={{fontSize:15,color:'var(--plum-deep)'}}>{fmtRp(totals.total)}</td>
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <AdjustAttendanceModal
+        open={!!adjustTarget}
+        onClose={() => setAdjustTarget(null)}
+        onSuccess={loadData}
+        employee={adjustTarget?.employee}
+        period={selectedPeriod}
+        currentAdjustment={adjustTarget?.adjustment}
+        leaveBalance={adjustTarget?.leaveBalance}
+        branchId={adjustTarget?.employee?.branch_id}
+        adjustedBy={profile.id}
+      />
+    </div>
+  );
+}
+
 // ----- Employee dashboard -----
 function EmployeeDashboard({ profile }) {
   return (
@@ -1436,5 +1865,5 @@ Object.assign(window, {
   NewTransactionPage, TransactionsPage,
   EmployeesPage, EmployeeDashboard,
   AddEmployeeModal, DeleteConfirmModal,
-  ReportsPage
+  ReportsPage, PayrollPage, AdjustAttendanceModal
 });

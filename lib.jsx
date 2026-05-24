@@ -660,6 +660,257 @@ function aggregateReport(transactions, employeeFilter = null) {
   };
 }
 
+// =====================================================
+// PAYROLL — Period Helpers (matches DB get_payroll_period)
+// =====================================================
+
+// Get payroll period for a given date.
+// Period rule: tanggal 26 bulan X → tanggal 25 bulan X+1
+function getPayrollPeriod(date = new Date()) {
+  const d = new Date(date);
+  const day = d.getDate();
+  let startYear, startMonth, endYear, endMonth;
+
+  if (day >= 26) {
+    // Periode mulai dari tanggal 26 bulan ini
+    startYear = d.getFullYear();
+    startMonth = d.getMonth();
+    endYear = (startMonth === 11) ? startYear + 1 : startYear;
+    endMonth = (startMonth + 1) % 12;
+  } else {
+    // Periode bulan sebelumnya (26 bulan lalu → 25 bulan ini)
+    endYear = d.getFullYear();
+    endMonth = d.getMonth();
+    startYear = (endMonth === 0) ? endYear - 1 : endYear;
+    startMonth = (endMonth === 0) ? 11 : endMonth - 1;
+  }
+
+  const periodStart = new Date(startYear, startMonth, 26);
+  const periodEnd = new Date(endYear, endMonth, 25);
+  return {
+    period_start: dateToYMD(periodStart),
+    period_end: dateToYMD(periodEnd),
+    period_start_date: periodStart,
+    period_end_date: periodEnd,
+  };
+}
+
+// Get payroll period by year & month-of-end (the month containing the 25th)
+function getPayrollPeriodForMonth(year, month) {
+  // month is 1-12 (Jan=1)
+  const periodEnd = new Date(year, month - 1, 25);
+  const startMonth = month === 1 ? 12 : month - 1;
+  const startYear = month === 1 ? year - 1 : year;
+  const periodStart = new Date(startYear, startMonth - 1, 26);
+  return {
+    period_start: dateToYMD(periodStart),
+    period_end: dateToYMD(periodEnd),
+    period_start_date: periodStart,
+    period_end_date: periodEnd,
+  };
+}
+
+// Generate list of recent payroll periods (e.g. last 12 months) for dropdown
+function listRecentPayrollPeriods(count = 12) {
+  const list = [];
+  const now = new Date();
+  // Start from current period
+  const currentPeriod = getPayrollPeriod(now);
+  let year = currentPeriod.period_end_date.getFullYear();
+  let month = currentPeriod.period_end_date.getMonth() + 1; // 1-12
+
+  for (let i = 0; i < count; i++) {
+    const p = getPayrollPeriodForMonth(year, month);
+    const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+    list.push({
+      id: `${year}-${String(month).padStart(2,'0')}`,
+      year,
+      month,
+      label: `${monthNames[month-1]} ${year}`,
+      range_label: `26 ${monthNames[startMonthForPeriod(month)-1]} – 25 ${monthNames[month-1]} ${year}`,
+      ...p,
+    });
+    // Previous month
+    month -= 1;
+    if (month < 1) { month = 12; year -= 1; }
+  }
+  return list;
+}
+
+function startMonthForPeriod(endMonth) {
+  return endMonth === 1 ? 12 : endMonth - 1;
+}
+
+// =====================================================
+// PAYROLL — Data Functions
+// =====================================================
+
+// List employees eligible for payroll (excludes Owner/Manager who get profit sharing)
+async function listPayrollEligibleEmployees(branchId = null) {
+  let query = sb
+    .from('employees')
+    .select('*, branch:branches(id, name)')
+    .eq('is_active', true)
+    .not('job_title', 'in', '("Owner","Manager")')
+    .order('full_name', { ascending: true });
+
+  if (branchId) query = query.eq('branch_id', branchId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+// Get commission totals per employee in a period
+async function getPeriodCommissionByEmployee(periodStart, periodEnd, branchId = null) {
+  let query = sb
+    .from('transaction_items')
+    .select('employee_id, commission_amount, transactions!inner(date, is_home_service, home_service_fee, branch_id)')
+    .gte('transactions.date', periodStart)
+    .lte('transactions.date', periodEnd);
+
+  if (branchId) query = query.eq('transactions.branch_id', branchId);
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  // Aggregate by employee
+  const byEmployee = {};
+  for (const row of (data || [])) {
+    const empId = row.employee_id;
+    if (!byEmployee[empId]) {
+      byEmployee[empId] = {
+        employee_id: empId,
+        treatment_commission: 0,
+        items_count: 0,
+        transaction_ids: new Set(),
+      };
+    }
+    byEmployee[empId].treatment_commission += Number(row.commission_amount || 0);
+    byEmployee[empId].items_count += 1;
+    byEmployee[empId].transaction_ids.add(row.transactions?.id);
+  }
+
+  // Home service fees (counted at transaction level, but we need to attribute to employees who worked on it)
+  // For simplicity: HS fee → all items in that transaction share it equally
+  // We need a separate query for transactions with HS
+  let hsQuery = sb
+    .from('transactions')
+    .select('id, home_service_fee, items:transaction_items(employee_id)')
+    .gte('date', periodStart)
+    .lte('date', periodEnd)
+    .eq('is_home_service', true);
+
+  if (branchId) hsQuery = hsQuery.eq('branch_id', branchId);
+
+  const { data: hsData, error: hsErr } = await hsQuery;
+  if (!hsErr && hsData) {
+    for (const trx of hsData) {
+      const fee = Number(trx.home_service_fee || 0);
+      const empIds = [...new Set((trx.items || []).map(i => i.employee_id).filter(Boolean))];
+      if (empIds.length > 0 && fee > 0) {
+        const perEmp = fee / empIds.length;
+        for (const empId of empIds) {
+          if (!byEmployee[empId]) {
+            byEmployee[empId] = {
+              employee_id: empId,
+              treatment_commission: 0,
+              items_count: 0,
+              transaction_ids: new Set(),
+              hs_commission: 0,
+            };
+          }
+          byEmployee[empId].hs_commission = (byEmployee[empId].hs_commission || 0) + perEmp;
+        }
+      }
+    }
+  }
+
+  return byEmployee;
+}
+
+// Get payroll adjustments for a period (all employees)
+async function listPayrollAdjustments(periodStart, branchId = null) {
+  let query = sb
+    .from('payroll_adjustments')
+    .select('*')
+    .eq('period_start', periodStart);
+
+  if (branchId) query = query.eq('branch_id', branchId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+// Upsert payroll adjustment
+async function upsertPayrollAdjustment(payload) {
+  // payload: { employee_id, branch_id, period_start, period_end, standard_work_days,
+  //           annual_leave_days, sick_leave_certified_days, unpaid_leave_days,
+  //           bonus, extra_deduction, notes, adjusted_by }
+  const { data, error } = await sb
+    .from('payroll_adjustments')
+    .upsert(payload, { onConflict: 'employee_id,period_start' })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// Get annual leave balances for employees in a year
+async function getAnnualLeaveBalances(year, branchId = null) {
+  let query = sb
+    .from('annual_leave_balance')
+    .select('*')
+    .eq('year', year);
+
+  if (branchId) query = query.eq('branch_id', branchId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+// Calculate full payroll details for one employee
+// Pure function — no async, takes all needed data
+function calculatePayroll({ employee, commissions, adjustment, defaultStandardDays = 26 }) {
+  const baseSalary = Number(employee.base_salary) || 0;
+  const mealAllowance = Number(employee.meal_allowance) || 0;
+  const treatmentCommission = Number(commissions?.treatment_commission || 0);
+  const hsCommission = Number(commissions?.hs_commission || 0);
+
+  // Adjustments (or defaults if no adjustment row exists)
+  const standardDays = Number(adjustment?.standard_work_days) || defaultStandardDays;
+  const annualLeave = Number(adjustment?.annual_leave_days) || 0;
+  const sickCertified = Number(adjustment?.sick_leave_certified_days) || 0;
+  const unpaidLeave = Number(adjustment?.unpaid_leave_days) || 0;
+  const bonus = Number(adjustment?.bonus) || 0;
+  const extraDeduction = Number(adjustment?.extra_deduction) || 0;
+
+  // Calculate prorated base salary (only unpaid leave reduces it)
+  const baseSalaryActual = unpaidLeave > 0
+    ? Math.round(baseSalary * (1 - unpaidLeave / standardDays))
+    : baseSalary;
+
+  const salaryDeduction = baseSalary - baseSalaryActual;
+
+  // Total take-home
+  const total = baseSalaryActual + mealAllowance + treatmentCommission + hsCommission + bonus - extraDeduction;
+
+  return {
+    base_salary: baseSalary,
+    base_salary_actual: baseSalaryActual,
+    salary_deduction: salaryDeduction,
+    meal_allowance: mealAllowance,
+    treatment_commission: treatmentCommission,
+    hs_commission: hsCommission,
+    annual_leave_days: annualLeave,
+    sick_leave_certified_days: sickCertified,
+    unpaid_leave_days: unpaidLeave,
+    standard_work_days: standardDays,
+    bonus,
+    extra_deduction: extraDeduction,
+    total,
+  };
+}
+
 // Expose
 Object.assign(window, {
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
@@ -674,4 +925,8 @@ Object.assign(window, {
   findClientByPhone, upsertClient,
   createTransaction, listRecentTransactions, getTodayStats, getMonthStats,
   getReportTransactions, aggregateReport,
+  getPayrollPeriod, getPayrollPeriodForMonth, listRecentPayrollPeriods,
+  listPayrollEligibleEmployees, getPeriodCommissionByEmployee,
+  listPayrollAdjustments, upsertPayrollAdjustment,
+  getAnnualLeaveBalances, calculatePayroll,
 });
