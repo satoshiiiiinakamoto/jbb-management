@@ -97,6 +97,7 @@ function App() {
     { id: 'payroll', label: 'Gaji' },
     { id: 'employees', label: 'Karyawan' },
     { id: 'branches', label: 'Cabang' },
+    { id: 'audit', label: 'Audit Log' },
   ];
   const branchAdminTabs = [
     { id: 'dashboard', label: 'Dashboard' },
@@ -135,6 +136,13 @@ function App() {
         break;
       case 'employees':
         pageContent = <EmployeesPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
+        break;
+      case 'audit':
+        if (profile.role === 'super_admin') {
+          pageContent = <AuditLogPage profile={profile} branches={branches}/>;
+        } else {
+          pageContent = <AdminDashboard profile={profile} setPage={setPage} currentBranchId={currentBranchId} branches={branches}/>;
+        }
         break;
       case 'branches':
         if (profile.role === 'super_admin') {

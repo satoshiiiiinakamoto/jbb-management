@@ -1846,6 +1846,298 @@ function PayrollPage({ profile, currentBranchId, branches }) {
   );
 }
 
+// =====================================================
+// AUDIT LOG PAGE — Tahap C2.5 (super_admin only)
+// =====================================================
+function AuditLogPage({ profile, branches }) {
+  const [logs, setLogs] = useStateP([]);
+  const [summary, setSummary] = useStateP(null);
+  const [loading, setLoading] = useStateP(true);
+  const [expandedId, setExpandedId] = useStateP(null);
+
+  // Filters
+  const [filterTable, setFilterTable] = useStateP('');
+  const [filterAction, setFilterAction] = useStateP('');
+  const [filterBranch, setFilterBranch] = useStateP('');
+  const [filterDays, setFilterDays] = useStateP(7);
+
+  const TABLE_OPTIONS = [
+    { value: '', label: '— Semua —' },
+    { value: 'transactions', label: 'Transaksi' },
+    { value: 'transaction_items', label: 'Detail Treatment' },
+    { value: 'employees', label: 'Karyawan' },
+    { value: 'payroll_adjustments', label: 'Penyesuaian Gaji' },
+    { value: 'clients', label: 'Pelanggan' },
+  ];
+
+  async function loadData() {
+    setLoading(true);
+    try {
+      const dateFrom = new Date();
+      dateFrom.setDate(dateFrom.getDate() - Number(filterDays));
+      const dateFromIso = dateFrom.toISOString();
+
+      const [logsData, summaryData] = await Promise.all([
+        listAuditLog({
+          limit: 200,
+          tableName: filterTable || null,
+          action: filterAction || null,
+          branchId: filterBranch || null,
+          dateFrom: dateFromIso,
+        }),
+        getAuditSummary(Number(filterDays)),
+      ]);
+
+      setLogs(logsData);
+      setSummary(summaryData);
+    } catch (err) {
+      toast('Gagal memuat audit log: ' + err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffectP(() => { loadData(); }, [filterTable, filterAction, filterBranch, filterDays]);
+
+  function toggleExpand(id) {
+    setExpandedId(prev => prev === id ? null : id);
+  }
+
+  function fmtTimestamp(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts);
+    return d.toLocaleString('id-ID', {
+      day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    });
+  }
+
+  function describeLog(log) {
+    const action = getActionLabel(log.action);
+    const tableLabel = log.table_label || log.table_name;
+    const user = log.changed_by_name || '—';
+
+    if (log.action === 'INSERT') {
+      const name = log.new_data?.full_name || log.new_data?.service_name || log.new_data?.client_name_snapshot || log.new_data?.id?.slice(0, 8);
+      return `${user} menambah ${tableLabel.toLowerCase()} ${name ? '"' + name + '"' : ''}`;
+    }
+    if (log.action === 'DELETE') {
+      const name = log.old_data?.full_name || log.old_data?.service_name || log.old_data?.client_name_snapshot || log.old_data?.id?.slice(0, 8);
+      return `${user} menghapus ${tableLabel.toLowerCase()} ${name ? '"' + name + '"' : ''}`;
+    }
+    if (log.action === 'UPDATE') {
+      const fields = (log.changed_fields || []).map(getFieldLabel).join(', ');
+      const name = log.new_data?.full_name || log.new_data?.service_name || log.new_data?.client_name_snapshot || log.new_data?.id?.slice(0, 8);
+      return `${user} mengubah ${fields || 'data'} di ${tableLabel.toLowerCase()} ${name ? '"' + name + '"' : ''}`;
+    }
+    return '—';
+  }
+
+  return (
+    <div className="page">
+      <PageHeader title="Riwayat Perubahan" sub="Audit Log JBB Group"/>
+
+      <div style={{marginBottom:20,padding:'12px 16px',background:'var(--mauve-tint)',borderRadius:10,fontSize:13,color:'var(--plum)',lineHeight:1.6}}>
+        <strong>🔒 Audit Log Otomatis:</strong> setiap perubahan data (input transaksi, edit karyawan, hapus, dll) tercatat di sini dengan timestamp & siapa yang melakukan. Tidak bisa dihapus atau dimanipulasi.
+      </div>
+
+      {/* SUMMARY */}
+      {summary && (
+        <div className="metrics-grid" style={{marginBottom:20}}>
+          <Metric label="Total Perubahan" value={summary.total_changes} sub={`dalam ${filterDays} hari`}/>
+          <Metric label="Penambahan" value={summary.inserts} sub="INSERT"/>
+          <Metric label="Editing" value={summary.updates} sub="UPDATE"/>
+          <Metric label="Penghapusan" value={summary.deletes} sub="DELETE"/>
+        </div>
+      )}
+
+      {/* FILTERS */}
+      <Card title="Filter">
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:14}}>
+          {[7, 14, 30, 90].map(d => (
+            <button
+              key={d}
+              type="button"
+              className={'btn btn-sm ' + (filterDays === d ? 'btn-primary' : 'btn-ghost')}
+              onClick={() => setFilterDays(d)}
+            >
+              {d} hari
+            </button>
+          ))}
+        </div>
+
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:12}}>
+          <Field label="Tabel">
+            <select className="form-select" value={filterTable} onChange={e => setFilterTable(e.target.value)}>
+              {TABLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Aksi">
+            <select className="form-select" value={filterAction} onChange={e => setFilterAction(e.target.value)}>
+              <option value="">— Semua —</option>
+              <option value="INSERT">Tambah (INSERT)</option>
+              <option value="UPDATE">Edit (UPDATE)</option>
+              <option value="DELETE">Hapus (DELETE)</option>
+            </select>
+          </Field>
+          <Field label="Cabang">
+            <select className="form-select" value={filterBranch} onChange={e => setFilterBranch(e.target.value)}>
+              <option value="">— Semua Cabang —</option>
+              {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </Field>
+        </div>
+      </Card>
+
+      {/* LOG TIMELINE */}
+      <Card title="Log Perubahan" sub={`${logs.length} entri terbaru`}>
+        {loading ? <Loader text="Memuat audit log..."/> :
+         !logs.length ? <Empty title="Belum ada log" sub="Tidak ada perubahan data dalam periode ini."/> : (
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {logs.map(log => {
+              const isExpanded = expandedId === log.id;
+              const diff = formatAuditDiff(log.old_data, log.new_data, log.changed_fields);
+
+              return (
+                <div key={log.id} style={{
+                  border:'1px solid var(--line)',
+                  borderRadius:10,
+                  background:'var(--paper)',
+                  overflow:'hidden',
+                }}>
+                  {/* Header row (clickable) */}
+                  <div
+                    onClick={() => toggleExpand(log.id)}
+                    style={{
+                      padding:'12px 14px',
+                      cursor:'pointer',
+                      display:'flex',
+                      gap:12,
+                      alignItems:'flex-start',
+                    }}
+                  >
+                    <span className={'badge ' + getActionBadge(log.action)} style={{minWidth:55,textAlign:'center'}}>
+                      {getActionLabel(log.action)}
+                    </span>
+
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:13,color:'var(--plum-deep)',marginBottom:2}}>
+                        {describeLog(log)}
+                      </div>
+                      <div style={{fontSize:11,color:'var(--muted)',display:'flex',gap:10,flexWrap:'wrap',fontFamily:'JetBrains Mono, monospace'}}>
+                        <span>{fmtTimestamp(log.created_at)}</span>
+                        {log.branch_name && <span>• {log.branch_name}</span>}
+                        {log.changed_by_role && <span>• {log.changed_by_role}</span>}
+                      </div>
+                    </div>
+
+                    <span style={{
+                      color:'var(--muted)',
+                      fontSize:14,
+                      transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                      transition:'transform 0.2s',
+                    }}>▶</span>
+                  </div>
+
+                  {/* Expanded detail */}
+                  {isExpanded && (
+                    <div style={{
+                      padding:'12px 14px',
+                      borderTop:'1px solid var(--line)',
+                      background:'var(--cream)',
+                      fontSize:12,
+                    }}>
+                      {log.action === 'UPDATE' && diff.length > 0 && (
+                        <>
+                          <div className="eyebrow" style={{fontSize:9,marginBottom:8}}>Detail Perubahan</div>
+                          <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+                            <thead>
+                              <tr style={{borderBottom:'1px solid var(--line)'}}>
+                                <th style={{textAlign:'left',padding:'6px 8px',color:'var(--muted)',fontWeight:500}}>Field</th>
+                                <th style={{textAlign:'left',padding:'6px 8px',color:'var(--red)',fontWeight:500}}>Sebelum</th>
+                                <th style={{textAlign:'left',padding:'6px 8px',color:'var(--green)',fontWeight:500}}>Sesudah</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {diff.map(d => (
+                                <tr key={d.field} style={{borderBottom:'1px solid var(--line)'}}>
+                                  <td style={{padding:'6px 8px',fontWeight:500}}>{getFieldLabel(d.field)}</td>
+                                  <td style={{padding:'6px 8px',color:'var(--red)',textDecoration:'line-through',opacity:0.7}}>
+                                    {formatAuditValue(d.field, d.old)}
+                                  </td>
+                                  <td style={{padding:'6px 8px',color:'var(--green)',fontWeight:500}}>
+                                    {formatAuditValue(d.field, d.new)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </>
+                      )}
+
+                      {log.action === 'INSERT' && log.new_data && (
+                        <>
+                          <div className="eyebrow" style={{fontSize:9,marginBottom:8}}>Data yang Ditambahkan</div>
+                          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:8}}>
+                            {Object.entries(log.new_data)
+                              .filter(([k]) => !['id','created_at','updated_at','adjusted_at'].includes(k))
+                              .slice(0, 12)
+                              .map(([k, v]) => (
+                                <div key={k}>
+                                  <div style={{fontSize:10,color:'var(--muted)',marginBottom:2}}>{getFieldLabel(k)}</div>
+                                  <div style={{fontWeight:500}}>{formatAuditValue(k, v)}</div>
+                                </div>
+                              ))}
+                          </div>
+                        </>
+                      )}
+
+                      {log.action === 'DELETE' && log.old_data && (
+                        <>
+                          <div className="eyebrow" style={{fontSize:9,marginBottom:8,color:'var(--red)'}}>⚠️ Data yang Dihapus</div>
+                          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:8,opacity:0.85}}>
+                            {Object.entries(log.old_data)
+                              .filter(([k]) => !['id','created_at','updated_at','adjusted_at'].includes(k))
+                              .slice(0, 12)
+                              .map(([k, v]) => (
+                                <div key={k}>
+                                  <div style={{fontSize:10,color:'var(--muted)',marginBottom:2}}>{getFieldLabel(k)}</div>
+                                  <div style={{fontWeight:500,textDecoration:'line-through'}}>{formatAuditValue(k, v)}</div>
+                                </div>
+                              ))}
+                          </div>
+                        </>
+                      )}
+
+                      {/* Footer with technical details */}
+                      <div style={{
+                        marginTop:12,
+                        paddingTop:10,
+                        borderTop:'1px solid var(--line)',
+                        fontSize:10,
+                        color:'var(--muted)',
+                        fontFamily:'JetBrains Mono, monospace',
+                        display:'flex',
+                        gap:14,
+                        flexWrap:'wrap',
+                      }}>
+                        <span>ID: {log.record_id?.slice(0,8) || '—'}</span>
+                        <span>Table: {log.table_name}</span>
+                        <span>By: {log.changed_by_name || 'unknown'} ({log.changed_by_role || '—'})</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 // ----- Employee dashboard -----
 function EmployeeDashboard({ profile }) {
   return (
@@ -1865,5 +2157,6 @@ Object.assign(window, {
   NewTransactionPage, TransactionsPage,
   EmployeesPage, EmployeeDashboard,
   AddEmployeeModal, DeleteConfirmModal,
-  ReportsPage, PayrollPage, AdjustAttendanceModal
+  ReportsPage, PayrollPage, AdjustAttendanceModal,
+  AuditLogPage
 });

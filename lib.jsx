@@ -911,6 +911,123 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
   };
 }
 
+// =====================================================
+// AUDIT LOG — Only accessible by super_admin
+// =====================================================
+
+async function listAuditLog({ limit = 100, tableName = null, action = null, userId = null, branchId = null, dateFrom = null, dateTo = null } = {}) {
+  let query = sb
+    .from('audit_log_readable')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (tableName) query = query.eq('table_name', tableName);
+  if (action) query = query.eq('action', action);
+  if (userId) query = query.eq('changed_by', userId);
+  if (branchId) query = query.eq('branch_id', branchId);
+  if (dateFrom) query = query.gte('created_at', dateFrom);
+  if (dateTo) query = query.lte('created_at', dateTo);
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+async function getAuditSummary(days = 7) {
+  const { data, error } = await sb.rpc('get_audit_summary', { p_days: days });
+  if (error) throw error;
+  return data?.[0] || { total_changes: 0, inserts: 0, updates: 0, deletes: 0, active_users: 0 };
+}
+
+// Helper to format JSON diff for display (for UPDATE actions)
+function formatAuditDiff(oldData, newData, changedFields) {
+  if (!changedFields || !changedFields.length) return [];
+  return changedFields.map(field => ({
+    field,
+    old: oldData ? oldData[field] : null,
+    new: newData ? newData[field] : null,
+  }));
+}
+
+// Friendly label for action
+function getActionLabel(action) {
+  const map = { INSERT: 'Tambah', UPDATE: 'Edit', DELETE: 'Hapus' };
+  return map[action] || action;
+}
+
+function getActionColor(action) {
+  const map = { INSERT: 'var(--green)', UPDATE: 'var(--mauve)', DELETE: 'var(--red)' };
+  return map[action] || 'var(--muted)';
+}
+
+function getActionBadge(action) {
+  const map = { INSERT: 'badge-green', UPDATE: 'badge-mauve', DELETE: 'badge-red' };
+  return map[action] || 'badge-mauve';
+}
+
+// Field label translations
+const AUDIT_FIELD_LABELS = {
+  // transactions
+  date: 'Tanggal',
+  start_time: 'Jam Mulai',
+  total_amount: 'Total Omset',
+  total_commission: 'Total Komisi',
+  is_overtime: 'Lembur',
+  is_home_service: 'Home Service',
+  home_service_fee: 'Biaya HS',
+  client_name_snapshot: 'Nama Pelanggan',
+  client_phone_snapshot: 'HP Pelanggan',
+  notes: 'Catatan',
+  // transaction_items
+  service_name: 'Treatment',
+  price: 'Harga',
+  commission_amount: 'Komisi',
+  commission_rate: 'Rate Komisi',
+  commission_type: 'Tipe Komisi',
+  employee_id: 'Karyawan',
+  // employees
+  full_name: 'Nama',
+  username: 'Username',
+  job_title: 'Jabatan',
+  role: 'Role',
+  base_salary: 'Gaji Pokok',
+  meal_allowance: 'Uang Makan',
+  branch_id: 'Cabang',
+  is_active: 'Status Aktif',
+  // payroll
+  standard_work_days: 'Standar Hari Kerja',
+  annual_leave_days: 'Cuti Tahunan',
+  sick_leave_certified_days: 'Sakit + Surat',
+  unpaid_leave_days: 'Izin/Mangkir',
+  bonus: 'Bonus',
+  extra_deduction: 'Potongan Tambahan',
+  // clients
+  full_name: 'Nama',
+  phone: 'HP',
+  total_visits: 'Total Kunjungan',
+  total_spent: 'Total Belanja',
+};
+
+function getFieldLabel(field) {
+  return AUDIT_FIELD_LABELS[field] || field;
+}
+
+// Format value for display in audit (currency, dates, booleans)
+function formatAuditValue(field, value) {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'boolean') return value ? 'Ya' : 'Tidak';
+  if (['base_salary','meal_allowance','total_amount','total_commission','home_service_fee','price','commission_amount','bonus','extra_deduction','total_spent'].includes(field)) {
+    return fmtRp(value);
+  }
+  if (field === 'date') return fmtDate(value);
+  if (field === 'start_time') return fmtTime(value);
+  if (typeof value === 'string' && value.length > 60) {
+    return value.slice(0, 60) + '…';
+  }
+  return String(value);
+}
+
 // Expose
 Object.assign(window, {
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
@@ -929,4 +1046,6 @@ Object.assign(window, {
   listPayrollEligibleEmployees, getPeriodCommissionByEmployee,
   listPayrollAdjustments, upsertPayrollAdjustment,
   getAnnualLeaveBalances, calculatePayroll,
+  listAuditLog, getAuditSummary, formatAuditDiff,
+  getActionLabel, getActionColor, getActionBadge, getFieldLabel, formatAuditValue,
 });
