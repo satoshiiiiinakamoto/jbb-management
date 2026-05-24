@@ -475,14 +475,15 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
               <span style={{fontSize:14}}>Ini transaksi home service</span>
             </label>
             {isHomeService && (
-              <div style={{padding:'10px 12px',background:'#fdf6e3',borderRadius:6,fontSize:12,color:'var(--plum)',marginBottom:12,lineHeight:1.5}}>
-                💡 <strong>Mode Home Service aktif</strong> — komisi treatment otomatis di-set ke <strong>Rp 0</strong> karena sudah include di biaya HS. Admin/Owner bisa edit komisi treatment kalau perlu, dan input biaya HS manual sesuai jarak.
-              </div>
-            )}
-              <Field label="Biaya Home Service (Rp)" hint="100% masuk komisi karyawan">
-                <input type="number" className="form-input" value={homeServiceFee}
-                  onChange={e => setHomeServiceFee(e.target.value)} placeholder="50000" min="0" step="5000"/>
-              </Field>
+              <>
+                <div style={{padding:'10px 12px',background:'#fdf6e3',borderRadius:6,fontSize:12,color:'var(--plum)',marginBottom:12,lineHeight:1.5}}>
+                  💡 <strong>Mode Home Service aktif</strong> — komisi treatment otomatis di-set ke <strong>Rp 0</strong> karena sudah include di biaya HS. Admin/Owner bisa edit komisi treatment kalau perlu, dan input biaya HS manual sesuai jarak.
+                </div>
+                <Field label="Biaya Home Service (Rp)" hint="100% masuk komisi karyawan">
+                  <input type="number" className="form-input" value={homeServiceFee}
+                    onChange={e => setHomeServiceFee(e.target.value)} placeholder="50000" min="0" step="5000"/>
+                </Field>
+              </>
             )}
           </Card>
 
