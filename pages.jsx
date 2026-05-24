@@ -29,7 +29,7 @@ function LoginPage({ onLoggedIn }) {
         <div className="auth-logo">JBB</div>
         <div className="auth-sub">아름다움</div>
         <h2 className="auth-title">Management Program</h2>
-        <p className="auth-desc">Masuk dengan akun karyawan</p>
+        <p className="auth-desc">Anda keluarga besar JBB / VIALI? Silahkan Masuk</p>
         <form onSubmit={handleSubmit}>
           <Field label="Email">
             <input className="form-input" type="email" value={email}
