@@ -1101,6 +1101,322 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
   );
 }
 
+// =====================================================
+// REPORTS PAGE — Tahap C1
+// =====================================================
+function ReportsPage({ profile, currentBranchId, branches }) {
+  const isSuper = profile.role === 'super_admin';
+
+  // Filters
+  const [presetId, setPresetId] = useStateP('today');
+  const [customFrom, setCustomFrom] = useStateP(todayStr());
+  const [customTo, setCustomTo] = useStateP(todayStr());
+  const [employeeFilter, setEmployeeFilter] = useStateP('');
+
+  // Data
+  const [transactions, setTransactions] = useStateP([]);
+  const [employees, setEmployees] = useStateP([]);
+  const [loading, setLoading] = useStateP(true);
+
+  // Effective date range
+  const range = useMemoP(() => {
+    if (presetId === 'custom') return { from: customFrom, to: customTo };
+    const preset = DATE_PRESETS.find(p => p.id === presetId);
+    return preset?.getRange() || { from: todayStr(), to: todayStr() };
+  }, [presetId, customFrom, customTo]);
+
+  // Effective branch (super_admin can switch; others locked)
+  const effectiveBranchId = isSuper ? currentBranchId : profile.branch_id;
+
+  // Load employees for filter dropdown
+  useEffectP(() => {
+    listEmployees(effectiveBranchId, false)
+      .then(setEmployees)
+      .catch(err => console.warn('Employees load:', err));
+  }, [effectiveBranchId]);
+
+  // Load transactions on range/branch/employee change
+  async function loadData() {
+    setLoading(true);
+    try {
+      const data = await getReportTransactions({
+        from: range.from,
+        to: range.to,
+        branchId: effectiveBranchId,
+      });
+      setTransactions(data);
+    } catch (err) {
+      toast('Gagal memuat laporan: ' + err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffectP(() => { loadData(); }, [range.from, range.to, effectiveBranchId]);
+
+  // Aggregate stats (respects employee filter)
+  const stats = useMemoP(() => {
+    return aggregateReport(transactions, employeeFilter || null);
+  }, [transactions, employeeFilter]);
+
+  // Format range for display
+  const rangeLabel = useMemoP(() => {
+    if (range.from === range.to) return fmtDate(range.from);
+    return `${fmtDate(range.from)} – ${fmtDate(range.to)}`;
+  }, [range]);
+
+  const branchLabel = effectiveBranchId
+    ? branches.find(b => b.id === effectiveBranchId)?.name
+    : (isSuper ? 'Semua Cabang' : '—');
+
+  // Category labels
+  const categoryLabels = {
+    lash: 'Eyelash', brow: 'Brow & Sulam', facial: 'Facial',
+    nail: 'Nail', other: 'Lainnya'
+  };
+
+  return (
+    <div className="page">
+      <PageHeader title="Laporan" sub={branchLabel}/>
+
+      {/* FILTERS */}
+      <Card title="Filter" sub="Pilih periode & karyawan">
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:14}}>
+          {DATE_PRESETS.map(p => (
+            <button
+              key={p.id}
+              type="button"
+              className={'btn btn-sm ' + (presetId === p.id ? 'btn-primary' : 'btn-ghost')}
+              onClick={() => setPresetId(p.id)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {presetId === 'custom' && (
+          <div className="form-row" style={{marginBottom:14}}>
+            <Field label="Dari Tanggal">
+              <input type="date" className="form-input" value={customFrom}
+                onChange={e => setCustomFrom(e.target.value)} max={customTo}/>
+            </Field>
+            <Field label="Sampai Tanggal">
+              <input type="date" className="form-input" value={customTo}
+                onChange={e => setCustomTo(e.target.value)} min={customFrom}/>
+            </Field>
+          </div>
+        )}
+
+        <div className="form-row">
+          <Field label="Karyawan" hint="Filter untuk lihat performa 1 karyawan saja">
+            <select className="form-select" value={employeeFilter}
+              onChange={e => setEmployeeFilter(e.target.value)}>
+              <option value="">— Semua Karyawan —</option>
+              {employees.map(emp => (
+                <option key={emp.id} value={emp.id}>
+                  {emp.full_name} · {emp.job_title}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Periode Aktif">
+            <input type="text" className="form-input" value={rangeLabel} disabled
+              style={{background:'var(--mauve-tint)',color:'var(--plum)',fontWeight:500}}/>
+          </Field>
+        </div>
+      </Card>
+
+      {loading ? <Card><Loader text="Menghitung laporan..."/></Card> : (
+        <>
+          {/* SUMMARY METRICS */}
+          <div className="metrics-grid" style={{marginBottom:20}}>
+            <Metric
+              label={employeeFilter ? 'Total Revenue (Treatment-nya)' : 'Total Omset'}
+              value={fmtRp(stats.totalRevenue)}
+              sub={`${stats.trxCount} transaksi · ${stats.itemCount} treatment`}
+            />
+            <Metric
+              label="Total Komisi"
+              value={fmtRp(stats.totalCommission)}
+              sub={employeeFilter ? 'untuk karyawan ini' : 'semua karyawan'}
+            />
+            <Metric
+              label="Rata-rata per Transaksi"
+              value={fmtRp(stats.avgPerTrx)}
+              sub={`${stats.trxCount > 0 ? Math.round(stats.itemCount / stats.trxCount * 10) / 10 : 0} treatment/transaksi`}
+            />
+            <Metric
+              label="Lembur & Home Service"
+              value={`${stats.overtimeTrxs} / ${stats.homeServiceTrxs}`}
+              sub="lembur · home service"
+            />
+          </div>
+
+          {/* BREAKDOWN BY CATEGORY */}
+          <Card title="Breakdown per Kategori" sub="Distribusi service di periode ini">
+            {Object.keys(stats.byCategory).length === 0 ? (
+              <Empty title="Tidak ada data" sub="Belum ada transaksi di periode ini."/>
+            ) : (
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Kategori</th>
+                      <th className="table-numeric">Jumlah Treatment</th>
+                      <th className="table-numeric">Total Revenue</th>
+                      <th className="table-numeric">Total Komisi</th>
+                      <th className="table-numeric">% dari Omset</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(stats.byCategory)
+                      .sort(([,a], [,b]) => b.revenue - a.revenue)
+                      .map(([cat, d]) => (
+                        <tr key={cat}>
+                          <td><span className="badge badge-mauve">{categoryLabels[cat] || cat}</span></td>
+                          <td className="table-numeric">{d.count}</td>
+                          <td className="table-numeric" style={{fontWeight:500}}>{fmtRp(d.revenue)}</td>
+                          <td className="table-numeric" style={{color:'var(--mauve)'}}>{fmtRp(d.commission)}</td>
+                          <td className="table-numeric">
+                            {stats.totalRevenue > 0
+                              ? `${Math.round(d.revenue / stats.totalRevenue * 100)}%`
+                              : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
+          {/* TOP PERFORMERS */}
+          {!employeeFilter && stats.topPerformers.length > 0 && (
+            <Card title="Top Performer" sub="Karyawan dengan komisi tertinggi di periode ini">
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Karyawan</th>
+                      <th>Jabatan</th>
+                      <th className="table-numeric">Treatment</th>
+                      <th className="table-numeric">Revenue</th>
+                      <th className="table-numeric">Komisi</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.topPerformers.slice(0, 5).map((emp, i) => (
+                      <tr key={emp.employee_id}>
+                        <td>
+                          <span style={{
+                            display:'inline-flex',alignItems:'center',justifyContent:'center',
+                            width:24,height:24,borderRadius:12,
+                            background: i === 0 ? 'var(--gold)' : i === 1 ? 'var(--mauve-tint)' : 'var(--cream)',
+                            color: i === 0 ? '#fff' : 'var(--plum)',
+                            fontWeight:600,fontSize:12,
+                            fontFamily:'JetBrains Mono, monospace',
+                          }}>{i+1}</span>
+                        </td>
+                        <td style={{fontWeight:500}}>{emp.full_name}</td>
+                        <td><span className="badge badge-mauve">{emp.job_title}</span></td>
+                        <td className="table-numeric">{emp.items}</td>
+                        <td className="table-numeric">{fmtRp(emp.revenue)}</td>
+                        <td className="table-numeric" style={{color:'var(--mauve)',fontWeight:500}}>{fmtRp(emp.commission)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          {/* TOP SPENDERS */}
+          {stats.topSpenders.length > 0 && (
+            <Card title="Top Pelanggan" sub="Pelanggan dengan total belanja tertinggi">
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Nama</th>
+                      <th>HP</th>
+                      <th className="table-numeric">Kunjungan</th>
+                      <th className="table-numeric">Total Belanja</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.topSpenders.slice(0, 5).map((c, i) => (
+                      <tr key={i}>
+                        <td>
+                          <span style={{
+                            display:'inline-flex',alignItems:'center',justifyContent:'center',
+                            width:24,height:24,borderRadius:12,
+                            background: i === 0 ? 'var(--gold)' : 'var(--cream)',
+                            color: i === 0 ? '#fff' : 'var(--plum)',
+                            fontWeight:600,fontSize:12,
+                            fontFamily:'JetBrains Mono, monospace',
+                          }}>{i+1}</span>
+                        </td>
+                        <td style={{fontWeight:500}}>{c.name}</td>
+                        <td>
+                          <span style={{fontFamily:'JetBrains Mono, monospace',fontSize:12,color:'var(--muted)'}}>
+                            {c.phone || '—'}
+                          </span>
+                        </td>
+                        <td className="table-numeric">{c.visits}x</td>
+                        <td className="table-numeric" style={{fontWeight:500}}>{fmtRp(c.spent)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          {/* TOP SERVICES */}
+          {Object.keys(stats.byService).length > 0 && (
+            <Card title="Top Treatment" sub="Treatment paling laris di periode ini">
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Treatment</th>
+                      <th className="table-numeric">Jumlah</th>
+                      <th className="table-numeric">Revenue</th>
+                      <th className="table-numeric">Komisi</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(stats.byService)
+                      .sort(([,a], [,b]) => b.count - a.count)
+                      .slice(0, 8)
+                      .map(([name, d]) => (
+                        <tr key={name}>
+                          <td style={{fontWeight:500}}>{name}</td>
+                          <td className="table-numeric">{d.count}x</td>
+                          <td className="table-numeric">{fmtRp(d.revenue)}</td>
+                          <td className="table-numeric" style={{color:'var(--mauve)'}}>{fmtRp(d.commission)}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          {/* EMPTY STATE */}
+          {stats.trxCount === 0 && (
+            <Card>
+              <Empty title="Belum ada data" sub={`Tidak ada transaksi di periode ${rangeLabel}.`}/>
+            </Card>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ----- Employee dashboard -----
 function EmployeeDashboard({ profile }) {
   return (
@@ -1119,5 +1435,6 @@ Object.assign(window, {
   LoginPage, AdminDashboard, BranchesPage,
   NewTransactionPage, TransactionsPage,
   EmployeesPage, EmployeeDashboard,
-  AddEmployeeModal, DeleteConfirmModal
+  AddEmployeeModal, DeleteConfirmModal,
+  ReportsPage
 });

@@ -428,10 +428,243 @@ async function getMonthStats(branchId = null) {
   return { total: (data || []).reduce((s, r) => s + Number(r.total_amount || 0), 0) };
 }
 
+// =====================================================
+// Date Range Presets (Senin = awal minggu, ISO 8601)
+// =====================================================
+
+function startOfWeekMonday(date = new Date()) {
+  const d = new Date(date);
+  const day = d.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+  // Distance back to Monday. If today is Sun (0), back 6 days. If Mon (1), back 0.
+  const diff = day === 0 ? 6 : day - 1;
+  d.setDate(d.getDate() - diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function endOfWeekSunday(date = new Date()) {
+  const start = startOfWeekMonday(date);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+
+function dateToYMD(d) {
+  // Format Date object to YYYY-MM-DD (local time, not UTC)
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+const DATE_PRESETS = [
+  {
+    id: 'today',
+    label: 'Hari Ini',
+    getRange() {
+      const t = todayStr();
+      return { from: t, to: t };
+    }
+  },
+  {
+    id: 'yesterday',
+    label: 'Kemarin',
+    getRange() {
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      const y = dateToYMD(d);
+      return { from: y, to: y };
+    }
+  },
+  {
+    id: 'this_week',
+    label: 'Minggu Ini',
+    getRange() {
+      const start = startOfWeekMonday();
+      const end = endOfWeekSunday();
+      return { from: dateToYMD(start), to: dateToYMD(end) };
+    }
+  },
+  {
+    id: 'last_week',
+    label: 'Minggu Lalu',
+    getRange() {
+      const d = new Date();
+      d.setDate(d.getDate() - 7);
+      const start = startOfWeekMonday(d);
+      const end = endOfWeekSunday(d);
+      return { from: dateToYMD(start), to: dateToYMD(end) };
+    }
+  },
+  {
+    id: 'this_month',
+    label: 'Bulan Ini',
+    getRange() {
+      const now = new Date();
+      const first = new Date(now.getFullYear(), now.getMonth(), 1);
+      const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      return { from: dateToYMD(first), to: dateToYMD(last) };
+    }
+  },
+  {
+    id: 'last_month',
+    label: 'Bulan Lalu',
+    getRange() {
+      const now = new Date();
+      const first = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const last = new Date(now.getFullYear(), now.getMonth(), 0);
+      return { from: dateToYMD(first), to: dateToYMD(last) };
+    }
+  },
+  {
+    id: 'custom',
+    label: 'Custom',
+    getRange() { return null; } // Caller handles custom
+  },
+];
+
+// =====================================================
+// REPORTS — Query Functions
+// =====================================================
+
+// Get all transactions in date range (with items)
+async function getReportTransactions({ from, to, branchId = null, employeeId = null }) {
+  let query = sb
+    .from('transactions')
+    .select('*, items:transaction_items(*, employee:employees(id, full_name, job_title)), branch:branches(id, name)')
+    .gte('date', from)
+    .lte('date', to)
+    .order('date', { ascending: false })
+    .order('created_at', { ascending: false });
+
+  if (branchId) query = query.eq('branch_id', branchId);
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  let result = data || [];
+
+  // If employee filter set, filter transactions that have at least one item by that employee
+  if (employeeId) {
+    result = result.filter(t =>
+      (t.items || []).some(it => it.employee_id === employeeId)
+    );
+  }
+
+  return result;
+}
+
+// Aggregate stats from transactions
+function aggregateReport(transactions, employeeFilter = null) {
+  const trxs = transactions || [];
+  const allItems = trxs.flatMap(t => (t.items || []).map(it => ({ ...it, _trx: t })));
+  const items = employeeFilter
+    ? allItems.filter(it => it.employee_id === employeeFilter)
+    : allItems;
+
+  // Totals
+  const totalRevenue = employeeFilter
+    ? items.reduce((s, it) => s + Number(it.price || 0), 0)
+    : trxs.reduce((s, t) => s + Number(t.total_amount || 0), 0);
+
+  const totalCommission = items.reduce((sum, it) => sum + Number(it.commission_amount || 0), 0);
+  const totalHomeServiceFee = employeeFilter
+    ? 0  // HS fee tied to transaction, not employee — skip when filtering by employee
+    : trxs.filter(t => t.is_home_service).reduce((s, t) => s + Number(t.home_service_fee || 0), 0);
+
+  const trxCount = employeeFilter
+    ? new Set(items.map(it => it.transaction_id)).size
+    : trxs.length;
+
+  const itemCount = items.length;
+  const avgPerTrx = trxCount > 0 ? totalRevenue / trxCount : 0;
+
+  // Breakdown by service category
+  const byCategory = {};
+  for (const it of items) {
+    const cat = it.service_category || 'other';
+    if (!byCategory[cat]) byCategory[cat] = { count: 0, revenue: 0, commission: 0 };
+    byCategory[cat].count += 1;
+    byCategory[cat].revenue += Number(it.price || 0);
+    byCategory[cat].commission += Number(it.commission_amount || 0);
+  }
+
+  // Breakdown by service name (top services)
+  const byService = {};
+  for (const it of items) {
+    const name = it.service_name;
+    if (!byService[name]) byService[name] = { count: 0, revenue: 0, commission: 0 };
+    byService[name].count += 1;
+    byService[name].revenue += Number(it.price || 0);
+    byService[name].commission += Number(it.commission_amount || 0);
+  }
+
+  // Top performers (by employee commission)
+  const byEmployee = {};
+  for (const it of items) {
+    const empId = it.employee_id;
+    if (!empId) continue;
+    if (!byEmployee[empId]) {
+      byEmployee[empId] = {
+        employee_id: empId,
+        full_name: it.employee?.full_name || '—',
+        job_title: it.employee?.job_title || '',
+        items: 0,
+        revenue: 0,
+        commission: 0,
+      };
+    }
+    byEmployee[empId].items += 1;
+    byEmployee[empId].revenue += Number(it.price || 0);
+    byEmployee[empId].commission += Number(it.commission_amount || 0);
+  }
+  const topPerformers = Object.values(byEmployee)
+    .sort((a, b) => b.commission - a.commission);
+
+  // Top spenders (by client total spend)
+  const byClient = {};
+  for (const t of trxs) {
+    const key = t.client_phone_snapshot || t.client_name_snapshot || t.id;
+    if (!byClient[key]) {
+      byClient[key] = {
+        name: t.client_name_snapshot || '—',
+        phone: t.client_phone_snapshot || '',
+        visits: 0,
+        spent: 0,
+      };
+    }
+    byClient[key].visits += 1;
+    byClient[key].spent += Number(t.total_amount || 0);
+  }
+  const topSpenders = Object.values(byClient)
+    .sort((a, b) => b.spent - a.spent);
+
+  // Overtime stats
+  const overtimeTrxs = trxs.filter(t => t.is_overtime).length;
+  const homeServiceTrxs = trxs.filter(t => t.is_home_service).length;
+
+  return {
+    totalRevenue,
+    totalCommission,
+    totalHomeServiceFee,
+    trxCount,
+    itemCount,
+    avgPerTrx,
+    byCategory,
+    byService,
+    topPerformers,
+    topSpenders,
+    overtimeTrxs,
+    homeServiceTrxs,
+  };
+}
+
 // Expose
 Object.assign(window, {
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
   fmtRp, fmtRpOrDash, fmtNumber, fmtDate, fmtTime, todayStr, nowTimeStr, currentMonth,
+  dateToYMD, startOfWeekMonday, endOfWeekSunday, DATE_PRESETS,
   isOvertime, isSalaryOptional, getServiceDef, calcCommission, getRoleLabel,
   toast, useToasts,
   loginWithEmail, logout, getCurrentSession, getMyProfile,
@@ -440,4 +673,5 @@ Object.assign(window, {
   createEmployee, deleteEmployee,
   findClientByPhone, upsertClient,
   createTransaction, listRecentTransactions, getTodayStats, getMonthStats,
+  getReportTransactions, aggregateReport,
 });

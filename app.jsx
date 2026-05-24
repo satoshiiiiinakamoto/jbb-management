@@ -93,6 +93,7 @@ function App() {
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'newTransaction', label: 'Input Transaksi' },
     { id: 'transactions', label: 'Transaksi' },
+    { id: 'reports', label: 'Laporan' },
     { id: 'employees', label: 'Karyawan' },
     { id: 'branches', label: 'Cabang' },
   ];
@@ -100,6 +101,7 @@ function App() {
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'newTransaction', label: 'Input Transaksi' },
     { id: 'transactions', label: 'Transaksi' },
+    { id: 'reports', label: 'Laporan' },
     { id: 'employees', label: 'Karyawan' },
   ];
   const employeeTabs = [
@@ -122,6 +124,9 @@ function App() {
         break;
       case 'transactions':
         pageContent = <TransactionsPage profile={profile} currentBranchId={currentBranchId} branches={branches} setPage={setPage}/>;
+        break;
+      case 'reports':
+        pageContent = <ReportsPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
         break;
       case 'employees':
         pageContent = <EmployeesPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
