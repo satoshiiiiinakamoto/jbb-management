@@ -1177,7 +1177,32 @@ function ReportsPage({ profile, currentBranchId, branches }) {
 
   return (
     <div className="page">
-      <PageHeader title="Laporan" sub={branchLabel}/>
+      <PageHeader title="Laporan" sub={branchLabel}>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => {
+            if (!transactions.length) {
+              toast('Tidak ada data untuk diexport', 'error');
+              return;
+            }
+            try {
+              exportReportToExcel({
+                transactions,
+                stats,
+                periodLabel: rangeLabel,
+                branchLabel,
+              });
+              toast('Excel berhasil di-download ✓', 'success');
+            } catch (err) {
+              toast('Gagal export: ' + err.message, 'error');
+            }
+          }}
+          disabled={loading || !transactions.length}
+        >
+          📥 Export Excel
+        </button>
+      </PageHeader>
 
       {/* FILTERS */}
       <Card title="Filter" sub="Pilih periode & karyawan">
@@ -1706,6 +1731,79 @@ function PayrollPage({ profile, currentBranchId, branches }) {
     ? branches.find(b => b.id === effectiveBranchId)?.name
     : (isSuper ? 'Semua Cabang' : '—');
 
+  // Print slip for one employee
+  async function handlePrintSlip(row) {
+    try {
+      const items = await getEmployeePeriodTransactions(
+        row.employee.id,
+        selectedPeriod.period_start,
+        selectedPeriod.period_end
+      );
+      const branch = branches.find(b => b.id === row.employee.branch_id);
+      const slipHtml = generateSlipHTML({
+        employee: row.employee,
+        payroll: row.payroll,
+        items,
+        period: selectedPeriod,
+        branch,
+        generatedBy: profile,
+      });
+      printSlip(slipHtml);
+    } catch (err) {
+      toast('Gagal generate slip: ' + (err.message || err), 'error');
+    }
+  }
+
+  // Print all slips at once
+  async function handlePrintAllSlips() {
+    if (!rows.length) {
+      toast('Tidak ada karyawan untuk diprint', 'error');
+      return;
+    }
+    toast('Menyiapkan ' + rows.length + ' slip gaji...', 'success');
+    try {
+      const slips = [];
+      for (const row of rows) {
+        const items = await getEmployeePeriodTransactions(
+          row.employee.id,
+          selectedPeriod.period_start,
+          selectedPeriod.period_end
+        );
+        const branch = branches.find(b => b.id === row.employee.branch_id);
+        slips.push(generateSlipHTML({
+          employee: row.employee,
+          payroll: row.payroll,
+          items,
+          period: selectedPeriod,
+          branch,
+          generatedBy: profile,
+        }));
+      }
+      printMultipleSlips(slips);
+    } catch (err) {
+      toast('Gagal generate slip: ' + (err.message || err), 'error');
+    }
+  }
+
+  // Export payroll to Excel
+  function handleExportExcel() {
+    if (!rows.length) {
+      toast('Tidak ada data untuk diexport', 'error');
+      return;
+    }
+    try {
+      exportPayrollToExcel({
+        rows,
+        periodLabel: selectedPeriod.label,
+        branchLabel: scopeLabel,
+        totals,
+      });
+      toast('Excel berhasil di-download ✓', 'success');
+    } catch (err) {
+      toast('Gagal export: ' + err.message, 'error');
+    }
+  }
+
   function openAdjust(row) {
     setAdjustTarget({
       employee: row.employee,
@@ -1716,7 +1814,24 @@ function PayrollPage({ profile, currentBranchId, branches }) {
 
   return (
     <div className="page">
-      <PageHeader title="Rekap Gaji" sub={scopeLabel}/>
+      <PageHeader title="Rekap Gaji" sub={scopeLabel}>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={handleExportExcel}
+          disabled={loading || !rows.length}
+        >
+          📥 Export Excel
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          onClick={handlePrintAllSlips}
+          disabled={loading || !rows.length}
+        >
+          🖨 Print Semua Slip
+        </button>
+      </PageHeader>
 
       <Card title="Pilih Periode" sub="Periode payroll 26 → 25 bulan berikutnya">
         <div className="form-row">
@@ -1806,9 +1921,18 @@ function PayrollPage({ profile, currentBranchId, branches }) {
                       {fmtRp(p.total)}
                     </td>
                     <td>
-                      <button className="btn btn-ghost btn-sm" onClick={() => openAdjust({ employee: emp, payroll: p, adjustment: adj, leaveBalance: lb })}>
-                        {adj ? 'Edit' : 'Input'}
-                      </button>
+                      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                        <button className="btn btn-ghost btn-sm" onClick={() => openAdjust({ employee: emp, payroll: p, adjustment: adj, leaveBalance: lb })}>
+                          {adj ? 'Edit' : 'Input'}
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => handlePrintSlip({ employee: emp, payroll: p })}
+                          title="Print slip gaji karyawan ini"
+                        >
+                          🖨 Slip
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

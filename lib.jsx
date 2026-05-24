@@ -1028,6 +1028,760 @@ function formatAuditValue(field, value) {
   return String(value);
 }
 
+// =====================================================
+// EXCEL EXPORT — pakai SheetJS (xlsx library, loaded via CDN)
+// =====================================================
+
+// Generic: export array of objects to .xlsx
+function exportToExcel(filename, sheets) {
+  // sheets: [{ name: 'Sheet1', rows: [{col1: val, col2: val}, ...] }, ...]
+  if (typeof XLSX === 'undefined') {
+    toast('Library Excel belum ter-load. Refresh halaman.', 'error');
+    return;
+  }
+
+  const wb = XLSX.utils.book_new();
+
+  for (const sheet of sheets) {
+    const ws = XLSX.utils.json_to_sheet(sheet.rows || []);
+
+    // Auto-fit column widths (approximate)
+    if (sheet.rows && sheet.rows.length > 0) {
+      const cols = Object.keys(sheet.rows[0]).map(key => {
+        let maxLen = key.length;
+        for (const row of sheet.rows) {
+          const val = String(row[key] ?? '');
+          if (val.length > maxLen) maxLen = val.length;
+        }
+        return { wch: Math.min(Math.max(maxLen + 2, 10), 50) };
+      });
+      ws['!cols'] = cols;
+    }
+
+    XLSX.utils.book_append_sheet(wb, ws, sheet.name.slice(0, 31));  // Max 31 chars
+  }
+
+  // Generate & download
+  const today = todayStr();
+  const finalName = filename.endsWith('.xlsx') ? filename : `${filename}_${today}.xlsx`;
+  XLSX.writeFile(wb, finalName);
+}
+
+// Export report data (transactions list + aggregates)
+function exportReportToExcel({ transactions, stats, periodLabel, branchLabel }) {
+  const sheets = [];
+
+  // Sheet 1: Summary
+  sheets.push({
+    name: 'Ringkasan',
+    rows: [
+      { Metric: 'Periode', Nilai: periodLabel },
+      { Metric: 'Cabang', Nilai: branchLabel },
+      { Metric: 'Total Omset', Nilai: stats.totalRevenue },
+      { Metric: 'Total Komisi', Nilai: stats.totalCommission },
+      { Metric: 'Jumlah Transaksi', Nilai: stats.trxCount },
+      { Metric: 'Jumlah Treatment', Nilai: stats.itemCount },
+      { Metric: 'Rata-rata per Transaksi', Nilai: Math.round(stats.avgPerTrx) },
+      { Metric: 'Transaksi Lembur', Nilai: stats.overtimeTrxs },
+      { Metric: 'Transaksi Home Service', Nilai: stats.homeServiceTrxs },
+    ],
+  });
+
+  // Sheet 2: Transaksi Detail
+  const trxRows = [];
+  for (const t of transactions) {
+    for (const item of (t.items || [])) {
+      trxRows.push({
+        Tanggal: t.date,
+        Jam: t.start_time?.slice(0, 5) || '',
+        Cabang: t.branch?.name || '',
+        Pelanggan: t.client_name_snapshot || '',
+        'No HP': t.client_phone_snapshot || '',
+        Karyawan: item.employee?.full_name || '',
+        Treatment: item.service_name,
+        Kategori: item.service_category,
+        Harga: Number(item.price) || 0,
+        Komisi: Number(item.commission_amount) || 0,
+        Lembur: t.is_overtime ? 'Ya' : 'Tidak',
+        'Home Service': t.is_home_service ? 'Ya' : 'Tidak',
+        'Biaya HS': Number(t.home_service_fee) || 0,
+      });
+    }
+  }
+  sheets.push({ name: 'Transaksi Detail', rows: trxRows });
+
+  // Sheet 3: Top Performer
+  const performerRows = stats.topPerformers.map((emp, i) => ({
+    Rank: i + 1,
+    Karyawan: emp.full_name,
+    Jabatan: emp.job_title,
+    Treatment: emp.items,
+    Revenue: emp.revenue,
+    Komisi: emp.commission,
+  }));
+  sheets.push({ name: 'Top Performer', rows: performerRows });
+
+  // Sheet 4: Top Pelanggan
+  const spenderRows = stats.topSpenders.map((c, i) => ({
+    Rank: i + 1,
+    Nama: c.name,
+    HP: c.phone || '',
+    Kunjungan: c.visits,
+    'Total Belanja': c.spent,
+  }));
+  sheets.push({ name: 'Top Pelanggan', rows: spenderRows });
+
+  // Sheet 5: Per Kategori
+  const categoryRows = Object.entries(stats.byCategory).map(([cat, d]) => ({
+    Kategori: cat,
+    'Jumlah Treatment': d.count,
+    Revenue: d.revenue,
+    Komisi: d.commission,
+    '% dari Omset': stats.totalRevenue > 0 ? Math.round(d.revenue / stats.totalRevenue * 100) : 0,
+  }));
+  sheets.push({ name: 'Per Kategori', rows: categoryRows });
+
+  // Sheet 6: Per Treatment
+  const serviceRows = Object.entries(stats.byService)
+    .sort(([,a], [,b]) => b.count - a.count)
+    .map(([name, d]) => ({
+      Treatment: name,
+      Jumlah: d.count,
+      Revenue: d.revenue,
+      Komisi: d.commission,
+    }));
+  sheets.push({ name: 'Per Treatment', rows: serviceRows });
+
+  const fname = `JBB_Laporan_${(branchLabel || 'all').replace(/\s/g, '_')}_${periodLabel.replace(/\s/g,'_').replace(/[\/]/g,'-')}`;
+  exportToExcel(fname, sheets);
+}
+
+// Export payroll to Excel
+function exportPayrollToExcel({ rows, periodLabel, branchLabel, totals }) {
+  const sheets = [];
+
+  // Sheet 1: Ringkasan
+  sheets.push({
+    name: 'Ringkasan',
+    rows: [
+      { Metric: 'Periode', Nilai: periodLabel },
+      { Metric: 'Cabang', Nilai: branchLabel },
+      { Metric: 'Jumlah Karyawan', Nilai: rows.length },
+      { Metric: 'Total Gaji Pokok (setelah potong)', Nilai: totals.base },
+      { Metric: 'Total Uang Makan', Nilai: totals.meal },
+      { Metric: 'Total Komisi', Nilai: totals.commission },
+      { Metric: 'Total Bonus', Nilai: totals.bonus },
+      { Metric: 'Total Potongan Tambahan', Nilai: totals.deduction },
+      { Metric: 'TOTAL PAYROLL', Nilai: totals.total },
+    ],
+  });
+
+  // Sheet 2: Detail per Karyawan
+  const payrollRows = rows.map(r => ({
+    Nama: r.employee.full_name,
+    Jabatan: r.employee.job_title,
+    Cabang: r.employee.branch?.name || '',
+    'Gaji Pokok (Asli)': r.payroll.base_salary,
+    'Gaji Pokok (Aktual)': r.payroll.base_salary_actual,
+    Potongan: r.payroll.salary_deduction,
+    'Uang Makan': r.payroll.meal_allowance,
+    'Komisi Treatment': r.payroll.treatment_commission,
+    'Komisi HS': r.payroll.hs_commission,
+    'Cuti Tahunan (hari)': r.payroll.annual_leave_days,
+    'Sakit + Surat (hari)': r.payroll.sick_leave_certified_days,
+    'Izin/Mangkir (hari)': r.payroll.unpaid_leave_days,
+    'Standar Hari Kerja': r.payroll.standard_work_days,
+    Bonus: r.payroll.bonus,
+    'Potongan Tambahan': r.payroll.extra_deduction,
+    'TOTAL GAJI': r.payroll.total,
+  }));
+  sheets.push({ name: 'Detail Gaji', rows: payrollRows });
+
+  const fname = `JBB_RekapGaji_${(branchLabel || 'all').replace(/\s/g, '_')}_${periodLabel.replace(/\s/g,'_').replace(/[\/]/g,'-')}`;
+  exportToExcel(fname, sheets);
+}
+
+// =====================================================
+// SLIP GAJI — Generate HTML for printing
+// =====================================================
+
+// Determine brand for a branch
+function getBrandForBranch(branchId) {
+  // VIALI Tangerang punya brand sendiri
+  if (branchId === 'vli') {
+    return {
+      name: 'VIALI',
+      tagline: 'BEAUTY',
+      color: '#7a667e',
+    };
+  }
+  return {
+    name: 'JBB',
+    tagline: '아름다움',
+    color: '#7a667e',
+  };
+}
+
+// Fetch transactions for an employee in a period (for slip detail)
+async function getEmployeePeriodTransactions(employeeId, periodStart, periodEnd) {
+  const { data, error } = await sb
+    .from('transaction_items')
+    .select(`
+      id, service_name, price, commission_amount, commission_rate, commission_type,
+      transaction:transactions(
+        id, date, start_time, is_overtime, is_home_service, home_service_fee,
+        client_name_snapshot, client_phone_snapshot
+      )
+    `)
+    .eq('employee_id', employeeId)
+    .gte('transaction.date', periodStart)
+    .lte('transaction.date', periodEnd);
+
+  if (error) throw error;
+
+  // Filter out rows where transaction is null (RLS edge case)
+  return (data || []).filter(r => r.transaction);
+}
+
+// Generate slip HTML for one employee
+function generateSlipHTML({ employee, payroll, items, period, branch, generatedBy }) {
+  const brand = getBrandForBranch(employee.branch_id);
+  const periodStartFmt = fmtDate(period.period_start);
+  const periodEndFmt = fmtDate(period.period_end);
+  const generatedAt = new Date().toLocaleString('id-ID', {
+    day: '2-digit', month: 'long', year: 'numeric',
+    hour: '2-digit', minute: '2-digit'
+  });
+
+  // Sort items by date
+  const sortedItems = [...items].sort((a, b) => {
+    const dA = a.transaction?.date || '';
+    const dB = b.transaction?.date || '';
+    return dA.localeCompare(dB);
+  });
+
+  // Group by transaction
+  const byTrx = {};
+  for (const it of sortedItems) {
+    const tid = it.transaction?.id;
+    if (!tid) continue;
+    if (!byTrx[tid]) {
+      byTrx[tid] = {
+        date: it.transaction.date,
+        start_time: it.transaction.start_time,
+        is_overtime: it.transaction.is_overtime,
+        is_home_service: it.transaction.is_home_service,
+        home_service_fee: Number(it.transaction.home_service_fee || 0),
+        client_name: it.transaction.client_name_snapshot || '—',
+        client_phone: it.transaction.client_phone_snapshot || '',
+        items: [],
+      };
+    }
+    byTrx[tid].items.push(it);
+  }
+
+  // Build transaction detail rows
+  let detailRows = '';
+  let runningCommission = 0;
+  const trxList = Object.values(byTrx).sort((a, b) => a.date.localeCompare(b.date));
+
+  for (const trx of trxList) {
+    for (let i = 0; i < trx.items.length; i++) {
+      const it = trx.items[i];
+      const isFirst = i === 0;
+      runningCommission += Number(it.commission_amount || 0);
+      detailRows += `
+        <tr>
+          <td class="cell-date">${isFirst ? fmtDate(trx.date) : ''}</td>
+          <td class="cell-time">${isFirst ? fmtTime(trx.start_time) : ''}</td>
+          <td class="cell-client">${isFirst ? escapeHtml(trx.client_name) : ''}</td>
+          <td class="cell-service">
+            ${escapeHtml(it.service_name)}
+            ${trx.is_overtime && isFirst ? '<span class="tag tag-amber">lembur</span>' : ''}
+            ${trx.is_home_service && isFirst ? '<span class="tag tag-gold">HS</span>' : ''}
+          </td>
+          <td class="cell-num">${fmtRp(it.price)}</td>
+          <td class="cell-num cell-commission">${fmtRp(it.commission_amount)}</td>
+        </tr>
+      `;
+    }
+    // Home service fee row (counted separately, distributed by lib calculation already)
+  }
+
+  // Empty state
+  if (!trxList.length) {
+    detailRows = `
+      <tr><td colspan="6" class="cell-empty">Tidak ada transaksi di periode ini.</td></tr>
+    `;
+  }
+
+  const hsCommission = payroll.hs_commission || 0;
+
+  return `
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Slip Gaji — ${escapeHtml(employee.full_name)} — ${periodEndFmt}</title>
+<style>
+  @page { size: A4; margin: 15mm 12mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #241a2c;
+    margin: 0;
+    padding: 0;
+    line-height: 1.5;
+    font-size: 12px;
+    background: #fff;
+  }
+  .slip {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 0;
+  }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding-bottom: 14px;
+    margin-bottom: 18px;
+    border-bottom: 2px solid #3d2e44;
+  }
+  .brand {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-size: 36px;
+    font-weight: 400;
+    color: ${brand.color};
+    letter-spacing: 0.04em;
+    line-height: 1;
+  }
+  .brand-tag {
+    font-size: 14px;
+    color: #7a667e;
+    margin-left: 10px;
+    font-family: 'Noto Sans KR', sans-serif;
+  }
+  .doc-title {
+    text-align: right;
+  }
+  .doc-title .eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: #7a667e;
+    margin-bottom: 4px;
+  }
+  .doc-title h1 {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-size: 28px;
+    font-weight: 400;
+    margin: 0;
+    color: #241a2c;
+  }
+  .meta-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 24px;
+    padding: 14px 16px;
+    background: #f3eef5;
+    border-radius: 10px;
+    margin-bottom: 18px;
+    font-size: 12px;
+  }
+  .meta-item .label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: #7a667e;
+    margin-bottom: 2px;
+  }
+  .meta-item .value {
+    font-weight: 500;
+    color: #241a2c;
+  }
+  .section-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: #7a667e;
+    margin: 18px 0 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #e8e0ea;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    margin-bottom: 8px;
+  }
+  th {
+    text-align: left;
+    padding: 8px 6px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #7a667e;
+    font-weight: 500;
+    border-bottom: 1px solid #d4c8d8;
+  }
+  td {
+    padding: 6px 6px;
+    border-bottom: 1px solid #f1ecf3;
+    vertical-align: top;
+  }
+  .cell-num { text-align: right; font-variant-numeric: tabular-nums; }
+  .cell-commission { color: #7a667e; font-weight: 500; }
+  .cell-date { white-space: nowrap; font-family: 'JetBrains Mono', monospace; font-size: 10px; }
+  .cell-time { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #6b5b6e; }
+  .cell-client { font-weight: 500; }
+  .cell-service { color: #3d2e44; }
+  .cell-empty { text-align: center; padding: 20px; color: #9a8a9c; font-style: italic; }
+
+  .tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    margin-left: 4px;
+    vertical-align: middle;
+  }
+  .tag-amber { background: #fdf6e3; color: #b8893d; }
+  .tag-gold { background: #f7efe0; color: #a8884a; }
+
+  .breakdown-table { margin-top: 10px; }
+  .breakdown-table th { font-size: 10px; }
+  .breakdown-table td { padding: 8px 6px; font-size: 12px; }
+  .breakdown-row-bold td { font-weight: 600; font-size: 13px; border-top: 2px solid #3d2e44; padding-top: 12px; }
+  .breakdown-row-final td { font-weight: 700; font-size: 16px; font-family: 'Cormorant Garamond', serif; color: #3d2e44; border-top: 2px solid #3d2e44; padding-top: 14px; padding-bottom: 14px; }
+  .neg { color: #a85555; }
+  .pos { color: #4a7c59; }
+
+  .absensi-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    padding: 12px 14px;
+    background: #fdfbf9;
+    border-radius: 8px;
+    border: 1px solid #f1ecf3;
+    margin-bottom: 10px;
+  }
+  .absensi-item .label {
+    font-size: 10px;
+    color: #7a667e;
+    margin-bottom: 2px;
+  }
+  .absensi-item .value {
+    font-size: 16px;
+    font-weight: 600;
+    font-family: 'Cormorant Garamond', serif;
+  }
+  .absensi-item.unpaid .value { color: #a85555; }
+  .absensi-item.leave .value { color: #4a7c59; }
+  .absensi-item.sick .value { color: #7a667e; }
+  .absensi-note {
+    grid-column: 1 / -1;
+    font-size: 10px;
+    color: #6b5b6e;
+    padding-top: 6px;
+    border-top: 1px solid #f1ecf3;
+    margin-top: 4px;
+  }
+
+  .signature-area {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 40px;
+    margin-top: 50px;
+    padding-top: 20px;
+  }
+  .sig-box {
+    text-align: center;
+    font-size: 11px;
+  }
+  .sig-line {
+    margin-top: 60px;
+    border-top: 1px solid #3d2e44;
+    padding-top: 6px;
+  }
+  .sig-name { font-weight: 500; }
+  .sig-role { font-size: 10px; color: #7a667e; }
+
+  .footer {
+    margin-top: 30px;
+    padding-top: 14px;
+    border-top: 1px solid #f1ecf3;
+    text-align: center;
+    font-size: 10px;
+    color: #9a8a9c;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .print-controls {
+    background: #f3eef5;
+    padding: 14px 18px;
+    border-radius: 10px;
+    margin-bottom: 24px;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+  }
+  .print-controls button {
+    padding: 8px 18px;
+    border-radius: 100px;
+    border: none;
+    background: #7a667e;
+    color: #fff;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    font-weight: 500;
+  }
+  .print-controls button:hover { background: #5d4d62; }
+  .print-controls button.secondary { background: #fff; color: #7a667e; border: 1px solid #7a667e; }
+
+  @media print {
+    .print-controls { display: none !important; }
+    body { background: #fff; }
+    .slip { max-width: none; }
+  }
+
+  .page-break { page-break-after: always; }
+</style>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+KR:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="print-controls">
+  <button onclick="window.print()">🖨 Print / Save PDF</button>
+  <button class="secondary" onclick="window.close()">Tutup</button>
+</div>
+
+<div class="slip">
+  <div class="header">
+    <div>
+      <span class="brand">${brand.name}</span>
+      <span class="brand-tag">${brand.tagline}</span>
+    </div>
+    <div class="doc-title">
+      <div class="eyebrow">Slip Gaji</div>
+      <h1>${periodEndFmt}</h1>
+    </div>
+  </div>
+
+  <div class="meta-grid">
+    <div class="meta-item">
+      <div class="label">Nama Karyawan</div>
+      <div class="value">${escapeHtml(employee.full_name)}</div>
+    </div>
+    <div class="meta-item">
+      <div class="label">Jabatan</div>
+      <div class="value">${escapeHtml(employee.job_title || '—')}</div>
+    </div>
+    <div class="meta-item">
+      <div class="label">Cabang</div>
+      <div class="value">${escapeHtml(branch?.name || '—')}</div>
+    </div>
+    <div class="meta-item">
+      <div class="label">Periode</div>
+      <div class="value">${periodStartFmt} – ${periodEndFmt}</div>
+    </div>
+  </div>
+
+  <div class="section-title">Absensi Periode Ini</div>
+  <div class="absensi-grid">
+    <div class="absensi-item leave">
+      <div class="label">Cuti Tahunan</div>
+      <div class="value">${payroll.annual_leave_days} hari</div>
+    </div>
+    <div class="absensi-item sick">
+      <div class="label">Sakit + Surat Dokter</div>
+      <div class="value">${payroll.sick_leave_certified_days} hari</div>
+    </div>
+    <div class="absensi-item unpaid">
+      <div class="label">Izin / Sakit no Surat / Mangkir</div>
+      <div class="value">${payroll.unpaid_leave_days} hari</div>
+    </div>
+    <div class="absensi-note">
+      Standar hari kerja: ${payroll.standard_work_days} hari. Cuti tahunan & sakit dengan surat dokter tidak dipotong dari gaji pokok.
+    </div>
+  </div>
+
+  <div class="section-title">Detail Transaksi & Komisi</div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 12%">Tanggal</th>
+        <th style="width: 7%">Jam</th>
+        <th style="width: 22%">Pelanggan</th>
+        <th style="width: 32%">Treatment</th>
+        <th style="width: 13%; text-align: right">Harga</th>
+        <th style="width: 14%; text-align: right">Komisi</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${detailRows}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="4" style="text-align: right; font-weight: 500; padding-top: 12px; border-top: 1px solid #d4c8d8;">Total Komisi Treatment</td>
+        <td colspan="2" class="cell-num" style="font-weight: 600; padding-top: 12px; border-top: 1px solid #d4c8d8;">${fmtRp(payroll.treatment_commission)}</td>
+      </tr>
+      ${hsCommission > 0 ? `
+      <tr>
+        <td colspan="4" style="text-align: right; font-weight: 500;">Komisi Home Service</td>
+        <td colspan="2" class="cell-num" style="font-weight: 600;">${fmtRp(hsCommission)}</td>
+      </tr>
+      ` : ''}
+    </tfoot>
+  </table>
+
+  <div class="section-title">Perhitungan Gaji</div>
+  <table class="breakdown-table">
+    <tbody>
+      <tr>
+        <td>Gaji Pokok</td>
+        <td class="cell-num">${fmtRp(payroll.base_salary)}</td>
+      </tr>
+      ${payroll.salary_deduction > 0 ? `
+      <tr>
+        <td style="padding-left: 20px; font-size: 11px; color: #6b5b6e;">
+          Potongan karena izin/mangkir (${payroll.unpaid_leave_days} hari × ${fmtRp(Math.round(payroll.base_salary / payroll.standard_work_days))})
+        </td>
+        <td class="cell-num neg">−${fmtRp(payroll.salary_deduction)}</td>
+      </tr>
+      <tr>
+        <td style="padding-left: 20px; font-style: italic; color: #6b5b6e;">Gaji Pokok Aktual</td>
+        <td class="cell-num" style="font-weight: 500;">${fmtRp(payroll.base_salary_actual)}</td>
+      </tr>
+      ` : ''}
+      <tr>
+        <td>Uang Makan</td>
+        <td class="cell-num">${fmtRp(payroll.meal_allowance)}</td>
+      </tr>
+      <tr>
+        <td>Komisi Treatment</td>
+        <td class="cell-num">${fmtRp(payroll.treatment_commission)}</td>
+      </tr>
+      ${hsCommission > 0 ? `
+      <tr>
+        <td>Komisi Home Service</td>
+        <td class="cell-num">${fmtRp(hsCommission)}</td>
+      </tr>
+      ` : ''}
+      ${payroll.bonus > 0 ? `
+      <tr>
+        <td>Bonus${notesForBonus(payroll) ? ` (${escapeHtml(notesForBonus(payroll))})` : ''}</td>
+        <td class="cell-num pos">+${fmtRp(payroll.bonus)}</td>
+      </tr>
+      ` : ''}
+      ${payroll.extra_deduction > 0 ? `
+      <tr>
+        <td>Potongan Tambahan</td>
+        <td class="cell-num neg">−${fmtRp(payroll.extra_deduction)}</td>
+      </tr>
+      ` : ''}
+      <tr class="breakdown-row-final">
+        <td>TOTAL GAJI BERSIH</td>
+        <td class="cell-num">${fmtRp(payroll.total)}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="signature-area">
+    <div class="sig-box">
+      <div class="sig-line">
+        <div class="sig-name">${escapeHtml(generatedBy?.full_name || '_________________')}</div>
+        <div class="sig-role">Kasir / HR</div>
+      </div>
+    </div>
+    <div class="sig-box">
+      <div class="sig-line">
+        <div class="sig-name">${escapeHtml(employee.full_name)}</div>
+        <div class="sig-role">Karyawan</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    Slip ini dihasilkan otomatis oleh ${brand.name} Management Program · ${generatedAt}
+  </div>
+</div>
+</body>
+</html>
+  `.trim();
+}
+
+function notesForBonus(payroll) {
+  // Could derive from payroll.notes if needed, for now empty
+  return null;
+}
+
+// HTML escape helper
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+// Open slip in new window
+function printSlip(slipHtml) {
+  const w = window.open('', '_blank', 'width=900,height=1000');
+  if (!w) {
+    toast('Browser memblokir popup. Izinkan popup untuk situs ini.', 'error');
+    return;
+  }
+  w.document.write(slipHtml);
+  w.document.close();
+}
+
+// Print multiple slips in one window (each with page-break)
+function printMultipleSlips(slips) {
+  if (!slips.length) {
+    toast('Tidak ada slip untuk diprint', 'error');
+    return;
+  }
+
+  // Combine: take the head from first slip, then concat all bodies with page breaks
+  const w = window.open('', '_blank', 'width=900,height=1000');
+  if (!w) {
+    toast('Browser memblokir popup.', 'error');
+    return;
+  }
+
+  // Extract first slip's full doc, then inject other slips as additional sections
+  const firstSlip = slips[0];
+
+  // Parse the first slip to inject additional sections
+  // We'll do this by inserting more .slip divs before </body>
+  let combinedHtml = firstSlip;
+
+  if (slips.length > 1) {
+    const additionalSections = slips.slice(1).map(slipHtml => {
+      // Extract only the .slip div from each subsequent slip
+      const slipMatch = slipHtml.match(/<div class="slip">([\s\S]*?)<\/div>\s*<\/body>/);
+      if (slipMatch) {
+        return `<div class="page-break"></div><div class="slip">${slipMatch[1]}</div>`;
+      }
+      return '';
+    }).join('\n');
+
+    combinedHtml = firstSlip.replace('</body>', additionalSections + '\n</body>');
+  }
+
+  w.document.write(combinedHtml);
+  w.document.close();
+}
+
 // Expose
 Object.assign(window, {
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
@@ -1048,4 +1802,7 @@ Object.assign(window, {
   getAnnualLeaveBalances, calculatePayroll,
   listAuditLog, getAuditSummary, formatAuditDiff,
   getActionLabel, getActionColor, getActionBadge, getFieldLabel, formatAuditValue,
+  exportToExcel, exportReportToExcel, exportPayrollToExcel,
+  generateSlipHTML, getEmployeePeriodTransactions, printSlip, printMultipleSlips,
+  getBrandForBranch, escapeHtml,
 });
