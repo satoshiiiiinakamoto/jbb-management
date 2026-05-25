@@ -900,6 +900,7 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
   const [showAddModal, setShowAddModal] = useStateP(false);
   const [deleteTarget, setDeleteTarget] = useStateP(null);
   const [deleting, setDeleting] = useStateP(false);
+  const [viewingEmployee, setViewingEmployee] = useStateP(null);
 
   const isSuper = profile.role === 'super_admin';
 
@@ -1009,6 +1010,18 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
     ? (currentBranchId ? branches.find(b => b.id === currentBranchId)?.name : 'Semua Cabang')
     : 'Kelola Data';
 
+  // If admin clicked an employee name, show their dashboard view
+  if (viewingEmployee) {
+    return (
+      <AdminEmployeeView
+        profile={profile}
+        employee={viewingEmployee}
+        branches={branches}
+        onBack={() => setViewingEmployee(null)}
+      />
+    );
+  }
+
   return (
     <div className="page">
       <PageHeader title="Karyawan" sub={headerSub}>
@@ -1052,9 +1065,22 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
                             value={editForm.full_name} onChange={e => setEditForm({...editForm, full_name: e.target.value})}/>
                         ) : (
                           <div>
-                            <div style={{fontWeight:500}}>{emp.full_name}</div>
-                            {emp.role === 'super_admin' && <span className="badge badge-gold" style={{marginTop:2,display:'inline-block'}}>super</span>}
-                            {emp.role === 'branch_admin' && <span className="badge badge-mauve" style={{marginTop:2,display:'inline-block'}}>admin</span>}
+                            <button
+                              type="button"
+                              onClick={() => setViewingEmployee(emp)}
+                              style={{
+                                background:'none',border:'none',padding:0,cursor:'pointer',
+                                fontWeight:500,color:'var(--plum-deep)',textAlign:'left',
+                                textDecoration:'underline',textDecorationColor:'var(--mauve)',
+                                textUnderlineOffset:3,
+                                fontFamily:'inherit',fontSize:'inherit',
+                              }}
+                              title="Klik untuk lihat dashboard karyawan"
+                            >
+                              {emp.full_name}
+                            </button>
+                            {emp.role === 'super_admin' && <span className="badge badge-gold" style={{marginTop:2,display:'inline-block',marginLeft:6}}>super</span>}
+                            {emp.role === 'branch_admin' && <span className="badge badge-mauve" style={{marginTop:2,display:'inline-block',marginLeft:6}}>admin</span>}
                           </div>
                         )}
                       </td>
@@ -1742,6 +1768,7 @@ function PayrollPage({ profile, currentBranchId, branches }) {
   const [leaveBalances, setLeaveBalances] = useStateP([]);
   const [loading, setLoading] = useStateP(true);
   const [adjustTarget, setAdjustTarget] = useStateP(null);
+  const [viewingEmployee, setViewingEmployee] = useStateP(null);
 
   async function loadData() {
     if (!selectedPeriod) return;
@@ -1810,6 +1837,7 @@ function PayrollPage({ profile, currentBranchId, branches }) {
         period: selectedPeriod,
         branch,
         generatedBy: profile,
+        isApproved: row.adjustment?.is_approved === true,
       });
       printSlip(slipHtml);
     } catch (err) {
@@ -1840,6 +1868,7 @@ function PayrollPage({ profile, currentBranchId, branches }) {
           period: selectedPeriod,
           branch,
           generatedBy: profile,
+          isApproved: row.adjustment?.is_approved === true,
         }));
       }
       printMultipleSlips(slips);
@@ -1873,6 +1902,50 @@ function PayrollPage({ profile, currentBranchId, branches }) {
       adjustment: row.adjustment,
       leaveBalance: row.leaveBalance,
     });
+  }
+
+  // Approve slip
+  async function handleApproveSlip(row) {
+    if (!row.adjustment?.id) {
+      toast('Slip belum diinput. Klik "Input" dulu untuk set absensi.', 'error');
+      return;
+    }
+    if (!window.confirm(`Approve slip gaji untuk ${row.employee.full_name}?\n\nSetelah approved, slip jadi "OFFICIAL" tanpa watermark PREVIEW. Bisa di-unapprove lagi kalau perlu koreksi.`)) {
+      return;
+    }
+    try {
+      await approveSlip(row.adjustment.id);
+      toast('Slip approved ✓', 'success');
+      loadData();
+    } catch (err) {
+      toast('Gagal approve: ' + (err.message || err), 'error');
+    }
+  }
+
+  async function handleUnapproveSlip(row) {
+    if (!row.adjustment?.id) return;
+    if (!window.confirm(`Un-approve slip ${row.employee.full_name}?\n\nSlip akan kembali ke status PREVIEW.`)) {
+      return;
+    }
+    try {
+      await unapproveSlip(row.adjustment.id);
+      toast('Slip di-unapprove', 'success');
+      loadData();
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    }
+  }
+
+  // If admin clicked an employee name, show their dashboard view instead
+  if (viewingEmployee) {
+    return (
+      <AdminEmployeeView
+        profile={profile}
+        employee={viewingEmployee}
+        branches={branches}
+        onBack={() => setViewingEmployee(null)}
+      />
+    );
   }
 
   return (
@@ -1942,11 +2015,31 @@ function PayrollPage({ profile, currentBranchId, branches }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map(({ employee: emp, payroll: p, adjustment: adj, leaveBalance: lb }) => (
+                {rows.map(({ employee: emp, payroll: p, adjustment: adj, leaveBalance: lb }) => {
+                  const isApproved = adj?.is_approved === true;
+                  return (
                   <tr key={emp.id}>
                     <td>
-                      <div style={{fontWeight:500}}>{emp.full_name}</div>
-                      <span className="badge badge-mauve" style={{fontSize:10,marginTop:2}}>{emp.job_title}</span>
+                      <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                        <button
+                          type="button"
+                          onClick={() => setViewingEmployee(emp)}
+                          style={{
+                            background:'none',border:'none',padding:0,cursor:'pointer',
+                            fontWeight:500,color:'var(--plum-deep)',textAlign:'left',
+                            textDecoration:'underline',textDecorationColor:'var(--mauve)',
+                            textUnderlineOffset:3,
+                            fontFamily:'inherit',fontSize:'inherit',
+                          }}
+                          title="Klik untuk lihat dashboard karyawan"
+                        >
+                          {emp.full_name}
+                        </button>
+                        {isApproved && (
+                          <span className="badge" style={{background:'#ecf5ef',color:'#4a7c59',fontSize:9,padding:'2px 8px'}}>✓ Approved</span>
+                        )}
+                      </div>
+                      <span className="badge badge-mauve" style={{fontSize:10,marginTop:4}}>{emp.job_title}</span>
                     </td>
                     {isSuper && !effectiveBranchId && (
                       <td><span className="badge badge-mauve" style={{fontSize:10}}>{emp.branch?.name}</span></td>
@@ -1990,15 +2083,35 @@ function PayrollPage({ profile, currentBranchId, branches }) {
                         </button>
                         <button
                           className="btn btn-ghost btn-sm"
-                          onClick={() => handlePrintSlip({ employee: emp, payroll: p })}
+                          onClick={() => handlePrintSlip({ employee: emp, payroll: p, adjustment: adj })}
                           title="Print slip gaji karyawan ini"
                         >
                           🖨 Slip
                         </button>
+                        {isApproved ? (
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => handleUnapproveSlip({ employee: emp, adjustment: adj })}
+                            title="Un-approve slip (kembali ke PREVIEW)"
+                            style={{color:'var(--red)'}}
+                          >
+                            ↺ Un-approve
+                          </button>
+                        ) : (
+                          <button
+                            className="btn btn-primary btn-sm"
+                            onClick={() => handleApproveSlip({ employee: emp, adjustment: adj })}
+                            title="Approve slip (jadi OFFICIAL tanpa watermark)"
+                            disabled={!adj}
+                          >
+                            ✓ Approve
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
 
                 {/* TOTAL ROW */}
                 <tr style={{background:'var(--mauve-tint)',fontWeight:600}}>
@@ -2325,17 +2438,489 @@ function AuditLogPage({ profile, branches }) {
   );
 }
 
-// ----- Employee dashboard -----
-function EmployeeDashboard({ profile }) {
+// =====================================================
+// TAHAP D — Shared Dashboard Component
+// Used by both Employee (self-view) and Admin (viewing employee)
+// =====================================================
+function EmployeeDashboardView({
+  employee,
+  profile,
+  isAdminViewing = false,  // true = admin viewing this employee; false = self-view
+  branches = [],
+  onBack = null,           // for admin: function to go back
+  onViewTransactions = null,
+  onViewPayroll = null,
+}) {
+  const [stats, setStats] = useStateP(null);
+  const [topServices, setTopServices] = useStateP([]);
+  const [topClients, setTopClients] = useStateP([]);
+  const [adjustment, setAdjustment] = useStateP(null);
+  const [leaveBalance, setLeaveBalance] = useStateP(null);
+  const [loading, setLoading] = useStateP(true);
+
+  const branch = useMemoP(
+    () => branches.find(b => b.id === employee.branch_id) || employee.branch,
+    [branches, employee]
+  );
+
+  async function loadData() {
+    setLoading(true);
+    try {
+      const period = getPayrollPeriod();
+      const year = new Date().getFullYear();
+
+      if (isAdminViewing) {
+        // Admin view: use admin functions (full data)
+        const [statsData, services, clients, adj, balance] = await Promise.all([
+          getEmployeeDashboardStatsAdmin(employee.id),
+          getEmployeeTopServicesAdmin(employee.id, 3),
+          getEmployeeTopClientsAdmin(employee.id, 3),
+          getPayrollAdjustment(employee.id, period.period_start),
+          getAnnualLeaveBalanceForEmployee(employee.id, year),
+        ]);
+        setStats(statsData);
+        setTopServices(services);
+        setTopClients(clients);
+        setAdjustment(adj);
+        setLeaveBalance(balance);
+      } else {
+        // Self view: use self-view functions (privacy filtered)
+        const [statsData, services, clients, adj, balance] = await Promise.all([
+          getMyDashboardStats(),
+          getMyTopServices(3),
+          getMyTopClients(3),
+          getPayrollAdjustment(employee.id, period.period_start),
+          getAnnualLeaveBalanceForEmployee(employee.id, year),
+        ]);
+        setStats(statsData);
+        setTopServices(services);
+        setTopClients(clients);
+        setAdjustment(adj);
+        setLeaveBalance(balance);
+      }
+    } catch (err) {
+      toast('Gagal memuat dashboard: ' + err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffectP(() => { loadData(); }, [employee.id, isAdminViewing]);
+
+  // Calculate estimated payroll for current period
+  const estimatedPayroll = useMemoP(() => {
+    if (!stats) return null;
+    const commissions = {
+      treatment_commission: stats.period_commission || 0,
+      hs_commission: 0, // will be included in treatment_commission already from view
+    };
+    return calculatePayroll({
+      employee,
+      commissions,
+      adjustment,
+    });
+  }, [stats, adjustment, employee]);
+
+  // Annual leave info
+  const leaveQuota = leaveBalance?.total_quota || 7;
+  const leaveUsed = leaveBalance?.used_days || 0;
+  const leaveRemaining = Math.max(0, leaveQuota - leaveUsed);
+  const leaveProgressPct = Math.min(100, (leaveUsed / leaveQuota) * 100);
+
+  const firstName = employee.full_name?.split(' ')[0] || 'Karyawan';
+  const periodLabel = stats
+    ? `${fmtDate(stats.period_start)} – ${fmtDate(stats.period_end)}`
+    : '';
+
+  // Determine if slip is approved
+  const isApproved = adjustment?.is_approved === true;
+
+  // Handle slip printing (only available for self-view in this dashboard)
+  async function handlePrintMySlip() {
+    if (!employee) return;
+    try {
+      const period = getPayrollPeriod();
+      const items = await getEmployeePeriodTransactions(
+        employee.id,
+        period.period_start,
+        period.period_end
+      );
+      const slipHtml = generateSlipHTML({
+        employee,
+        payroll: estimatedPayroll || {
+          base_salary: Number(employee.base_salary) || 0,
+          base_salary_actual: Number(employee.base_salary) || 0,
+          salary_deduction: 0,
+          meal_allowance: Number(employee.meal_allowance) || 0,
+          treatment_commission: stats?.period_commission || 0,
+          hs_commission: 0,
+          annual_leave_days: 0,
+          sick_leave_certified_days: 0,
+          unpaid_leave_days: 0,
+          standard_work_days: 26,
+          bonus: 0,
+          extra_deduction: 0,
+          total: (Number(employee.base_salary) || 0) + (Number(employee.meal_allowance) || 0) + (stats?.period_commission || 0),
+        },
+        items,
+        period,
+        branch,
+        generatedBy: profile,
+        isApproved,
+      });
+      printSlip(slipHtml);
+    } catch (err) {
+      toast('Gagal generate slip: ' + (err.message || err), 'error');
+    }
+  }
+
   return (
     <div className="page">
-      <PageHeader title={`Halo, ${profile.full_name.split(' ')[0]}`} sub={profile.branch?.name || ''}/>
-      <Card title="Selamat Datang">
-        <p style={{fontSize:14,color:'var(--muted)',lineHeight:1.7}}>
-          Dashboard karyawan akan tersedia di tahap berikutnya (D).
-        </p>
+      {isAdminViewing && onBack && (
+        <div style={{padding:'12px 16px',background:'var(--gold)',background:'linear-gradient(135deg, #fdf6e3, #f7efe0)',borderRadius:10,marginBottom:16,display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:13,color:'var(--plum-deep)',flexWrap:'wrap',gap:10}}>
+          <span>🔍 <strong>Mode Lihat:</strong> {employee.full_name} ({employee.job_title}) — sebagai {getRoleLabel(profile.role)}</span>
+          <button className="btn btn-ghost btn-sm" onClick={onBack}>← Kembali</button>
+        </div>
+      )}
+
+      <PageHeader
+        title={isAdminViewing ? `Dashboard ${firstName}` : `Halo, ${firstName}`}
+        sub={`${employee.job_title || ''} · ${branch?.name || '—'}`}
+      />
+
+      {loading ? <Card><Loader text="Memuat dashboard..."/></Card> : (
+        <>
+          {/* TODAY METRICS */}
+          <div style={{marginBottom:8}}>
+            <span className="eyebrow">Hari Ini</span>
+          </div>
+          <div className="metrics-grid" style={{marginBottom:20}}>
+            <Metric label="Omset Hari Ini" value={fmtRp(stats?.today_revenue || 0)} sub={`${stats?.today_trx_count || 0} transaksi`}/>
+            <Metric label="Komisi Hari Ini" value={fmtRp(stats?.today_commission || 0)} sub={`${stats?.today_item_count || 0} treatment`}/>
+            <Metric label="Omset Minggu Ini" value={fmtRp(stats?.week_revenue || 0)} sub="Senin – sekarang"/>
+            <Metric label="Komisi Minggu Ini" value={fmtRp(stats?.week_commission || 0)} sub={`${stats?.week_trx_count || 0} transaksi`}/>
+          </div>
+
+          {/* CURRENT PERIOD PAYROLL ESTIMATE */}
+          <Card
+            title={`Estimasi Gaji Periode Ini${isApproved ? ' · ✓ Disetujui' : ' · Preview'}`}
+            sub={periodLabel}
+          >
+            {!estimatedPayroll ? <Empty title="Belum ada data" sub="Estimasi gaji akan muncul setelah ada transaksi."/> : (
+              <>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:12,marginBottom:18}}>
+                  <Metric label="Gaji Pokok" value={fmtRp(estimatedPayroll.base_salary_actual)}
+                    sub={estimatedPayroll.salary_deduction > 0 ? `−${fmtRp(estimatedPayroll.salary_deduction)} potongan` : 'full'}/>
+                  <Metric label="Uang Makan" value={fmtRp(estimatedPayroll.meal_allowance)}/>
+                  <Metric label="Komisi Treatment" value={fmtRp(estimatedPayroll.treatment_commission)}
+                    sub={`${stats?.period_trx_count || 0} transaksi`}/>
+                  <Metric label="Estimasi Total" value={fmtRp(estimatedPayroll.total)} sub="real-time"/>
+                </div>
+
+                <div style={{display:'flex',gap:10,flexWrap:'wrap',justifyContent:isAdminViewing ? 'flex-start' : 'space-between',alignItems:'center'}}>
+                  {!isAdminViewing && (
+                    <button className="btn btn-primary btn-sm" onClick={handlePrintMySlip}>
+                      🖨 Print Slip Gaji {!isApproved && '(Preview)'}
+                    </button>
+                  )}
+                  {isAdminViewing && onViewPayroll && (
+                    <button className="btn btn-primary btn-sm" onClick={onViewPayroll}>
+                      💰 Lihat Detail Gaji
+                    </button>
+                  )}
+                  <div style={{fontSize:11,color:'var(--muted)',lineHeight:1.5}}>
+                    {isApproved ? (
+                      <>✓ Slip sudah di-approve admin · final</>
+                    ) : (
+                      <>⚠️ Estimasi real-time, belum di-approve admin</>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </Card>
+
+          {/* ANNUAL LEAVE */}
+          <Card title="Cuti Tahunan" sub={`Tahun ${new Date().getFullYear()}`}>
+            <div style={{display:'flex',gap:20,alignItems:'center',flexWrap:'wrap',marginBottom:14}}>
+              <div>
+                <div style={{fontFamily:'Cormorant Garamond, serif',fontSize:40,fontWeight:400,color:'var(--plum-deep)',lineHeight:1}}>
+                  {leaveRemaining}
+                </div>
+                <div style={{fontSize:11,color:'var(--muted)',marginTop:2}}>hari tersisa</div>
+              </div>
+              <div style={{flex:1,minWidth:200}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--muted)',marginBottom:6}}>
+                  <span>Terpakai: {leaveUsed} hari</span>
+                  <span>Jatah: {leaveQuota} hari</span>
+                </div>
+                <div style={{height:8,background:'var(--mauve-tint)',borderRadius:8,overflow:'hidden'}}>
+                  <div style={{
+                    width: `${leaveProgressPct}%`,
+                    height:'100%',
+                    background: leaveProgressPct >= 100 ? 'var(--red)' : leaveProgressPct >= 80 ? 'var(--amber)' : 'var(--mauve)',
+                    transition: 'width 0.3s',
+                  }}/>
+                </div>
+                <div style={{fontSize:10,color:'var(--muted)',marginTop:6,fontStyle:'italic'}}>
+                  Aturan JBB: cuti tahunan 7 hari/tahun, lapor minimal H-1. Tidak potong gaji.
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          {/* TOP SERVICES */}
+          {topServices.length > 0 && (
+            <Card title="Treatment Favorit" sub="3 bulan terakhir">
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Treatment</th>
+                      <th>Kategori</th>
+                      <th className="table-numeric">Jumlah</th>
+                      <th className="table-numeric">Revenue</th>
+                      <th className="table-numeric">Komisi</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {topServices.map((s, i) => (
+                      <tr key={i}>
+                        <td style={{fontWeight:500}}>{s.service_name}</td>
+                        <td><span className="badge badge-mauve">{s.service_category}</span></td>
+                        <td className="table-numeric">{s.count_done}x</td>
+                        <td className="table-numeric">{fmtRp(s.total_revenue)}</td>
+                        <td className="table-numeric" style={{color:'var(--mauve)',fontWeight:500}}>{fmtRp(s.total_commission)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          {/* TOP CLIENTS */}
+          {topClients.length > 0 && (
+            <Card title="Pelanggan Setia" sub={isAdminViewing ? "Nama lengkap (admin view)" : "Nama depan saja"}>
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Nama</th>
+                      {isAdminViewing && <th>HP</th>}
+                      <th className="table-numeric">Kunjungan</th>
+                      <th className="table-numeric">Total Belanja</th>
+                      <th className="table-numeric">Komisi</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {topClients.map((c, i) => (
+                      <tr key={i}>
+                        <td>
+                          <span style={{
+                            display:'inline-flex',alignItems:'center',justifyContent:'center',
+                            width:24,height:24,borderRadius:12,
+                            background: i === 0 ? 'var(--gold)' : 'var(--cream)',
+                            color: i === 0 ? '#fff' : 'var(--plum)',
+                            fontWeight:600,fontSize:12,
+                            fontFamily:'JetBrains Mono, monospace',
+                          }}>{i+1}</span>
+                        </td>
+                        <td style={{fontWeight:500}}>
+                          {isAdminViewing ? c.client_name : c.client_first_name}
+                        </td>
+                        {isAdminViewing && (
+                          <td>
+                            <span style={{fontFamily:'JetBrains Mono, monospace',fontSize:11,color:'var(--muted)'}}>
+                              {c.client_phone || '—'}
+                            </span>
+                          </td>
+                        )}
+                        <td className="table-numeric">{c.visit_count}x</td>
+                        <td className="table-numeric" style={{fontWeight:500}}>{fmtRp(c.total_spent)}</td>
+                        <td className="table-numeric" style={{color:'var(--mauve)'}}>{fmtRp(c.total_commission_earned)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          {/* QUICK ACCESS - only for employee self-view */}
+          {!isAdminViewing && onViewTransactions && (
+            <Card>
+              <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+                <button className="btn btn-ghost" onClick={onViewTransactions}>
+                  📋 Lihat Semua Transaksi Saya
+                </button>
+              </div>
+            </Card>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// =====================================================
+// TAHAP D — Employee Transactions Page (3 months history)
+// =====================================================
+function MyTransactionsPage({ profile }) {
+  const [transactions, setTransactions] = useStateP([]);
+  const [loading, setLoading] = useStateP(true);
+  const [presetId, setPresetId] = useStateP('thisMonth');
+
+  async function loadData() {
+    setLoading(true);
+    try {
+      const data = await getMyRecentTransactions(200);
+      setTransactions(data);
+    } catch (err) {
+      toast('Gagal memuat transaksi: ' + err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffectP(() => { loadData(); }, []);
+
+  // Filter by date preset
+  const filteredTransactions = useMemoP(() => {
+    if (!transactions.length) return [];
+    const preset = DATE_PRESETS.find(p => p.id === presetId);
+    if (!preset || preset.id === 'custom') return transactions;
+    const range = preset.getRange();
+    return transactions.filter(t => t.date >= range.from && t.date <= range.to);
+  }, [transactions, presetId]);
+
+  // Aggregate
+  const totals = useMemoP(() => {
+    return filteredTransactions.reduce((acc, t) => ({
+      revenue: acc.revenue + (Number(t.price) || 0),
+      commission: acc.commission + (Number(t.commission_amount) || 0),
+      count: acc.count + 1,
+    }), { revenue: 0, commission: 0, count: 0 });
+  }, [filteredTransactions]);
+
+  const firstName = profile.full_name?.split(' ')[0] || 'Karyawan';
+
+  return (
+    <div className="page">
+      <PageHeader title="Transaksi Saya" sub={`${firstName} · 3 bulan terakhir`}/>
+
+      <Card title="Filter Periode">
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          {DATE_PRESETS.filter(p => p.id !== 'custom').map(p => (
+            <button
+              key={p.id}
+              type="button"
+              className={'btn btn-sm ' + (presetId === p.id ? 'btn-primary' : 'btn-ghost')}
+              onClick={() => setPresetId(p.id)}
+            >
+              {p.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            className={'btn btn-sm ' + (presetId === 'all3mo' ? 'btn-primary' : 'btn-ghost')}
+            onClick={() => setPresetId('all3mo')}
+          >
+            3 Bulan Penuh
+          </button>
+        </div>
+      </Card>
+
+      <div className="metrics-grid" style={{marginBottom:20}}>
+        <Metric label="Total Treatment" value={loading ? '...' : totals.count} sub="dalam periode"/>
+        <Metric label="Revenue Saya Kerjakan" value={loading ? '...' : fmtRp(totals.revenue)}/>
+        <Metric label="Komisi Saya" value={loading ? '...' : fmtRp(totals.commission)}/>
+      </div>
+
+      <Card title="Detail Transaksi" sub="Nomor HP klien tidak ditampilkan untuk privasi">
+        {loading ? <Loader text="Memuat..."/> :
+         !filteredTransactions.length ? <Empty title="Tidak ada transaksi" sub="Belum ada transaksi di periode ini."/> : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Tanggal</th>
+                  <th>Jam</th>
+                  <th>Pelanggan</th>
+                  <th>Treatment</th>
+                  <th>Tipe</th>
+                  <th className="table-numeric">Harga</th>
+                  <th className="table-numeric">Komisi</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredTransactions.map(t => (
+                  <tr key={t.item_id}>
+                    <td style={{fontFamily:'JetBrains Mono, monospace',fontSize:11}}>{fmtDate(t.date)}</td>
+                    <td style={{fontFamily:'JetBrains Mono, monospace',fontSize:11,color:'var(--muted)'}}>{fmtTime(t.start_time)}</td>
+                    <td style={{fontWeight:500}}>{t.client_first_name || '—'}</td>
+                    <td>{t.service_name}</td>
+                    <td>
+                      {t.is_overtime && <span className="badge" style={{background:'#fdf6e3',color:'#b8893d',fontSize:9}}>lembur</span>}
+                      {t.is_home_service && <span className="badge" style={{background:'#f7efe0',color:'#a8884a',fontSize:9,marginLeft:4}}>HS</span>}
+                      {!t.is_overtime && !t.is_home_service && <span style={{color:'var(--muted)',fontSize:11}}>normal</span>}
+                    </td>
+                    <td className="table-numeric">{fmtRp(t.price)}</td>
+                    <td className="table-numeric" style={{color:'var(--mauve)',fontWeight:500}}>{fmtRp(t.commission_amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
     </div>
+  );
+}
+
+// =====================================================
+// TAHAP D — Employee Salary Page (current period only)
+// =====================================================
+function MySalaryPage({ profile, branches }) {
+  return (
+    <EmployeeDashboardView
+      employee={profile}
+      profile={profile}
+      isAdminViewing={false}
+      branches={branches}
+    />
+  );
+}
+
+// =====================================================
+// TAHAP D — Employee Dashboard (self)
+// =====================================================
+function EmployeeDashboard({ profile, branches, setPage }) {
+  return (
+    <EmployeeDashboardView
+      employee={profile}
+      profile={profile}
+      isAdminViewing={false}
+      branches={branches}
+      onViewTransactions={() => setPage && setPage('myTransactions')}
+    />
+  );
+}
+
+// =====================================================
+// TAHAP D — Admin Viewing Employee Dashboard
+// =====================================================
+function AdminEmployeeView({ profile, employee, branches, onBack, setPage }) {
+  return (
+    <EmployeeDashboardView
+      employee={employee}
+      profile={profile}
+      isAdminViewing={true}
+      branches={branches}
+      onBack={onBack}
+      onViewPayroll={() => setPage && setPage('payroll')}
+    />
   );
 }
 
@@ -2345,5 +2930,8 @@ Object.assign(window, {
   EmployeesPage, EmployeeDashboard,
   AddEmployeeModal, DeleteConfirmModal,
   ReportsPage, PayrollPage, AdjustAttendanceModal,
-  AuditLogPage
+  AuditLogPage,
+  // Tahap D
+  EmployeeDashboardView, MyTransactionsPage, MySalaryPage,
+  AdminEmployeeView,
 });

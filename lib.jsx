@@ -1244,7 +1244,7 @@ async function getEmployeePeriodTransactions(employeeId, periodStart, periodEnd)
 }
 
 // Generate slip HTML for one employee
-function generateSlipHTML({ employee, payroll, items, period, branch, generatedBy }) {
+function generateSlipHTML({ employee, payroll, items, period, branch, generatedBy, isApproved = false }) {
   const brand = getBrandForBranch(employee.branch_id);
   const periodStartFmt = fmtDate(period.period_start);
   const periodEndFmt = fmtDate(period.period_end);
@@ -1553,6 +1553,48 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
   }
 
   .page-break { page-break-after: always; }
+
+  /* Watermark PREVIEW (when not approved) */
+  .slip {
+    position: relative;
+  }
+  .watermark {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(-30deg);
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 120px;
+    color: rgba(168, 85, 85, 0.10);
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    pointer-events: none;
+    z-index: 1;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .approval-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 100px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    font-weight: 500;
+    margin-left: 10px;
+    vertical-align: middle;
+  }
+  .approval-badge.preview {
+    background: #fdf0f0;
+    color: #a85555;
+    border: 1px solid #e8c5c5;
+  }
+  .approval-badge.approved {
+    background: #ecf5ef;
+    color: #4a7c59;
+    border: 1px solid #c5e0cc;
+  }
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+KR:wght@400;500&display=swap" rel="stylesheet">
 </head>
@@ -1563,13 +1605,16 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
 </div>
 
 <div class="slip">
+  ${!isApproved ? '<div class="watermark">PREVIEW</div>' : ''}
   <div class="header">
     <div>
       <span class="brand">${brand.name}</span>
       <span class="brand-tag">${brand.tagline}</span>
     </div>
     <div class="doc-title">
-      <div class="eyebrow">Slip Gaji</div>
+      <div class="eyebrow">Slip Gaji
+        <span class="approval-badge ${isApproved ? 'approved' : 'preview'}">${isApproved ? '✓ Approved' : 'Preview'}</span>
+      </div>
       <h1>${periodEndFmt}</h1>
     </div>
   </div>
@@ -1782,6 +1827,132 @@ function printMultipleSlips(slips) {
   w.document.close();
 }
 
+// =====================================================
+// TAHAP D — Employee Dashboard helpers
+// =====================================================
+
+// Get dashboard stats for current user (employee self-view)
+async function getMyDashboardStats() {
+  const { data, error } = await sb.from('my_dashboard_stats').select('*').single();
+  if (error) {
+    if (error.code === 'PGRST116') return null; // No rows
+    throw error;
+  }
+  return data;
+}
+
+// Get my recent transactions (3 months, privacy filter)
+async function getMyRecentTransactions(limit = 100) {
+  const { data, error } = await sb
+    .from('my_employee_transactions')
+    .select('*')
+    .order('date', { ascending: false })
+    .order('start_time', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data || [];
+}
+
+// Get my top services
+async function getMyTopServices(months = 3) {
+  const { data, error } = await sb.rpc('get_my_top_services', { p_months: months });
+  if (error) throw error;
+  return data || [];
+}
+
+// Get my top clients (first name only)
+async function getMyTopClients(months = 3) {
+  const { data, error } = await sb.rpc('get_my_top_clients', { p_months: months });
+  if (error) throw error;
+  return data || [];
+}
+
+// =====================================================
+// TAHAP D — Admin View Employee Dashboard
+// =====================================================
+
+async function getEmployeeDashboardStatsAdmin(employeeId) {
+  const { data, error } = await sb.rpc('get_employee_dashboard_stats', { p_employee_id: employeeId });
+  if (error) throw error;
+  return data?.[0] || null;
+}
+
+async function getEmployeeTransactionsAdmin(employeeId, limit = 200) {
+  const { data, error } = await sb.rpc('get_employee_transactions_admin', {
+    p_employee_id: employeeId,
+    p_limit: limit,
+  });
+  if (error) throw error;
+  return data || [];
+}
+
+async function getEmployeeTopServicesAdmin(employeeId, months = 3) {
+  const { data, error } = await sb.rpc('get_employee_top_services_admin', {
+    p_employee_id: employeeId,
+    p_months: months,
+  });
+  if (error) throw error;
+  return data || [];
+}
+
+async function getEmployeeTopClientsAdmin(employeeId, months = 3) {
+  const { data, error } = await sb.rpc('get_employee_top_clients_admin', {
+    p_employee_id: employeeId,
+    p_months: months,
+  });
+  if (error) throw error;
+  return data || [];
+}
+
+// Get full employee data by ID (with branch info)
+async function getEmployeeById(employeeId) {
+  const { data, error } = await sb
+    .from('employees')
+    .select('*, branch:branches(id, name)')
+    .eq('id', employeeId)
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// Get one payroll adjustment for an employee in a specific period
+async function getPayrollAdjustment(employeeId, periodStart) {
+  const { data, error } = await sb
+    .from('payroll_adjustments')
+    .select('*')
+    .eq('employee_id', employeeId)
+    .eq('period_start', periodStart)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+// Get annual leave balance for one employee in a year
+async function getAnnualLeaveBalanceForEmployee(employeeId, year) {
+  const { data, error } = await sb
+    .from('annual_leave_balance')
+    .select('*')
+    .eq('employee_id', employeeId)
+    .eq('year', year)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+// =====================================================
+// TAHAP D — Slip Approval
+// =====================================================
+
+async function approveSlip(adjustmentId) {
+  const { error } = await sb.rpc('approve_slip', { p_adjustment_id: adjustmentId });
+  if (error) throw error;
+}
+
+async function unapproveSlip(adjustmentId) {
+  const { error } = await sb.rpc('unapprove_slip', { p_adjustment_id: adjustmentId });
+  if (error) throw error;
+}
+
 // Expose
 Object.assign(window, {
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
@@ -1805,4 +1976,10 @@ Object.assign(window, {
   exportToExcel, exportReportToExcel, exportPayrollToExcel,
   generateSlipHTML, getEmployeePeriodTransactions, printSlip, printMultipleSlips,
   getBrandForBranch, escapeHtml,
+  // Tahap D
+  getMyDashboardStats, getMyRecentTransactions, getMyTopServices, getMyTopClients,
+  getEmployeeDashboardStatsAdmin, getEmployeeTransactionsAdmin,
+  getEmployeeTopServicesAdmin, getEmployeeTopClientsAdmin,
+  getEmployeeById, getPayrollAdjustment, getAnnualLeaveBalanceForEmployee,
+  approveSlip, unapproveSlip,
 });

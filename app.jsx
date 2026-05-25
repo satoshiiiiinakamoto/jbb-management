@@ -109,6 +109,7 @@ function App() {
   ];
   const employeeTabs = [
     { id: 'dashboard', label: 'Dashboard' },
+    { id: 'myTransactions', label: 'Transaksi Saya' },
   ];
 
   let tabs;
@@ -155,7 +156,14 @@ function App() {
         pageContent = <AdminDashboard profile={profile} setPage={setPage} currentBranchId={currentBranchId} branches={branches}/>;
     }
   } else {
-    pageContent = <EmployeeDashboard profile={profile}/>;
+    // Employee role
+    switch (page) {
+      case 'myTransactions':
+        pageContent = <MyTransactionsPage profile={profile}/>;
+        break;
+      default:
+        pageContent = <EmployeeDashboard profile={profile} branches={branches} setPage={setPage}/>;
+    }
   }
 
   return (
