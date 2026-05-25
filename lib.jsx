@@ -1953,6 +1953,90 @@ async function unapproveSlip(adjustmentId) {
   if (error) throw error;
 }
 
+// =====================================================
+// EDIT & DELETE TRANSACTION
+// =====================================================
+
+// Get full transaction detail (header + items + employee info)
+async function getTransactionDetail(transactionId) {
+  const { data, error } = await sb
+    .from('transactions')
+    .select(`
+      *,
+      branch:branches(id, name),
+      items:transaction_items(
+        id, employee_id, service_name, service_category,
+        price, commission_type, commission_rate, commission_amount, notes,
+        employee:employees(id, full_name, job_title)
+      )
+    `)
+    .eq('id', transactionId)
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// Update transaction (atomic via DB function)
+async function updateTransactionFull({
+  transactionId,
+  date,
+  startTime,
+  clientName,
+  clientPhone,
+  isOvertime,
+  isHomeService,
+  homeServiceFee,
+  notes,
+  items,
+}) {
+  // items: [{employee_id, service_name, service_category, price, commission_type, commission_rate, commission_amount, notes}]
+  const { data, error } = await sb.rpc('update_transaction_full', {
+    p_transaction_id: transactionId,
+    p_date: date,
+    p_start_time: startTime,
+    p_client_name: clientName,
+    p_client_phone: clientPhone,
+    p_is_overtime: isOvertime,
+    p_is_home_service: isHomeService,
+    p_home_service_fee: homeServiceFee || 0,
+    p_notes: notes || null,
+    p_items: items,
+  });
+  if (error) throw error;
+  return data;
+}
+
+// Delete transaction (super_admin only)
+async function deleteTransaction(transactionId) {
+  const { error } = await sb.rpc('delete_transaction', { p_transaction_id: transactionId });
+  if (error) throw error;
+}
+
+// Check if transaction has been edited (based on audit log)
+async function checkTransactionEdited(transactionId) {
+  const { data, error } = await sb
+    .from('audit_log')
+    .select('id', { count: 'exact', head: true })
+    .eq('table_name', 'transactions')
+    .eq('record_id', transactionId)
+    .eq('action', 'UPDATE');
+  if (error) return false;
+  return (data?.length || 0) > 0;
+}
+
+// Get list of edited transaction IDs (for batch checking)
+async function getEditedTransactionIds(transactionIds) {
+  if (!transactionIds.length) return new Set();
+  const { data, error } = await sb
+    .from('audit_log')
+    .select('record_id')
+    .eq('table_name', 'transactions')
+    .eq('action', 'UPDATE')
+    .in('record_id', transactionIds);
+  if (error) return new Set();
+  return new Set((data || []).map(r => r.record_id));
+}
+
 // Expose
 Object.assign(window, {
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
@@ -1982,4 +2066,7 @@ Object.assign(window, {
   getEmployeeTopServicesAdmin, getEmployeeTopClientsAdmin,
   getEmployeeById, getPayrollAdjustment, getAnnualLeaveBalanceForEmployee,
   approveSlip, unapproveSlip,
+  // Edit/Delete Transaksi
+  getTransactionDetail, updateTransactionFull, deleteTransaction,
+  checkTransactionEdited, getEditedTransactionIds,
 });

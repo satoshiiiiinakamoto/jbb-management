@@ -520,13 +520,26 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
 function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
   const [trxs, setTrxs] = useStateP([]);
   const [loading, setLoading] = useStateP(true);
+  const [editingId, setEditingId] = useStateP(null);
+  const [deleteTarget, setDeleteTarget] = useStateP(null);
+  const [deleting, setDeleting] = useStateP(false);
+  const [editedIds, setEditedIds] = useStateP(new Set());
+
   const isSuper = profile.role === 'super_admin';
+  const isBranchAdmin = profile.role === 'branch_admin';
+  const canEdit = isSuper || isBranchAdmin;
+  const canDelete = isSuper;
 
   async function load() {
     setLoading(true);
     try {
       const filterBranch = isSuper ? currentBranchId : profile.branch_id;
-      setTrxs(await listRecentTransactions(filterBranch, 50));
+      const data = await listRecentTransactions(filterBranch, 50);
+      setTrxs(data);
+      // Check which ones have been edited
+      const ids = data.map(t => t.id);
+      const edited = await getEditedTransactionIds(ids);
+      setEditedIds(edited);
     } catch (err) {
       toast('Gagal: ' + err.message, 'error');
     } finally {
@@ -539,11 +552,31 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
     ? (currentBranchId ? branches.find(b => b.id === currentBranchId)?.name : 'Semua Cabang')
     : branches.find(b => b.id === profile.branch_id)?.name;
 
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await deleteTransaction(deleteTarget.id);
+      toast(`Transaksi tanggal ${fmtDate(deleteTarget.date)} dihapus`, 'success');
+      setDeleteTarget(null);
+      await load();
+    } catch (err) {
+      toast('Gagal hapus: ' + (err.message || err), 'error');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="page">
       <PageHeader title="Transaksi" sub={scopeLabel}>
         <button className="btn btn-primary" onClick={() => setPage('newTransaction')}>+ Input Transaksi</button>
       </PageHeader>
+
+      <div style={{marginBottom:16,padding:'10px 14px',background:'var(--mauve-tint)',borderRadius:8,fontSize:12,color:'var(--plum)',lineHeight:1.5}}>
+        💡 <strong>Tips:</strong> Klik <strong>Edit</strong> untuk mengubah transaksi, atau <strong>Hapus</strong> untuk menghapus (super_admin only). Semua perubahan tercatat di <strong>Audit Log</strong>.
+      </div>
+
       <Card>
         {loading ? <Loader text="Memuat..."/> :
          !trxs.length ? <Empty title="Belum ada transaksi" sub="Klik 'Input Transaksi' untuk mulai mencatat."/> : (
@@ -556,13 +589,24 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                   <th>Pelanggan</th><th>Treatment</th>
                   <th className="table-numeric">Total Omset</th>
                   <th className="table-numeric">Komisi</th>
-                  <th></th>
+                  {canEdit && <th>Aksi</th>}
                 </tr>
               </thead>
               <tbody>
-                {trxs.map(t => (
+                {trxs.map(t => {
+                  const wasEdited = editedIds.has(t.id);
+                  return (
                   <tr key={t.id}>
-                    <td style={{fontSize:13}}>{fmtDate(t.date)}</td>
+                    <td style={{fontSize:13}}>
+                      {fmtDate(t.date)}
+                      {wasEdited && (
+                        <div>
+                          <span className="badge" style={{background:'#fdf6e3',color:'#b8893d',fontSize:9,marginTop:3,display:'inline-block'}} title="Transaksi ini pernah di-edit. Cek Audit Log untuk riwayat.">
+                            edited
+                          </span>
+                        </div>
+                      )}
+                    </td>
                     <td>
                       <span style={{fontFamily:'JetBrains Mono, monospace',fontSize:12}}>{fmtTime(t.start_time)}</span>
                       {t.is_overtime && <span className="badge badge-amber" style={{marginLeft:6,fontSize:10}}>lembur</span>}
@@ -583,14 +627,497 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                     </td>
                     <td className="table-numeric" style={{fontWeight:500}}>{fmtRp(t.total_amount)}</td>
                     <td className="table-numeric" style={{color:'var(--mauve)',fontWeight:500}}>{fmtRp(t.total_commission)}</td>
-                    <td></td>
+                    {canEdit && (
+                      <td>
+                        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => setEditingId(t.id)}
+                            title="Edit transaksi"
+                          >
+                            ✏️ Edit
+                          </button>
+                          {canDelete && (
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => setDeleteTarget(t)}
+                              title="Hapus transaksi (super_admin only)"
+                              style={{color:'var(--red)'}}
+                            >
+                              🗑 Hapus
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    )}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </Card>
+
+      {/* Edit Modal */}
+      <EditTransactionModal
+        open={!!editingId}
+        transactionId={editingId}
+        profile={profile}
+        branches={branches}
+        onClose={() => setEditingId(null)}
+        onSuccess={() => { setEditingId(null); load(); }}
+      />
+
+      {/* Delete Confirmation */}
+      {deleteTarget && (
+        <div style={{
+          position:'fixed',inset:0,background:'rgba(36,26,44,0.6)',
+          display:'flex',alignItems:'center',justifyContent:'center',
+          zIndex:1000,padding:20,backdropFilter:'blur(4px)',
+        }} onClick={() => !deleting && setDeleteTarget(null)}>
+          <div style={{
+            background:'var(--paper)',borderRadius:20,padding:32,
+            width:'100%',maxWidth:520,boxShadow:'var(--shadow-lg)',
+          }} onClick={e => e.stopPropagation()}>
+            <div className="eyebrow" style={{color:'var(--red)',marginBottom:6}}>⚠️ Hapus Transaksi</div>
+            <h2 style={{fontFamily:'Cormorant Garamond, serif',fontSize:26,fontWeight:400,color:'var(--plum-deep)',marginBottom:14}}>
+              Yakin hapus transaksi ini?
+            </h2>
+
+            <div style={{padding:14,background:'var(--cream)',borderRadius:8,marginBottom:14,fontSize:13,lineHeight:1.6}}>
+              <div><strong>Tanggal:</strong> {fmtDate(deleteTarget.date)} · {fmtTime(deleteTarget.start_time)}</div>
+              <div><strong>Pelanggan:</strong> {deleteTarget.client_name_snapshot || '—'}</div>
+              <div><strong>Cabang:</strong> {deleteTarget.branch?.name || '—'}</div>
+              <div><strong>Total Omset:</strong> <span style={{color:'var(--mauve)',fontWeight:500}}>{fmtRp(deleteTarget.total_amount)}</span></div>
+              <div><strong>Komisi:</strong> {fmtRp(deleteTarget.total_commission)}</div>
+              {(deleteTarget.items || []).length > 0 && (
+                <div style={{marginTop:8}}>
+                  <strong>Treatment:</strong>
+                  <ul style={{margin:'4px 0 0 18px',padding:0}}>
+                    {deleteTarget.items.map((it, i) => (
+                      <li key={i} style={{fontSize:12}}>{it.service_name} ({it.employee?.full_name || '—'})</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            <div style={{padding:'10px 12px',background:'#fdf0f0',borderRadius:6,fontSize:12,color:'var(--red)',marginBottom:18,lineHeight:1.5}}>
+              ⚠️ Aksi ini <strong>tidak bisa di-undo</strong>. Tapi data lengkap akan tercatat di Audit Log dan bisa dilihat kembali jika perlu.
+            </div>
+
+            <div style={{display:'flex',gap:10,justifyContent:'flex-end',flexWrap:'wrap'}}>
+              <button className="btn btn-ghost" onClick={() => setDeleteTarget(null)} disabled={deleting}>Batal</button>
+              <button
+                className="btn btn-primary"
+                onClick={handleDelete}
+                disabled={deleting}
+                style={{background:'var(--red)'}}
+              >
+                {deleting ? <span className="loader" style={{borderTopColor:'#fff',borderColor:'rgba(255,255,255,0.3)'}}/> : '🗑 Hapus Permanen'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =====================================================
+// EDIT TRANSACTION MODAL
+// =====================================================
+function EditTransactionModal({ open, transactionId, profile, branches, onClose, onSuccess }) {
+  const [loading, setLoading] = useStateP(true);
+  const [submitting, setSubmitting] = useStateP(false);
+  const [trx, setTrx] = useStateP(null);
+  const [employees, setEmployees] = useStateP([]);
+
+  // Form state
+  const [date, setDate] = useStateP('');
+  const [startTime, setStartTime] = useStateP('');
+  const [clientName, setClientName] = useStateP('');
+  const [clientPhone, setClientPhone] = useStateP('');
+  const [isHomeService, setIsHomeService] = useStateP(false);
+  const [homeServiceFee, setHomeServiceFee] = useStateP(0);
+  const [notes, setNotes] = useStateP('');
+  const [items, setItems] = useStateP([]);
+
+  const isOT = useMemoP(() => isOvertime(startTime), [startTime]);
+
+  useEffectP(() => {
+    if (!open || !transactionId) return;
+    loadTransaction();
+  }, [open, transactionId]);
+
+  async function loadTransaction() {
+    setLoading(true);
+    try {
+      const data = await getTransactionDetail(transactionId);
+      setTrx(data);
+      setDate(data.date);
+      setStartTime(data.start_time?.slice(0, 5) || '');
+      setClientName(data.client_name_snapshot || '');
+      setClientPhone(data.client_phone_snapshot || '');
+      setIsHomeService(!!data.is_home_service);
+      setHomeServiceFee(Number(data.home_service_fee) || 0);
+      setNotes(data.notes || '');
+
+      // Load items
+      const loadedItems = (data.items || []).map(it => ({
+        employee_id: it.employee_id,
+        service_name: it.service_name,
+        price: String(it.price),
+        fixed_commission: it.commission_type === 'fixed_amount' ? String(it.commission_amount) : '',
+        commission_override: data.is_home_service && it.commission_type === 'percent' ? String(it.commission_amount) : '',
+        notes: it.notes || '',
+      }));
+      setItems(loadedItems);
+
+      // Load employees for that branch
+      const emps = await listEmployees(data.branch_id, false);
+      setEmployees(emps);
+    } catch (err) {
+      toast('Gagal memuat: ' + err.message, 'error');
+      onClose();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function updateItem(idx, patch) {
+    setItems(prev => prev.map((it, i) => i === idx ? { ...it, ...patch } : it));
+  }
+
+  function removeItem(idx) {
+    setItems(prev => prev.filter((_, i) => i !== idx));
+  }
+
+  function addItem() {
+    setItems(prev => [...prev, {
+      employee_id: '',
+      service_name: '',
+      price: '',
+      fixed_commission: '',
+      commission_override: isHomeService ? '0' : '',
+      notes: '',
+    }]);
+  }
+
+  function getItemCommission(item) {
+    if (!item.service_name) return { rate: 0, amount: 0, type: 'percent' };
+    const svc = getServiceDef(item.service_name);
+    if (svc?.commission_type === 'percent' && item.commission_override !== undefined && item.commission_override !== null && item.commission_override !== '') {
+      return {
+        rate: 0,
+        amount: Number(item.commission_override) || 0,
+        type: 'percent_manual',
+      };
+    }
+    return calcCommission({
+      serviceName: item.service_name,
+      price: Number(item.price) || 0,
+      fixedAmount: Number(item.fixed_commission) || 0,
+      isOT,
+      branchId: trx?.branch_id,
+    });
+  }
+
+  const totalAmount = items.reduce((sum, it) => sum + (Number(it.price) || 0), 0);
+  const totalCommission = items.reduce((sum, it) => sum + getItemCommission(it).amount, 0);
+  const totalForEmployee = totalCommission + (isHomeService ? (Number(homeServiceFee) || 0) : 0);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!clientName.trim()) {
+      toast('Nama pelanggan wajib diisi', 'error');
+      return;
+    }
+    if (!items.length) {
+      toast('Minimal 1 treatment', 'error');
+      return;
+    }
+    for (const it of items) {
+      if (!it.employee_id) { toast('Karyawan wajib dipilih untuk semua treatment', 'error'); return; }
+      if (!it.service_name) { toast('Treatment wajib dipilih', 'error'); return; }
+      if (!it.price || Number(it.price) <= 0) { toast('Harga wajib diisi', 'error'); return; }
+      const svc = getServiceDef(it.service_name);
+      if (svc?.commission_type === 'fixed_amount' && (!it.fixed_commission || Number(it.fixed_commission) < 50000 || Number(it.fixed_commission) > 250000)) {
+        toast('Komisi sulam alis harus 50.000 – 250.000', 'error');
+        return;
+      }
+    }
+
+    setSubmitting(true);
+    try {
+      const itemsPayload = items.map(it => {
+        const com = getItemCommission(it);
+        const svc = getServiceDef(it.service_name);
+        const dbCommissionType = com.type === 'percent_manual' ? 'percent' : com.type;
+        return {
+          employee_id: it.employee_id,
+          service_name: it.service_name,
+          service_category: svc?.category || 'other',
+          price: Number(it.price),
+          commission_type: dbCommissionType,
+          commission_rate: com.rate,
+          commission_amount: com.amount,
+          notes: it.notes || null,
+        };
+      });
+
+      await updateTransactionFull({
+        transactionId,
+        date,
+        startTime,
+        clientName: clientName.trim(),
+        clientPhone: clientPhone.trim(),
+        isOvertime: isOT,
+        isHomeService,
+        homeServiceFee: Number(homeServiceFee) || 0,
+        notes,
+        items: itemsPayload,
+      });
+
+      toast('Transaksi berhasil diupdate ✓', 'success');
+      onSuccess();
+    } catch (err) {
+      toast('Gagal update: ' + (err.message || err), 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!open) return null;
+
+  return (
+    <div style={{
+      position:'fixed',inset:0,background:'rgba(36,26,44,0.6)',
+      display:'flex',alignItems:'center',justifyContent:'center',
+      zIndex:1000,padding:20,backdropFilter:'blur(4px)',
+    }} onClick={() => !submitting && onClose()}>
+      <div style={{
+        background:'var(--paper)',borderRadius:20,padding:28,
+        width:'100%',maxWidth:920,maxHeight:'92vh',overflowY:'auto',
+        boxShadow:'var(--shadow-lg)',
+      }} onClick={e => e.stopPropagation()}>
+
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:18}}>
+          <div>
+            <div className="eyebrow" style={{marginBottom:6}}>Edit Transaksi</div>
+            <h2 style={{fontFamily:'Cormorant Garamond, serif',fontSize:26,fontWeight:400,color:'var(--plum-deep)'}}>
+              Ubah Data Transaksi
+            </h2>
+            {trx && <p style={{fontSize:12,color:'var(--muted)',marginTop:4}}>Cabang: {trx.branch?.name || '—'} · ID: {trx.id?.slice(0, 8)}…</p>}
+          </div>
+          <button type="button" onClick={onClose} className="btn btn-ghost btn-sm" disabled={submitting}>✕</button>
+        </div>
+
+        <div style={{padding:'10px 12px',background:'var(--mauve-tint)',borderRadius:8,fontSize:12,color:'var(--plum)',marginBottom:18,lineHeight:1.5}}>
+          💡 Semua perubahan akan tercatat di <strong>Audit Log</strong> dengan timestamp dan before/after lengkap.
+        </div>
+
+        {loading ? <Loader text="Memuat data..."/> : (
+        <form onSubmit={handleSubmit}>
+          {/* INFO DASAR */}
+          <Card title="Info Dasar">
+            <div className="form-row">
+              <Field label="Tanggal *">
+                <input type="date" className="form-input" value={date}
+                  onChange={e => setDate(e.target.value)} required/>
+              </Field>
+              <Field label="Jam Mulai *" hint={isOT ? '⚠️ Lembur (≥18:00)' : ''}>
+                <input type="time" className="form-input" value={startTime}
+                  onChange={e => setStartTime(e.target.value)} required/>
+              </Field>
+            </div>
+            <div className="form-row">
+              <Field label="Nama Pelanggan *">
+                <input type="text" className="form-input" value={clientName}
+                  onChange={e => setClientName(e.target.value)} required/>
+              </Field>
+              <Field label="No HP Pelanggan">
+                <input type="tel" className="form-input" value={clientPhone}
+                  onChange={e => setClientPhone(e.target.value)} placeholder="08xxx"/>
+              </Field>
+            </div>
+          </Card>
+
+          {/* TREATMENT ITEMS */}
+          <Card title="Treatment" sub={`${items.length} treatment · Total komisi: ${fmtRp(totalCommission)}`}>
+            {items.map((item, idx) => {
+              const svc = getServiceDef(item.service_name);
+              const isFixedComm = svc?.commission_type === 'fixed_amount';
+              const com = getItemCommission(item);
+
+              return (
+                <div key={idx} style={{padding:14,background:'var(--cream)',borderRadius:8,marginBottom:10,position:'relative'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                    <span className="eyebrow" style={{fontSize:9}}>Treatment {idx + 1}</span>
+                    {items.length > 1 && (
+                      <button type="button" className="btn btn-ghost btn-sm"
+                        onClick={() => removeItem(idx)}
+                        style={{color:'var(--red)',fontSize:11}}>✕ Hapus</button>
+                    )}
+                  </div>
+
+                  <div className="form-row">
+                    <Field label="Karyawan *">
+                      <select className="form-select" value={item.employee_id}
+                        onChange={e => updateItem(idx, { employee_id: e.target.value })} required>
+                        <option value="">— Pilih —</option>
+                        {employees.map(e => (
+                          <option key={e.id} value={e.id}>{e.full_name} ({e.job_title})</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Treatment *">
+                      <select className="form-select" value={item.service_name}
+                        onChange={e => {
+                          const newSvcName = e.target.value;
+                          const newSvc = getServiceDef(newSvcName);
+                          const patch = {
+                            service_name: newSvcName,
+                            fixed_commission: '',
+                          };
+                          if (isHomeService && newSvc?.commission_type === 'percent') {
+                            patch.commission_override = '0';
+                          } else {
+                            patch.commission_override = '';
+                          }
+                          updateItem(idx, patch);
+                        }} required>
+                        <option value="">— Pilih —</option>
+                        {SERVICES.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                      </select>
+                    </Field>
+                  </div>
+
+                  <div className="form-row">
+                    <Field label="Harga (Rp) *">
+                      <input type="number" className="form-input" value={item.price}
+                        onChange={e => updateItem(idx, { price: e.target.value })}
+                        placeholder="200000" min="0" step="1000" required/>
+                    </Field>
+                    {isFixedComm ? (
+                      <Field label="Komisi Karyawan (Rp) *" hint="50.000 – 250.000">
+                        <input type="number" className="form-input" value={item.fixed_commission}
+                          onChange={e => updateItem(idx, { fixed_commission: e.target.value })}
+                          placeholder="100000" min="50000" max="250000" step="1000" required/>
+                      </Field>
+                    ) : item.service_name && isHomeService ? (
+                      <Field label="Komisi Treatment (Rp)" hint="Default Rp 0 (HS mode)">
+                        <input type="number" className="form-input"
+                          value={item.commission_override ?? '0'}
+                          onChange={e => updateItem(idx, { commission_override: e.target.value })}
+                          min="0" step="1000" placeholder="0"
+                          style={{borderColor:'var(--amber)',background:'#fdf6e3'}}/>
+                      </Field>
+                    ) : item.service_name ? (
+                      <Field label="Komisi Otomatis" hint={`${com.rate}% dari harga`}>
+                        <input type="text" className="form-input" value={fmtRp(com.amount)} disabled
+                          style={{background:'var(--mauve-tint)',color:'var(--plum)',fontWeight:500}}/>
+                      </Field>
+                    ) : (
+                      <Field label="Komisi">
+                        <input type="text" className="form-input" value="—" disabled/>
+                      </Field>
+                    )}
+                  </div>
+
+                  {svc && (
+                    <div style={{marginTop:8,padding:'8px 12px',background:'var(--paper)',borderRadius:6,fontSize:12,color:'var(--muted)',display:'flex',justifyContent:'space-between',flexWrap:'wrap',gap:6}}>
+                      <span>
+                        <strong>Kategori:</strong> {svc.category} ·
+                        <strong> Tipe komisi:</strong>{' '}
+                        {svc.commission_type === 'percent'
+                          ? (isHomeService ? 'Manual (HS mode)' : `${svc.baseRate}% (base)`)
+                          : 'Manual Rp'}
+                        {isOT && !isHomeService && ' · ⚠️ Lembur'}
+                        {isHomeService && ' · 🏠 HS'}
+                      </span>
+                      <span style={{fontWeight:500,color:'var(--plum)'}}>Komisi: {fmtRp(com.amount)}</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            <button type="button" className="btn btn-ghost btn-sm" onClick={addItem}>
+              + Tambah Treatment
+            </button>
+          </Card>
+
+          {/* HOME SERVICE */}
+          <Card title="Home Service" sub="Opsional — komisi treatment sudah termasuk dalam biaya HS">
+            <label style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',marginBottom:12}}>
+              <input type="checkbox" checked={isHomeService}
+                onChange={e => {
+                  const checked = e.target.checked;
+                  setIsHomeService(checked);
+                  setItems(prev => prev.map(it => {
+                    const svc = getServiceDef(it.service_name);
+                    if (svc?.commission_type === 'percent') {
+                      return { ...it, commission_override: checked ? '0' : '' };
+                    }
+                    return it;
+                  }));
+                }}
+                style={{accentColor:'var(--mauve)',width:18,height:18}}/>
+              <span style={{fontSize:14}}>Ini transaksi home service</span>
+            </label>
+            {isHomeService && (
+              <>
+                <div style={{padding:'10px 12px',background:'#fdf6e3',borderRadius:6,fontSize:12,color:'var(--plum)',marginBottom:12,lineHeight:1.5}}>
+                  💡 <strong>Mode Home Service aktif</strong> — komisi treatment otomatis di-set ke Rp 0.
+                </div>
+                <Field label="Biaya Home Service (Rp)" hint="100% masuk komisi karyawan">
+                  <input type="number" className="form-input" value={homeServiceFee}
+                    onChange={e => setHomeServiceFee(e.target.value)} placeholder="50000" min="0" step="5000"/>
+                </Field>
+              </>
+            )}
+          </Card>
+
+          {/* CATATAN */}
+          <Card title="Catatan" sub="Opsional">
+            <textarea className="form-textarea" rows="2" value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="Catatan tambahan..."/>
+          </Card>
+
+          {/* SUMMARY */}
+          <div style={{padding:'14px 16px',background:'var(--mauve-tint)',borderRadius:10,marginBottom:18}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:6,fontSize:13}}>
+              <span>Total Omset:</span>
+              <span style={{fontWeight:500}}>{fmtRp(totalAmount)}</span>
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:6,fontSize:13}}>
+              <span>Total Komisi Treatment:</span>
+              <span style={{color:'var(--mauve)'}}>{fmtRp(totalCommission)}</span>
+            </div>
+            {isHomeService && Number(homeServiceFee) > 0 && (
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:6,fontSize:13}}>
+                <span>Biaya Home Service (100% Karyawan):</span>
+                <span style={{color:'var(--mauve)'}}>{fmtRp(Number(homeServiceFee))}</span>
+              </div>
+            )}
+            <div style={{display:'flex',justifyContent:'space-between',paddingTop:8,borderTop:'1px solid var(--mauve)',fontSize:14,fontWeight:600}}>
+              <span>Total ke Karyawan:</span>
+              <span style={{color:'var(--plum-deep)'}}>{fmtRp(totalForEmployee)}</span>
+            </div>
+          </div>
+
+          <div style={{display:'flex',gap:10,justifyContent:'flex-end',flexWrap:'wrap'}}>
+            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={submitting}>Batal</button>
+            <button type="submit" className="btn btn-primary" disabled={submitting}>
+              {submitting ? <span className="loader" style={{borderTopColor:'#fff',borderColor:'rgba(255,255,255,0.3)'}}/> : 'Simpan Perubahan'}
+            </button>
+          </div>
+        </form>
+        )}
+      </div>
     </div>
   );
 }
@@ -2934,4 +3461,6 @@ Object.assign(window, {
   // Tahap D
   EmployeeDashboardView, MyTransactionsPage, MySalaryPage,
   AdminEmployeeView,
+  // Edit/Delete
+  EditTransactionModal,
 });
