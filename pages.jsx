@@ -1,5 +1,5 @@
 // ===== Pages: Login + Dashboards + Employees + Branches + Transactions =====
-const { useState: useStateP, useEffect: useEffectP, useMemo: useMemoP } = React;
+const { useState: useStateP, useEffect: useEffectP, useMemo: useMemoP, useRef: useRefP } = React;
 
 // ----- Login page -----
 function LoginPage({ onLoggedIn }) {
@@ -188,6 +188,8 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
   const [employees, setEmployees] = useStateP([]);
   const [loadingEmployees, setLoadingEmployees] = useStateP(true);
   const [submitting, setSubmitting] = useStateP(false);
+  const [savedTransactionId, setSavedTransactionId] = useStateP(null);
+  const [showPhotoUploadAfter, setShowPhotoUploadAfter] = useStateP(false);
 
   const isOT = isOvertime(startTime);
 
@@ -287,7 +289,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
         };
       });
 
-      await createTransaction({
+      const newTrx = await createTransaction({
         branchId: effectiveBranchId,
         clientName: clientName.trim(),
         clientPhone: clientPhone.trim(),
@@ -298,8 +300,9 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
         createdBy: profile.id,
       });
 
-      toast('Transaksi tersimpan! 🎉', 'success');
-      setPage('transactions');
+      toast('Transaksi tersimpan! 🎉 Sekarang upload foto.', 'success');
+      setSavedTransactionId(newTrx.id);
+      setShowPhotoUploadAfter(true);
     } catch (err) {
       toast('Gagal: ' + (err.message || err), 'error');
     } finally {
@@ -510,6 +513,17 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
           </Card>
         </form>
       )}
+
+      {/* Photo upload modal after save */}
+      <PhotoGalleryModal
+        open={showPhotoUploadAfter}
+        transactionId={savedTransactionId}
+        profile={profile}
+        onClose={() => {
+          setShowPhotoUploadAfter(false);
+          setPage('transactions');
+        }}
+      />
     </div>
   );
 }
@@ -524,6 +538,7 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
   const [deleteTarget, setDeleteTarget] = useStateP(null);
   const [deleting, setDeleting] = useStateP(false);
   const [editedIds, setEditedIds] = useStateP(new Set());
+  const [photoTargetId, setPhotoTargetId] = useStateP(null);
 
   const isSuper = profile.role === 'super_admin';
   const isBranchAdmin = profile.role === 'branch_admin';
@@ -632,6 +647,13 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                         <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
                           <button
                             className="btn btn-ghost btn-sm"
+                            onClick={() => setPhotoTargetId(t.id)}
+                            title="Lihat & kelola foto treatment"
+                          >
+                            📸 Foto
+                          </button>
+                          <button
+                            className="btn btn-ghost btn-sm"
                             onClick={() => setEditingId(t.id)}
                             title="Edit transaksi"
                           >
@@ -667,6 +689,14 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
         branches={branches}
         onClose={() => setEditingId(null)}
         onSuccess={() => { setEditingId(null); load(); }}
+      />
+
+      {/* Photo Gallery Modal */}
+      <PhotoGalleryModal
+        open={!!photoTargetId}
+        transactionId={photoTargetId}
+        profile={profile}
+        onClose={() => setPhotoTargetId(null)}
       />
 
       {/* Delete Confirmation */}
@@ -3451,6 +3481,485 @@ function AdminEmployeeView({ profile, employee, branches, onBack, setPage }) {
   );
 }
 
+// =====================================================
+// PHOTO UPLOAD FIELD — Tahap E
+// Reusable photo upload widget (camera + gallery)
+// =====================================================
+function PhotoUploadField({ label, hint, photoType, existingPhoto, onUploaded, onDeleted, transactionId, branchId, disabled = false, required = false }) {
+  const [uploading, setUploading] = useStateP(false);
+  const [previewUrl, setPreviewUrl] = useStateP(null);
+  const fileInputRef = useRefP(null);
+
+  // Update preview when existingPhoto changes
+  useEffectP(() => {
+    if (existingPhoto?.signedUrl) {
+      setPreviewUrl(existingPhoto.signedUrl);
+    } else if (!existingPhoto) {
+      setPreviewUrl(null);
+    }
+  }, [existingPhoto]);
+
+  async function handleFileSelect(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      toast('File harus berupa gambar', 'error');
+      return;
+    }
+
+    if (!transactionId) {
+      toast('Transaksi belum tersimpan. Simpan transaksi dulu, lalu upload foto.', 'error');
+      e.target.value = '';
+      return;
+    }
+
+    setUploading(true);
+    try {
+      // Show preview immediately
+      const reader = new FileReader();
+      reader.onload = ev => setPreviewUrl(ev.target.result);
+      reader.readAsDataURL(file);
+
+      // Delete existing photo first (if any, since we have unique constraint)
+      if (existingPhoto?.id) {
+        await deleteTreatmentPhoto(existingPhoto.id);
+      }
+
+      // Upload
+      const photo = await uploadTreatmentPhoto({
+        transactionId,
+        branchId,
+        photoType,
+        file,
+      });
+
+      toast(`Foto ${photoType} berhasil diupload ✓`, 'success');
+
+      // Get fresh signed URL
+      const photos = await getTransactionPhotos(transactionId);
+      const fresh = photos.find(p => p.id === photo.id);
+      if (fresh) {
+        setPreviewUrl(fresh.signedUrl);
+        onUploaded?.(fresh);
+      } else {
+        onUploaded?.(photo);
+      }
+    } catch (err) {
+      toast('Gagal upload: ' + (err.message || err), 'error');
+      setPreviewUrl(existingPhoto?.signedUrl || null);
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  }
+
+  async function handleDelete() {
+    if (!existingPhoto?.id) return;
+    if (!window.confirm(`Hapus foto ${photoType}?`)) return;
+
+    try {
+      await deleteTreatmentPhoto(existingPhoto.id);
+      setPreviewUrl(null);
+      toast('Foto dihapus', 'success');
+      onDeleted?.();
+    } catch (err) {
+      toast('Gagal hapus foto: ' + (err.message || err), 'error');
+    }
+  }
+
+  return (
+    <div style={{marginBottom:14}}>
+      <div className="eyebrow" style={{fontSize:9,marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
+        {label}
+        {required && <span style={{color:'var(--red)'}}>*</span>}
+        {existingPhoto && <span className="badge" style={{background:'#ecf5ef',color:'#4a7c59',fontSize:9}}>✓ Uploaded</span>}
+      </div>
+
+      {hint && <div style={{fontSize:11,color:'var(--muted)',marginBottom:8,lineHeight:1.5}}>{hint}</div>}
+
+      <div style={{
+        border:'2px dashed',
+        borderColor: existingPhoto ? 'var(--green)' : (required ? 'var(--amber)' : 'var(--line)'),
+        borderRadius:10,
+        padding:previewUrl ? 8 : 20,
+        background: existingPhoto ? '#f4f9f5' : 'var(--cream)',
+        position:'relative',
+        textAlign:'center',
+        minHeight:previewUrl ? 'auto' : 140,
+        display:'flex',
+        flexDirection:'column',
+        alignItems:'center',
+        justifyContent:'center',
+      }}>
+        {previewUrl ? (
+          <>
+            <img
+              src={previewUrl}
+              alt={`${photoType} preview`}
+              style={{
+                maxWidth:'100%',
+                maxHeight:200,
+                borderRadius:8,
+                objectFit:'contain',
+                display:'block',
+              }}
+            />
+            <div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap',justifyContent:'center'}}>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading || disabled}
+              >
+                🔄 Ganti Foto
+              </button>
+              {existingPhoto && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={handleDelete}
+                  disabled={uploading || disabled}
+                  style={{color:'var(--red)'}}
+                >
+                  🗑 Hapus
+                </button>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{fontSize:36,marginBottom:8}}>📸</div>
+            <div style={{fontSize:13,color:'var(--plum)',marginBottom:4,fontWeight:500}}>
+              {photoType === 'before' ? 'Foto Sebelum Treatment' : 'Foto Hasil Treatment'}
+            </div>
+            <div style={{fontSize:11,color:'var(--muted)',marginBottom:14,lineHeight:1.4,maxWidth:300}}>
+              {photoType === 'after'
+                ? 'Wajib upload sebagai bukti hasil. Bisa pakai kamera HP atau pilih dari galeri.'
+                : 'Optional. Foto sebelum treatment kalau sempat.'}
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading || disabled || !transactionId}
+            >
+              {uploading ? <span className="loader" style={{borderTopColor:'#fff',borderColor:'rgba(255,255,255,0.3)'}}/> : '📸 Upload Foto'}
+            </button>
+            {!transactionId && (
+              <div style={{fontSize:10,color:'var(--muted)',marginTop:8,fontStyle:'italic'}}>
+                Simpan transaksi dulu untuk upload foto
+              </div>
+            )}
+          </>
+        )}
+
+        {uploading && (
+          <div style={{
+            position:'absolute',inset:0,
+            background:'rgba(255,255,255,0.85)',
+            display:'flex',alignItems:'center',justifyContent:'center',
+            borderRadius:10,
+          }}>
+            <div style={{textAlign:'center'}}>
+              <div className="loader"/>
+              <div style={{fontSize:11,color:'var(--muted)',marginTop:8}}>Mengupload & compress...</div>
+            </div>
+          </div>
+        )}
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={handleFileSelect}
+          style={{display:'none'}}
+          disabled={uploading || disabled}
+        />
+      </div>
+    </div>
+  );
+}
+
+// =====================================================
+// PHOTO GALLERY MODAL — Lihat semua foto sebuah transaksi
+// =====================================================
+function PhotoGalleryModal({ open, transactionId, profile, onClose }) {
+  const [photos, setPhotos] = useStateP([]);
+  const [loading, setLoading] = useStateP(true);
+  const [trx, setTrx] = useStateP(null);
+  const [skipReason, setSkipReason] = useStateP('');
+  const [editingSkipReason, setEditingSkipReason] = useStateP(false);
+
+  const isAdmin = profile?.role === 'super_admin' || profile?.role === 'branch_admin';
+
+  async function loadData() {
+    if (!transactionId) return;
+    setLoading(true);
+    try {
+      const [photosData, trxData] = await Promise.all([
+        getTransactionPhotos(transactionId),
+        getTransactionDetail(transactionId),
+      ]);
+      setPhotos(photosData);
+      setTrx(trxData);
+      setSkipReason(trxData?.photo_skip_reason || '');
+    } catch (err) {
+      toast('Gagal memuat foto: ' + err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffectP(() => {
+    if (open) loadData();
+  }, [open, transactionId]);
+
+  const beforePhoto = photos.find(p => p.photo_type === 'before');
+  const afterPhoto = photos.find(p => p.photo_type === 'after');
+
+  async function handleMarkMarketing(photo, approved) {
+    try {
+      await markPhotoMarketing(photo.id, approved);
+      toast(approved ? 'Foto ditandai untuk marketing ✓' : 'Tanda marketing dihapus', 'success');
+      loadData();
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    }
+  }
+
+  async function saveSkipReason() {
+    try {
+      await updatePhotoSkipReason(transactionId, skipReason || null);
+      toast('Alasan disimpan', 'success');
+      setEditingSkipReason(false);
+      loadData();
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    }
+  }
+
+  function downloadPhoto(photo) {
+    if (!photo.signedUrl) return;
+    const a = document.createElement('a');
+    a.href = photo.signedUrl;
+    a.download = `${trx?.client_name_snapshot || 'foto'}_${photo.photo_type}_${trx?.date}.jpg`;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  function shareWA(photo) {
+    if (!photo.signedUrl) return;
+    // Simple share: open WhatsApp web with text + link
+    const text = encodeURIComponent(`Foto hasil treatment ${photo.photo_type === 'after' ? 'after' : 'before'} di JBB. Lihat: ${photo.signedUrl}`);
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+  }
+
+  if (!open) return null;
+
+  return (
+    <div style={{
+      position:'fixed',inset:0,background:'rgba(36,26,44,0.7)',
+      display:'flex',alignItems:'center',justifyContent:'center',
+      zIndex:1000,padding:20,backdropFilter:'blur(4px)',
+    }} onClick={onClose}>
+      <div style={{
+        background:'var(--paper)',borderRadius:20,padding:28,
+        width:'100%',maxWidth:820,maxHeight:'92vh',overflowY:'auto',
+        boxShadow:'var(--shadow-lg)',
+      }} onClick={e => e.stopPropagation()}>
+
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:18}}>
+          <div>
+            <div className="eyebrow" style={{marginBottom:6}}>📸 Foto Treatment</div>
+            <h2 style={{fontFamily:'Cormorant Garamond, serif',fontSize:24,fontWeight:400,color:'var(--plum-deep)'}}>
+              {trx?.client_name_snapshot || 'Memuat...'}
+            </h2>
+            {trx && (
+              <p style={{fontSize:12,color:'var(--muted)',marginTop:4}}>
+                {fmtDate(trx.date)} · {fmtTime(trx.start_time)} · {trx.branch?.name}
+              </p>
+            )}
+          </div>
+          <button type="button" onClick={onClose} className="btn btn-ghost btn-sm">✕</button>
+        </div>
+
+        {loading ? <Loader text="Memuat foto..."/> : (
+          <>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))',gap:16,marginBottom:18}}>
+              {/* Before Photo */}
+              <div>
+                <div className="eyebrow" style={{fontSize:9,marginBottom:8}}>
+                  Foto Before
+                  {!beforePhoto && <span style={{color:'var(--muted)',marginLeft:6}}>(tidak ada)</span>}
+                </div>
+                {beforePhoto?.signedUrl ? (
+                  <div style={{borderRadius:10,overflow:'hidden',background:'var(--cream)'}}>
+                    <img src={beforePhoto.signedUrl} alt="Before"
+                      style={{width:'100%',display:'block',maxHeight:400,objectFit:'contain'}}/>
+                    <div style={{padding:10,display:'flex',gap:6,flexWrap:'wrap',background:'var(--paper)'}}>
+                      <button className="btn btn-ghost btn-sm" onClick={() => downloadPhoto(beforePhoto)}>⬇ Download</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => shareWA(beforePhoto)}>💬 WA</button>
+                      {isAdmin && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => handleMarkMarketing(beforePhoto, !beforePhoto.is_marketing_approved)}
+                          style={beforePhoto.is_marketing_approved ? {color:'var(--gold)'} : {}}
+                        >
+                          {beforePhoto.is_marketing_approved ? '⭐ Marketing ON' : '☆ Mark Marketing'}
+                        </button>
+                      )}
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={async () => {
+                          if (!window.confirm('Hapus foto before?')) return;
+                          try {
+                            await deleteTreatmentPhoto(beforePhoto.id);
+                            toast('Foto before dihapus', 'success');
+                            loadData();
+                          } catch (err) { toast('Gagal: '+err.message, 'error'); }
+                        }}
+                        style={{color:'var(--red)'}}
+                      >
+                        🗑 Hapus
+                      </button>
+                    </div>
+                    <div style={{padding:'4px 10px 10px',fontSize:10,color:'var(--muted)'}}>
+                      Upload: {beforePhoto.uploaded_at ? new Date(beforePhoto.uploaded_at).toLocaleString('id-ID') : '—'}
+                    </div>
+                  </div>
+                ) : (
+                  <PhotoUploadField
+                    label="Foto Before"
+                    hint="Optional — foto sebelum treatment kalau sempat"
+                    photoType="before"
+                    existingPhoto={null}
+                    transactionId={transactionId}
+                    branchId={trx?.branch_id}
+                    onUploaded={() => loadData()}
+                  />
+                )}
+              </div>
+
+              {/* After Photo */}
+              <div>
+                <div className="eyebrow" style={{fontSize:9,marginBottom:8}}>
+                  Foto After
+                  {!afterPhoto && !trx?.photo_skip_reason && <span style={{color:'var(--red)',marginLeft:6}}>⚠️ wajib upload</span>}
+                </div>
+                {afterPhoto?.signedUrl ? (
+                  <div style={{borderRadius:10,overflow:'hidden',background:'var(--cream)'}}>
+                    <img src={afterPhoto.signedUrl} alt="After"
+                      style={{width:'100%',display:'block',maxHeight:400,objectFit:'contain'}}/>
+                    <div style={{padding:10,display:'flex',gap:6,flexWrap:'wrap',background:'var(--paper)'}}>
+                      <button className="btn btn-ghost btn-sm" onClick={() => downloadPhoto(afterPhoto)}>⬇ Download</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => shareWA(afterPhoto)}>💬 WA</button>
+                      {isAdmin && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => handleMarkMarketing(afterPhoto, !afterPhoto.is_marketing_approved)}
+                          style={afterPhoto.is_marketing_approved ? {color:'var(--gold)'} : {}}
+                        >
+                          {afterPhoto.is_marketing_approved ? '⭐ Marketing ON' : '☆ Mark Marketing'}
+                        </button>
+                      )}
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={async () => {
+                          if (!window.confirm('Hapus foto after?')) return;
+                          try {
+                            await deleteTreatmentPhoto(afterPhoto.id);
+                            toast('Foto after dihapus', 'success');
+                            loadData();
+                          } catch (err) { toast('Gagal: '+err.message, 'error'); }
+                        }}
+                        style={{color:'var(--red)'}}
+                      >
+                        🗑 Hapus
+                      </button>
+                    </div>
+                    <div style={{padding:'4px 10px 10px',fontSize:10,color:'var(--muted)'}}>
+                      Upload: {afterPhoto.uploaded_at ? new Date(afterPhoto.uploaded_at).toLocaleString('id-ID') : '—'}
+                    </div>
+                  </div>
+                ) : trx?.photo_skip_reason ? (
+                  <div style={{padding:20,background:'#fdf6e3',borderRadius:10,fontSize:13,color:'var(--plum)'}}>
+                    <div className="eyebrow" style={{fontSize:9,marginBottom:6,color:'var(--amber)'}}>⚠️ Foto di-skip</div>
+                    <div>Alasan: {trx.photo_skip_reason}</div>
+                  </div>
+                ) : (
+                  <PhotoUploadField
+                    label="Foto After"
+                    hint="Wajib upload. Bisa pakai kamera HP atau pilih dari galeri."
+                    photoType="after"
+                    existingPhoto={null}
+                    transactionId={transactionId}
+                    branchId={trx?.branch_id}
+                    onUploaded={() => loadData()}
+                    required
+                  />
+                )}
+              </div>
+            </div>
+
+            {/* Skip reason editor */}
+            {!afterPhoto && (
+              <Card title="Alasan Skip Foto After" sub="Isi alasan jika foto after benar-benar tidak bisa diambil">
+                {editingSkipReason ? (
+                  <>
+                    <Field label="Alasan">
+                      <select className="form-select" value={skipReason}
+                        onChange={e => setSkipReason(e.target.value)}>
+                        <option value="">— Pilih —</option>
+                        <option value="Klien tolak difoto">Klien tolak difoto</option>
+                        <option value="Foto tidak terambil karena alasan teknis">Foto tidak terambil karena alasan teknis</option>
+                        <option value="Klien buru-buru pulang">Klien buru-buru pulang</option>
+                        <option value="Lainnya">Lainnya</option>
+                      </select>
+                    </Field>
+                    {skipReason === 'Lainnya' && (
+                      <Field label="Alasan custom">
+                        <input type="text" className="form-input"
+                          placeholder="Tulis alasan..."
+                          onChange={e => setSkipReason(e.target.value)}/>
+                      </Field>
+                    )}
+                    <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+                      <button className="btn btn-ghost btn-sm" onClick={() => { setEditingSkipReason(false); setSkipReason(trx?.photo_skip_reason || ''); }}>Batal</button>
+                      <button className="btn btn-primary btn-sm" onClick={saveSkipReason}>Simpan</button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {trx?.photo_skip_reason ? (
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                        <div>
+                          <div style={{fontSize:11,color:'var(--muted)'}}>Alasan tersimpan:</div>
+                          <div style={{fontSize:14,fontWeight:500}}>{trx.photo_skip_reason}</div>
+                        </div>
+                        <button className="btn btn-ghost btn-sm" onClick={() => setEditingSkipReason(true)}>✏️ Edit</button>
+                      </div>
+                    ) : (
+                      <button className="btn btn-ghost btn-sm" onClick={() => setEditingSkipReason(true)}>+ Tambah Alasan Skip</button>
+                    )}
+                  </>
+                )}
+              </Card>
+            )}
+          </>
+        )}
+
+        <div style={{display:'flex',justifyContent:'flex-end',marginTop:14}}>
+          <button className="btn btn-ghost" onClick={onClose}>Tutup</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 Object.assign(window, {
   LoginPage, AdminDashboard, BranchesPage,
   NewTransactionPage, TransactionsPage,
@@ -3458,9 +3967,9 @@ Object.assign(window, {
   AddEmployeeModal, DeleteConfirmModal,
   ReportsPage, PayrollPage, AdjustAttendanceModal,
   AuditLogPage,
-  // Tahap D
   EmployeeDashboardView, MyTransactionsPage, MySalaryPage,
   AdminEmployeeView,
-  // Edit/Delete
   EditTransactionModal,
+  // Tahap E
+  PhotoUploadField, PhotoGalleryModal,
 });

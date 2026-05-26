@@ -2037,6 +2037,261 @@ async function getEditedTransactionIds(transactionIds) {
   return new Set((data || []).map(r => r.record_id));
 }
 
+// =====================================================
+// TREATMENT PHOTOS — Tahap E
+// =====================================================
+
+const PHOTO_BUCKET = 'treatment-photos';
+const MAX_PHOTO_SIZE = 5 * 1024 * 1024; // 5 MB
+const MAX_IMAGE_DIMENSION = 1600; // Resize to max 1600px on longest side
+
+// Compress & resize image client-side before upload
+async function compressImage(file, maxDim = MAX_IMAGE_DIMENSION, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        // Calculate new dimensions
+        let { width, height } = img;
+        if (width > height) {
+          if (width > maxDim) {
+            height = Math.round(height * (maxDim / width));
+            width = maxDim;
+          }
+        } else {
+          if (height > maxDim) {
+            width = Math.round(width * (maxDim / height));
+            height = maxDim;
+          }
+        }
+
+        // Create canvas & draw resized image
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Convert to blob
+        canvas.toBlob(
+          blob => {
+            if (!blob) {
+              reject(new Error('Compression failed'));
+              return;
+            }
+            resolve({ blob, width, height });
+          },
+          'image/jpeg',
+          quality
+        );
+      };
+      img.onerror = () => reject(new Error('Image load failed'));
+      img.src = e.target.result;
+    };
+    reader.onerror = () => reject(new Error('File read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+// Upload photo to storage + insert metadata to table
+// Returns { id, storage_path, signedUrl }
+async function uploadTreatmentPhoto({
+  transactionId,
+  branchId,
+  photoType,  // 'before' or 'after'
+  file,
+  caption = null,
+}) {
+  if (!file) throw new Error('File required');
+  if (file.size > MAX_PHOTO_SIZE) {
+    throw new Error(`File terlalu besar (maks ${MAX_PHOTO_SIZE / 1024 / 1024} MB)`);
+  }
+
+  // Compress image
+  const { blob, width, height } = await compressImage(file);
+
+  // Generate storage path: {branch_id}/{yyyy-mm}/{transaction_id}_{photo_type}_{timestamp}.jpg
+  const now = new Date();
+  const yyyymm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const timestamp = Date.now();
+  const storagePath = `${branchId}/${yyyymm}/${transactionId}_${photoType}_${timestamp}.jpg`;
+
+  // Upload to storage
+  const { error: uploadError } = await sb.storage
+    .from(PHOTO_BUCKET)
+    .upload(storagePath, blob, {
+      contentType: 'image/jpeg',
+      cacheControl: '3600',
+      upsert: false,
+    });
+  if (uploadError) throw uploadError;
+
+  // Insert metadata to table
+  const { data: insertData, error: insertError } = await sb
+    .from('treatment_photos')
+    .insert({
+      transaction_id: transactionId,
+      branch_id: branchId,
+      photo_type: photoType,
+      storage_path: storagePath,
+      file_size_bytes: blob.size,
+      mime_type: 'image/jpeg',
+      width,
+      height,
+      caption,
+      uploaded_by: (await sb.auth.getUser()).data?.user?.id,
+    })
+    .select()
+    .single();
+
+  if (insertError) {
+    // Rollback: delete the uploaded file
+    await sb.storage.from(PHOTO_BUCKET).remove([storagePath]);
+    throw insertError;
+  }
+
+  return insertData;
+}
+
+// Get photos for a transaction (with signed URLs)
+async function getTransactionPhotos(transactionId) {
+  const { data: photos, error } = await sb
+    .from('treatment_photos')
+    .select('*')
+    .eq('transaction_id', transactionId)
+    .order('photo_type', { ascending: true });
+
+  if (error) throw error;
+  if (!photos || !photos.length) return [];
+
+  // Generate signed URLs for each photo (valid for 1 hour)
+  const photosWithUrls = await Promise.all(
+    photos.map(async p => {
+      const { data: signed } = await sb.storage
+        .from(PHOTO_BUCKET)
+        .createSignedUrl(p.storage_path, 3600); // 1 hour
+      return { ...p, signedUrl: signed?.signedUrl || null };
+    })
+  );
+
+  return photosWithUrls;
+}
+
+// Delete a photo (storage + table)
+async function deleteTreatmentPhoto(photoId) {
+  // Get photo first to know storage_path
+  const { data: photo, error: fetchError } = await sb
+    .from('treatment_photos')
+    .select('storage_path')
+    .eq('id', photoId)
+    .single();
+
+  if (fetchError) throw fetchError;
+
+  // Delete from storage
+  if (photo?.storage_path) {
+    const { error: storageError } = await sb.storage
+      .from(PHOTO_BUCKET)
+      .remove([photo.storage_path]);
+    if (storageError) {
+      console.warn('Storage delete failed (may already be gone):', storageError);
+    }
+  }
+
+  // Delete from table
+  const { error: deleteError } = await sb
+    .from('treatment_photos')
+    .delete()
+    .eq('id', photoId);
+
+  if (deleteError) throw deleteError;
+}
+
+// Mark photo as marketing approved (or unmark)
+async function markPhotoMarketing(photoId, approved = true) {
+  const { error } = await sb.rpc('mark_photo_marketing_approved', {
+    p_photo_id: photoId,
+    p_approved: approved,
+  });
+  if (error) throw error;
+}
+
+// Generate a fresh signed URL for an existing photo (if expired)
+async function refreshPhotoSignedUrl(storagePath, expiresIn = 3600) {
+  const { data, error } = await sb.storage
+    .from(PHOTO_BUCKET)
+    .createSignedUrl(storagePath, expiresIn);
+  if (error) throw error;
+  return data?.signedUrl || null;
+}
+
+// Update transaction's photo_skip_reason (when skipping after photo)
+async function updatePhotoSkipReason(transactionId, reason) {
+  const { error } = await sb
+    .from('transactions')
+    .update({ photo_skip_reason: reason })
+    .eq('id', transactionId);
+  if (error) throw error;
+}
+
+// Get marketing-approved photos (for portfolio gallery)
+async function listMarketingPhotos({ branchId = null, limit = 50 } = {}) {
+  let query = sb
+    .from('photos_with_context')
+    .select('*')
+    .eq('is_marketing_approved', true)
+    .order('marketing_approved_at', { ascending: false })
+    .limit(limit);
+
+  if (branchId) query = query.eq('branch_id', branchId);
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  // Add signed URLs
+  if (data && data.length) {
+    const withUrls = await Promise.all(
+      data.map(async p => {
+        const { data: signed } = await sb.storage
+          .from(PHOTO_BUCKET)
+          .createSignedUrl(p.storage_path, 3600);
+        return { ...p, signedUrl: signed?.signedUrl || null };
+      })
+    );
+    return withUrls;
+  }
+  return [];
+}
+
+// Get all photos with context (for admin gallery)
+async function listAllPhotos({ branchId = null, photoType = null, limit = 100 } = {}) {
+  let query = sb
+    .from('photos_with_context')
+    .select('*')
+    .order('uploaded_at', { ascending: false })
+    .limit(limit);
+
+  if (branchId) query = query.eq('branch_id', branchId);
+  if (photoType) query = query.eq('photo_type', photoType);
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  if (data && data.length) {
+    const withUrls = await Promise.all(
+      data.map(async p => {
+        const { data: signed } = await sb.storage
+          .from(PHOTO_BUCKET)
+          .createSignedUrl(p.storage_path, 3600);
+        return { ...p, signedUrl: signed?.signedUrl || null };
+      })
+    );
+    return withUrls;
+  }
+  return [];
+}
+
 // Expose
 Object.assign(window, {
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
@@ -2060,13 +2315,16 @@ Object.assign(window, {
   exportToExcel, exportReportToExcel, exportPayrollToExcel,
   generateSlipHTML, getEmployeePeriodTransactions, printSlip, printMultipleSlips,
   getBrandForBranch, escapeHtml,
-  // Tahap D
   getMyDashboardStats, getMyRecentTransactions, getMyTopServices, getMyTopClients,
   getEmployeeDashboardStatsAdmin, getEmployeeTransactionsAdmin,
   getEmployeeTopServicesAdmin, getEmployeeTopClientsAdmin,
   getEmployeeById, getPayrollAdjustment, getAnnualLeaveBalanceForEmployee,
   approveSlip, unapproveSlip,
-  // Edit/Delete Transaksi
   getTransactionDetail, updateTransactionFull, deleteTransaction,
   checkTransactionEdited, getEditedTransactionIds,
+  // Tahap E - Photos
+  PHOTO_BUCKET, compressImage,
+  uploadTreatmentPhoto, getTransactionPhotos, deleteTreatmentPhoto,
+  markPhotoMarketing, refreshPhotoSignedUrl, updatePhotoSkipReason,
+  listMarketingPhotos, listAllPhotos,
 });
