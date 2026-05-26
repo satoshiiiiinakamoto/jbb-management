@@ -3488,7 +3488,8 @@ function AdminEmployeeView({ profile, employee, branches, onBack, setPage }) {
 function PhotoUploadField({ label, hint, photoType, existingPhoto, onUploaded, onDeleted, transactionId, branchId, disabled = false, required = false }) {
   const [uploading, setUploading] = useStateP(false);
   const [previewUrl, setPreviewUrl] = useStateP(null);
-  const fileInputRef = useRefP(null);
+  const cameraInputRef = useRefP(null);
+  const galleryInputRef = useRefP(null);
 
   // Update preview when existingPhoto changes
   useEffectP(() => {
@@ -3609,10 +3610,20 @@ function PhotoUploadField({ label, hint, photoType, existingPhoto, onUploaded, o
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => cameraInputRef.current?.click()}
                 disabled={uploading || disabled}
+                title="Ambil foto dengan kamera"
               >
-                🔄 Ganti Foto
+                📷 Kamera
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => galleryInputRef.current?.click()}
+                disabled={uploading || disabled}
+                title="Pilih dari galeri / file"
+              >
+                🖼 Galeri
               </button>
               {existingPhoto && (
                 <button
@@ -3638,14 +3649,26 @@ function PhotoUploadField({ label, hint, photoType, existingPhoto, onUploaded, o
                 ? 'Wajib upload sebagai bukti hasil. Bisa pakai kamera HP atau pilih dari galeri.'
                 : 'Optional. Foto sebelum treatment kalau sempat.'}
             </div>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading || disabled || !transactionId}
-            >
-              {uploading ? <span className="loader" style={{borderTopColor:'#fff',borderColor:'rgba(255,255,255,0.3)'}}/> : '📸 Upload Foto'}
-            </button>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'center'}}>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => cameraInputRef.current?.click()}
+                disabled={uploading || disabled || !transactionId}
+                title="Ambil foto dengan kamera"
+              >
+                {uploading ? <span className="loader" style={{borderTopColor:'#fff',borderColor:'rgba(255,255,255,0.3)'}}/> : '📷 Kamera'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => galleryInputRef.current?.click()}
+                disabled={uploading || disabled || !transactionId}
+                title="Pilih dari galeri / file"
+              >
+                🖼 Galeri
+              </button>
+            </div>
             {!transactionId && (
               <div style={{fontSize:10,color:'var(--muted)',marginTop:8,fontStyle:'italic'}}>
                 Simpan transaksi dulu untuk upload foto
@@ -3668,11 +3691,22 @@ function PhotoUploadField({ label, hint, photoType, existingPhoto, onUploaded, o
           </div>
         )}
 
+        {/* Camera input - forces camera on mobile */}
         <input
-          ref={fileInputRef}
+          ref={cameraInputRef}
           type="file"
           accept="image/*"
           capture="environment"
+          onChange={handleFileSelect}
+          style={{display:'none'}}
+          disabled={uploading || disabled}
+        />
+
+        {/* Gallery input - shows file picker (works on desktop + mobile gallery) */}
+        <input
+          ref={galleryInputRef}
+          type="file"
+          accept="image/*"
           onChange={handleFileSelect}
           style={{display:'none'}}
           disabled={uploading || disabled}
