@@ -185,6 +185,11 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
   const [homeServiceFee, setHomeServiceFee] = useStateP('');
   const [notes, setNotes] = useStateP('');
   const [paymentMethod, setPaymentMethod] = useStateP('cash');
+  // DP states
+  const [hasDp, setHasDp] = useStateP(false);
+  const [dpAmount, setDpAmount] = useStateP('');
+  const [dpMethod, setDpMethod] = useStateP('qris');
+  const [dpDate, setDpDate] = useStateP(todayStr());
   // shareWith: array of additional employee_ids (multi-employee support)
   // share_percents: parallel array of percentages [main, ...sharedWith]
   const [items, setItems] = useStateP([{ employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '', share_with: [], share_percents: [100] }]);
@@ -338,6 +343,23 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
         });
       }
 
+      // Build payments array based on hasDp
+      const grandTotal = items.reduce((sum, it) => sum + (Number(it.price) || 0), 0)
+        + (isHomeService ? (Number(homeServiceFee) || 0) : 0);
+
+      let paymentsArr = null;
+      if (hasDp) {
+        const dp = Number(dpAmount) || 0;
+        const sisa = grandTotal - dp;
+        if (dp <= 0) { toast('Jumlah DP wajib diisi (> 0)', 'error'); setSubmitting(false); return; }
+        if (dp >= grandTotal) { toast('DP tidak boleh ≥ total transaksi', 'error'); setSubmitting(false); return; }
+        if (!dpDate) { toast('Tanggal DP wajib diisi', 'error'); setSubmitting(false); return; }
+        paymentsArr = [
+          { method: dpMethod, amount: dp, is_dp: true, paid_at: dpDate },
+          { method: paymentMethod, amount: sisa, is_dp: false, paid_at: date },
+        ];
+      }
+
       const newTrx = await createTransaction({
         branchId: effectiveBranchId,
         clientName: clientName.trim(),
@@ -348,6 +370,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
         items: itemsPayload,
         createdBy: profile.id,
         paymentMethod,
+        payments: paymentsArr,
       });
 
       toast('Transaksi tersimpan! 🎉 Sekarang upload foto.', 'success');
@@ -649,34 +672,157 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
             )}
           </Card>
 
-          <Card title="Cara Pembayaran" sub="Pilih metode pembayaran dari klien">
-            <Field>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(160px, 1fr))',gap:8}}>
-                {PAYMENT_METHODS.map(pm => (
-                  <label key={pm.value}
-                    style={{
-                      display:'flex',alignItems:'center',gap:10,
-                      padding:'12px 14px',
-                      border:'2px solid',
-                      borderColor: paymentMethod === pm.value ? 'var(--mauve)' : 'var(--line)',
-                      borderRadius:10,
-                      background: paymentMethod === pm.value ? 'var(--mauve-tint)' : 'var(--paper)',
-                      cursor:'pointer',
-                      transition:'all 0.15s',
-                    }}>
-                    <input type="radio" name="paymentMethod"
-                      value={pm.value}
-                      checked={paymentMethod === pm.value}
-                      onChange={() => setPaymentMethod(pm.value)}
-                      style={{accentColor:'var(--mauve)'}}/>
-                    <span style={{fontSize:18}}>{pm.icon}</span>
-                    <span style={{fontSize:13,fontWeight:500,color: paymentMethod === pm.value ? 'var(--plum)' : 'var(--text)'}}>
-                      {pm.label}
-                    </span>
-                  </label>
-                ))}
+          <Card title="Pembayaran" sub={hasDp ? "Klien sudah bayar DP — input metode DP & pelunasan" : "Pilih metode pembayaran dari klien"}>
+            {/* DP Toggle */}
+            <label style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',marginBottom:14,padding:'10px 12px',background:'var(--cream)',borderRadius:10}}>
+              <input type="checkbox" checked={hasDp}
+                onChange={e => {
+                  const checked = e.target.checked;
+                  setHasDp(checked);
+                  if (!checked) {
+                    setDpAmount('');
+                  }
+                }}
+                style={{accentColor:'var(--mauve)',width:18,height:18}}/>
+              <div>
+                <div style={{fontSize:14,fontWeight:500}}>💰 Klien sudah bayar DP</div>
+                <div style={{fontSize:11,color:'var(--muted)'}}>Centang jika ada DP yang sudah dibayar sebelumnya/awal</div>
               </div>
-            </Field>
+            </label>
+
+            {!hasDp ? (
+              <>
+                <div className="eyebrow" style={{fontSize:9,marginBottom:8}}>METODE PEMBAYARAN (FULL)</div>
+                <Field>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(160px, 1fr))',gap:8}}>
+                    {PAYMENT_METHODS.map(pm => (
+                      <label key={pm.value}
+                        style={{
+                          display:'flex',alignItems:'center',gap:10,
+                          padding:'12px 14px',
+                          border:'2px solid',
+                          borderColor: paymentMethod === pm.value ? 'var(--mauve)' : 'var(--line)',
+                          borderRadius:10,
+                          background: paymentMethod === pm.value ? 'var(--mauve-tint)' : 'var(--paper)',
+                          cursor:'pointer',
+                          transition:'all 0.15s',
+                        }}>
+                        <input type="radio" name="paymentMethod"
+                          value={pm.value}
+                          checked={paymentMethod === pm.value}
+                          onChange={() => setPaymentMethod(pm.value)}
+                          style={{accentColor:'var(--mauve)'}}/>
+                        <span style={{fontSize:18}}>{pm.icon}</span>
+                        <span style={{fontSize:13,fontWeight:500,color: paymentMethod === pm.value ? 'var(--plum)' : 'var(--text)'}}>
+                          {pm.label}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </Field>
+              </>
+            ) : (
+              <>
+                {/* DP Section */}
+                <div style={{padding:14,background:'#fdf6e3',borderRadius:10,marginBottom:14,border:'1px solid #f0e0c0'}}>
+                  <div className="eyebrow" style={{fontSize:9,marginBottom:10,color:'var(--amber)'}}>1. DP (UANG MUKA)</div>
+                  <div className="form-row">
+                    <Field label="Tanggal DP">
+                      <input type="date" className="form-input" value={dpDate}
+                        onChange={e => setDpDate(e.target.value)}/>
+                    </Field>
+                    <Field label="Jumlah DP (Rp) *">
+                      <input type="number" className="form-input" value={dpAmount}
+                        onChange={e => setDpAmount(e.target.value)}
+                        placeholder="50000" min="0" step="1000" required/>
+                    </Field>
+                  </div>
+                  <div className="eyebrow" style={{fontSize:9,marginBottom:8}}>METODE DP</div>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))',gap:6}}>
+                    {PAYMENT_METHODS.map(pm => (
+                      <label key={pm.value}
+                        style={{
+                          display:'flex',alignItems:'center',gap:8,
+                          padding:'8px 10px',
+                          border:'2px solid',
+                          borderColor: dpMethod === pm.value ? 'var(--amber)' : 'var(--line)',
+                          borderRadius:8,
+                          background: dpMethod === pm.value ? '#fef3d7' : 'var(--paper)',
+                          cursor:'pointer',
+                          fontSize:12,
+                        }}>
+                        <input type="radio" name="dpMethod"
+                          value={pm.value}
+                          checked={dpMethod === pm.value}
+                          onChange={() => setDpMethod(pm.value)}
+                          style={{accentColor:'var(--amber)'}}/>
+                        <span>{pm.icon}</span>
+                        <span style={{fontSize:12,fontWeight:500}}>{pm.label.replace('Transfer ', '')}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Sisa Section */}
+                <div style={{padding:14,background:'var(--mauve-tint)',borderRadius:10,border:'1px solid var(--mauve)'}}>
+                  <div className="eyebrow" style={{fontSize:9,marginBottom:10,color:'var(--mauve)'}}>2. PELUNASAN (SISA)</div>
+                  {(() => {
+                    const grandTotal = totalAmount + (isHomeService ? Number(homeServiceFee) || 0 : 0);
+                    const dp = Number(dpAmount) || 0;
+                    const sisa = grandTotal - dp;
+                    return (
+                      <>
+                        <div style={{padding:10,background:'var(--paper)',borderRadius:8,marginBottom:10,fontSize:13}}>
+                          <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                            <span style={{color:'var(--muted)'}}>Total Transaksi</span>
+                            <span style={{fontWeight:500}}>{fmtRp(grandTotal)}</span>
+                          </div>
+                          <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                            <span style={{color:'var(--amber)'}}>− DP {dpMethod ? `(${getPaymentMethodLabel(dpMethod)})` : ''}</span>
+                            <span style={{fontWeight:500,color:'var(--amber)'}}>−{fmtRp(dp)}</span>
+                          </div>
+                          <div style={{display:'flex',justifyContent:'space-between',paddingTop:6,borderTop:'1px solid var(--line)'}}>
+                            <span style={{fontWeight:600,color:'var(--plum)'}}>Sisa Pembayaran</span>
+                            <span style={{fontWeight:600,color: sisa < 0 ? 'var(--red)' : 'var(--plum)',fontSize:15}}>
+                              {fmtRp(sisa)}
+                            </span>
+                          </div>
+                          {sisa < 0 && (
+                            <div style={{marginTop:6,fontSize:11,color:'var(--red)'}}>
+                              ⚠️ DP melebihi total transaksi
+                            </div>
+                          )}
+                        </div>
+                        <div className="eyebrow" style={{fontSize:9,marginBottom:8}}>METODE PELUNASAN</div>
+                        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))',gap:6}}>
+                          {PAYMENT_METHODS.map(pm => (
+                            <label key={pm.value}
+                              style={{
+                                display:'flex',alignItems:'center',gap:8,
+                                padding:'8px 10px',
+                                border:'2px solid',
+                                borderColor: paymentMethod === pm.value ? 'var(--mauve)' : 'var(--line)',
+                                borderRadius:8,
+                                background: paymentMethod === pm.value ? 'var(--paper)' : 'var(--paper)',
+                                cursor:'pointer',
+                                fontSize:12,
+                              }}>
+                              <input type="radio" name="paymentMethodSisa"
+                                value={pm.value}
+                                checked={paymentMethod === pm.value}
+                                onChange={() => setPaymentMethod(pm.value)}
+                                style={{accentColor:'var(--mauve)'}}/>
+                              <span>{pm.icon}</span>
+                              <span style={{fontSize:12,fontWeight:500}}>{pm.label.replace('Transfer ', '')}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              </>
+            )}
           </Card>
 
           <Card title="Home Service" sub="Opsional — komisi treatment sudah termasuk dalam biaya HS">
@@ -838,7 +984,22 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                       )}
                     </div>
                     <div style={{display:'flex',flexDirection:'column',gap:3,alignItems:'flex-end'}}>
-                      {t.payment_method && (
+                      {/* Show all payments (DP + Sisa or single) */}
+                      {(t.payments && t.payments.length > 0) ? (
+                        t.payments
+                          .slice()
+                          .sort((a, b) => (b.is_dp ? 1 : 0) - (a.is_dp ? 1 : 0))
+                          .map((p, pi) => (
+                            <span key={pi} className="badge" style={{
+                              fontSize:9,
+                              background: p.is_dp ? '#fdf6e3' : 'var(--mauve-tint)',
+                              color: p.is_dp ? '#b8893d' : 'var(--plum)',
+                            }}>
+                              {p.is_dp && '💰 DP '}
+                              {getPaymentMethodIcon(p.payment_method)} {getPaymentMethodLabel(p.payment_method).replace('Transfer ', '')} {fmtRp(p.amount)}
+                            </span>
+                          ))
+                      ) : t.payment_method && (
                         <span className="badge" style={{fontSize:9,background:'var(--mauve-tint)',color:'var(--plum)'}}>
                           {getPaymentMethodIcon(t.payment_method)} {getPaymentMethodLabel(t.payment_method).replace('Transfer ', '')}
                         </span>
@@ -947,7 +1108,23 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                       <span style={{fontFamily:'JetBrains Mono, monospace',fontSize:12}}>{fmtTime(t.start_time)}</span>
                       {t.is_overtime && <span className="badge badge-amber" style={{marginLeft:6,fontSize:10}}>lembur</span>}
                       {t.is_home_service && <span className="badge badge-gold" style={{marginLeft:6,fontSize:10}}>HS</span>}
-                      {t.payment_method && (
+                      {(t.payments && t.payments.length > 0) ? (
+                        <div style={{marginTop:4,display:'flex',flexDirection:'column',gap:3}}>
+                          {t.payments
+                            .slice()
+                            .sort((a, b) => (b.is_dp ? 1 : 0) - (a.is_dp ? 1 : 0))
+                            .map((p, pi) => (
+                              <span key={pi} className="badge" style={{
+                                fontSize:9,
+                                background: p.is_dp ? '#fdf6e3' : 'var(--mauve-tint)',
+                                color: p.is_dp ? '#b8893d' : 'var(--plum)',
+                              }}>
+                                {p.is_dp && '💰 DP '}
+                                {getPaymentMethodIcon(p.payment_method)} {getPaymentMethodLabel(p.payment_method).replace('Transfer ', '')} {fmtRp(p.amount)}
+                              </span>
+                            ))}
+                        </div>
+                      ) : t.payment_method && (
                         <div style={{marginTop:4}}>
                           <span className="badge" style={{fontSize:9,background:'var(--mauve-tint)',color:'var(--plum)'}}>
                             {getPaymentMethodIcon(t.payment_method)} {getPaymentMethodLabel(t.payment_method).replace('Transfer ', '')}
@@ -2096,6 +2273,7 @@ function ReportsPage({ profile, currentBranchId, branches }) {
   // Data
   const [transactions, setTransactions] = useStateP([]);
   const [employees, setEmployees] = useStateP([]);
+  const [paymentFlow, setPaymentFlow] = useStateP([]);
   const [loading, setLoading] = useStateP(true);
 
   // Effective date range
@@ -2119,12 +2297,23 @@ function ReportsPage({ profile, currentBranchId, branches }) {
   async function loadData() {
     setLoading(true);
     try {
-      const data = await getReportTransactions({
-        from: range.from,
-        to: range.to,
-        branchId: effectiveBranchId,
-      });
+      const [data, flowData] = await Promise.all([
+        getReportTransactions({
+          from: range.from,
+          to: range.to,
+          branchId: effectiveBranchId,
+        }),
+        getPaymentFlowBreakdown({
+          from: range.from,
+          to: range.to,
+          branchId: effectiveBranchId,
+        }).catch(err => {
+          console.warn('Payment flow load:', err);
+          return [];
+        }),
+      ]);
       setTransactions(data);
+      setPaymentFlow(flowData);
     } catch (err) {
       toast('Gagal memuat laporan: ' + err.message, 'error');
     } finally {
@@ -2256,6 +2445,73 @@ function ReportsPage({ profile, currentBranchId, branches }) {
               sub="lembur · home service"
             />
           </div>
+
+          {/* PAYMENT FLOW BREAKDOWN */}
+          <Card title="Aliran Uang" sub="Breakdown pemasukan per metode pembayaran">
+            {paymentFlow.length === 0 ? (
+              <Empty title="Belum ada data pembayaran" sub="Belum ada transaksi/pembayaran di periode ini."/>
+            ) : (
+              <>
+                {/* Summary cards */}
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(180px, 1fr))',gap:10,marginBottom:16}}>
+                  {paymentFlow.map(pf => {
+                    const total = paymentFlow.reduce((s, p) => s + Number(p.total_amount || 0), 0);
+                    const pct = total > 0 ? ((Number(pf.total_amount) / total) * 100).toFixed(1) : 0;
+                    return (
+                      <div key={pf.payment_method} style={{
+                        padding:14,
+                        background:'var(--paper)',
+                        border:'1px solid var(--line)',
+                        borderRadius:10,
+                      }}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                          <span style={{fontSize:20}}>{getPaymentMethodIcon(pf.payment_method)}</span>
+                          <span style={{fontSize:12,fontWeight:500,color:'var(--plum)'}}>
+                            {getPaymentMethodLabel(pf.payment_method)}
+                          </span>
+                        </div>
+                        <div style={{fontFamily:'Cormorant Garamond, serif',fontSize:22,fontWeight:400,color:'var(--plum-deep)',marginBottom:4}}>
+                          {fmtRp(pf.total_amount)}
+                        </div>
+                        <div style={{fontSize:11,color:'var(--muted)',display:'flex',justifyContent:'space-between',gap:6}}>
+                          <span>{pf.payment_count} pembayaran</span>
+                          <span style={{color:'var(--mauve)',fontWeight:500}}>{pct}%</span>
+                        </div>
+                        {Number(pf.dp_count) > 0 && (
+                          <div style={{fontSize:10,color:'var(--amber)',marginTop:4}}>
+                            💰 {pf.dp_count} via DP · {pf.full_count} pelunasan/full
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Total summary */}
+                <div style={{
+                  padding:'12px 16px',
+                  background:'var(--mauve-tint)',
+                  borderRadius:10,
+                  display:'flex',
+                  justifyContent:'space-between',
+                  alignItems:'center',
+                  flexWrap:'wrap',
+                  gap:10,
+                }}>
+                  <div>
+                    <div className="eyebrow" style={{fontSize:9,marginBottom:4}}>TOTAL ALIRAN UANG</div>
+                    <div style={{fontSize:11,color:'var(--muted)'}}>
+                      {paymentFlow.reduce((s, p) => s + Number(p.payment_count || 0), 0)} total pembayaran
+                      ({paymentFlow.reduce((s, p) => s + Number(p.dp_count || 0), 0)} DP)
+                    </div>
+                  </div>
+                  <div style={{fontFamily:'Cormorant Garamond, serif',fontSize:24,fontWeight:500,color:'var(--plum-deep)'}}>
+                    {fmtRp(paymentFlow.reduce((s, p) => s + Number(p.total_amount || 0), 0))}
+                  </div>
+                </div>
+              </>
+            )}
+          </Card>
 
           {/* BREAKDOWN BY CATEGORY */}
           <Card title="Breakdown per Kategori" sub="Distribusi service di periode ini">

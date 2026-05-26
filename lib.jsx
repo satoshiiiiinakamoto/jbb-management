@@ -346,6 +346,7 @@ async function createTransaction({
   branchId, clientName, clientPhone, date, startTime,
   isHomeService, homeServiceFee, notes, items, createdBy,
   paymentMethod = 'cash',
+  payments = null,  // [{ method, amount, is_dp, paid_at }] - if null, single payment with paymentMethod
 }) {
   const isOT = isOvertime(startTime);
   const totalAmount = items.reduce((sum, it) => sum + (Number(it.price) || 0), 0);
@@ -404,13 +405,33 @@ async function createTransaction({
     await sb.from('transactions').delete().eq('id', trx.id);
     throw itemErr;
   }
+
+  // Insert payments
+  const grandTotal = totalAmount + (isHomeService ? (Number(homeServiceFee) || 0) : 0);
+  try {
+    if (payments && payments.length > 0) {
+      // Use provided payments (DP + Sisa, or single)
+      await insertTransactionPayments(trx.id, branchId, payments, createdBy);
+    } else {
+      // Single payment with paymentMethod
+      await insertTransactionPayments(trx.id, branchId, [{
+        method: paymentMethod,
+        amount: grandTotal,
+        is_dp: false,
+        paid_at: date,
+      }], createdBy);
+    }
+  } catch (payErr) {
+    console.warn('Payment insert failed (transaction still saved):', payErr);
+  }
+
   return trx;
 }
 
 async function listRecentTransactions(branchId = null, limit = 20) {
   let query = sb
     .from('transactions')
-    .select('*, items:transaction_items(*, employee:employees(full_name)), branch:branches(name)')
+    .select('*, items:transaction_items(*, employee:employees(full_name)), payments:transaction_payments(*), branch:branches(name)')
     .order('date', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -2023,8 +2044,10 @@ async function getTransactionDetail(transactionId) {
       items:transaction_items(
         id, employee_id, service_name, service_category,
         price, commission_type, commission_rate, commission_amount, notes,
+        share_group_id, share_percent,
         employee:employees(id, full_name, job_title)
-      )
+      ),
+      payments:transaction_payments(*)
     `)
     .eq('id', transactionId)
     .single();
@@ -2425,8 +2448,66 @@ async function listAllPhotos({ branchId = null, photoType = null, limit = 100 } 
   return [];
 }
 
-// Expose
-Object.assign(window, {
+// =====================================================
+// TRANSACTION PAYMENTS — Tahap G
+// DP & Payment Flow Tracking
+// =====================================================
+
+// Insert payments for a transaction (1 or 2 rows)
+// payments: [{ method, amount, is_dp, paid_at }]
+async function insertTransactionPayments(transactionId, branchId, payments, createdBy) {
+  if (!payments || !payments.length) return [];
+  const rows = payments.map(p => ({
+    transaction_id: transactionId,
+    branch_id: branchId,
+    payment_method: p.method || 'cash',
+    amount: Number(p.amount) || 0,
+    is_dp: !!p.is_dp,
+    paid_at: p.paid_at || null,  // null = use default (current_date)
+    created_by: createdBy || null,
+  }));
+  const { data, error } = await sb.from('transaction_payments').insert(rows).select();
+  if (error) throw error;
+  return data || [];
+}
+
+// Get payments for a transaction
+async function getTransactionPayments(transactionId) {
+  const { data, error } = await sb
+    .from('transaction_payments')
+    .select('*')
+    .eq('transaction_id', transactionId)
+    .order('is_dp', { ascending: false })  // DP first
+    .order('paid_at', { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+// Replace all payments for a transaction (used in edit)
+async function replaceTransactionPayments(transactionId, branchId, payments, createdBy) {
+  // Delete existing
+  const { error: delErr } = await sb
+    .from('transaction_payments')
+    .delete()
+    .eq('transaction_id', transactionId);
+  if (delErr) throw delErr;
+
+  // Insert new
+  return insertTransactionPayments(transactionId, branchId, payments, createdBy);
+}
+
+// Get payment flow breakdown for laporan
+async function getPaymentFlowBreakdown({ from, to, branchId = null }) {
+  const { data, error } = await sb.rpc('get_payment_flow_breakdown', {
+    p_from: from,
+    p_to: to,
+    p_branch_id: branchId,
+  });
+  if (error) throw error;
+  return data || [];
+}
+
+
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
   fmtRp, fmtRpOrDash, fmtNumber, fmtDate, fmtTime, todayStr, nowTimeStr, currentMonth,
   dateToYMD, startOfWeekMonday, endOfWeekSunday, DATE_PRESETS,
@@ -2463,4 +2544,7 @@ Object.assign(window, {
   listMarketingPhotos, listAllPhotos,
   // Tahap F - Payment + Multi-employee
   PAYMENT_METHODS, getPaymentMethodLabel, getPaymentMethodIcon,
+  // Tahap G - DP & Payment Flow
+  insertTransactionPayments, getTransactionPayments, replaceTransactionPayments,
+  getPaymentFlowBreakdown,
 });
