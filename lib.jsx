@@ -56,9 +56,15 @@ const SERVICES = [
   { name: 'Russian Volume (Eyelash)', category: 'lash', commission_type: 'percent', baseRate: 5 },
   { name: 'Anime Volume (Eyelash)', category: 'lash', commission_type: 'percent', baseRate: 5 },
   { name: 'Lash Lift', category: 'lash', commission_type: 'percent', baseRate: 5 },
+  { name: 'Retouch Korean', category: 'lash', commission_type: 'percent', baseRate: 5 },
+  { name: 'Retouch Skinny/Double', category: 'lash', commission_type: 'percent', baseRate: 5 },
+  { name: 'Retouch Russian', category: 'lash', commission_type: 'percent', baseRate: 5 },
+  { name: 'Removal Eyelash', category: 'lash', commission_type: 'percent', baseRate: 5 },
   { name: 'Brow Lamination', category: 'brow', commission_type: 'percent', baseRate: 5 },
   { name: 'Brow Bomber', category: 'brow', commission_type: 'percent', baseRate: 5 },
   { name: 'Sulam Alis', category: 'brow', commission_type: 'fixed_amount', baseRate: 0 },
+  { name: 'Retouch Sulam Alis', category: 'brow', commission_type: 'fixed_amount', baseRate: 0 },
+  { name: 'Cukur Alis', category: 'brow', commission_type: 'percent', baseRate: 5 },
   { name: 'Korean Vit C Glow', category: 'facial', commission_type: 'percent', baseRate: 5 },
   { name: 'Korean BB Glow', category: 'facial', commission_type: 'percent', baseRate: 5 },
   { name: 'Nail Art', category: 'nail', commission_type: 'percent', baseRate: 10 },
@@ -67,6 +73,7 @@ const SERVICES = [
   { name: 'Manicure', category: 'nail', commission_type: 'percent', baseRate: 10 },
   { name: 'Pedicure', category: 'nail', commission_type: 'percent', baseRate: 10 },
   { name: 'Menipedi', category: 'nail', commission_type: 'percent', baseRate: 10 },
+  { name: 'Removal Nails', category: 'nail', commission_type: 'percent', baseRate: 10 },
 ];
 
 const JOB_TITLES = [
@@ -436,6 +443,28 @@ async function listRecentTransactions(branchId = null, limit = 20) {
     .order('created_at', { ascending: false })
     .limit(limit);
   if (branchId) query = query.eq('branch_id', branchId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+// List transactions in a date range (no limit, for Tab Transaksi)
+async function listTransactionsByDateRange({ branchId = null, from, to, searchQuery = '' }) {
+  let query = sb
+    .from('transactions')
+    .select('*, items:transaction_items(*, employee:employees(full_name)), payments:transaction_payments(*), branch:branches(name)')
+    .gte('date', from)
+    .lte('date', to)
+    .order('date', { ascending: false })
+    .order('start_time', { ascending: false })
+    .order('created_at', { ascending: false });
+
+  if (branchId) query = query.eq('branch_id', branchId);
+  if (searchQuery && searchQuery.trim()) {
+    const q = searchQuery.trim();
+    query = query.or(`client_name_snapshot.ilike.%${q}%,client_phone_snapshot.ilike.%${q}%`);
+  }
+
   const { data, error } = await query;
   if (error) throw error;
   return data || [];
@@ -2520,7 +2549,7 @@ Object.assign(window, {
   listEmployees, updateEmployee, deactivateEmployee, reactivateEmployee,
   createEmployee, deleteEmployee,
   findClientByPhone, upsertClient,
-  createTransaction, listRecentTransactions, getTodayStats, getMonthStats,
+  createTransaction, listRecentTransactions, listTransactionsByDateRange, getTodayStats, getMonthStats,
   getReportTransactions, aggregateReport,
   getPayrollPeriod, getPayrollPeriodForMonth, listRecentPayrollPeriods,
   listPayrollEligibleEmployees, getPeriodCommissionByEmployee,

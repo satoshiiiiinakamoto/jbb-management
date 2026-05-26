@@ -907,18 +907,67 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
   const [editedIds, setEditedIds] = useStateP(new Set());
   const [photoTargetId, setPhotoTargetId] = useStateP(null);
 
+  // Filter states — default 3 bulan ke belakang
+  const [filterPreset, setFilterPreset] = useStateP('3months');
+  const [searchQuery, setSearchQuery] = useStateP('');
+  const [customFrom, setCustomFrom] = useStateP('');
+  const [customTo, setCustomTo] = useStateP('');
+
   const isSuper = profile.role === 'super_admin';
   const isBranchAdmin = profile.role === 'branch_admin';
   const canEdit = isSuper || isBranchAdmin;
   const canDelete = isSuper;
 
+  // Compute date range based on filter preset
+  function getDateRange() {
+    const today = new Date();
+    const ymd = d => d.toISOString().split('T')[0];
+
+    switch (filterPreset) {
+      case 'today':
+        return { from: ymd(today), to: ymd(today) };
+      case 'week': {
+        const start = new Date(today);
+        start.setDate(today.getDate() - 7);
+        return { from: ymd(start), to: ymd(today) };
+      }
+      case 'month': {
+        const start = new Date(today.getFullYear(), today.getMonth(), 1);
+        const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        return { from: ymd(start), to: ymd(end) };
+      }
+      case '3months': {
+        const start = new Date(today);
+        start.setMonth(today.getMonth() - 3);
+        return { from: ymd(start), to: ymd(today) };
+      }
+      case 'all': {
+        // 2 years back as practical upper bound
+        const start = new Date(today);
+        start.setFullYear(today.getFullYear() - 2);
+        return { from: ymd(start), to: ymd(today) };
+      }
+      case 'custom':
+        return {
+          from: customFrom || ymd(new Date(today.getFullYear(), today.getMonth(), 1)),
+          to: customTo || ymd(today),
+        };
+      default:
+        return { from: ymd(new Date(today.getFullYear(), today.getMonth() - 3, today.getDate())), to: ymd(today) };
+    }
+  }
+
   async function load() {
     setLoading(true);
     try {
       const filterBranch = isSuper ? currentBranchId : profile.branch_id;
-      const data = await listRecentTransactions(filterBranch, 50);
+      const { from, to } = getDateRange();
+      const data = await listTransactionsByDateRange({
+        branchId: filterBranch,
+        from, to,
+        searchQuery,
+      });
       setTrxs(data);
-      // Check which ones have been edited
       const ids = data.map(t => t.id);
       const edited = await getEditedTransactionIds(ids);
       setEditedIds(edited);
@@ -928,7 +977,13 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
       setLoading(false);
     }
   }
-  useEffectP(() => { load(); }, [currentBranchId]);
+  useEffectP(() => { load(); }, [currentBranchId, filterPreset, customFrom, customTo]);
+
+  // Debounce search query
+  useEffectP(() => {
+    const t = setTimeout(() => { load(); }, 400);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
 
   const scopeLabel = isSuper
     ? (currentBranchId ? branches.find(b => b.id === currentBranchId)?.name : 'Semua Cabang')
@@ -959,9 +1014,62 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
         💡 <strong>Tips:</strong> Klik <strong>Edit</strong> untuk mengubah transaksi, atau <strong>Hapus</strong> untuk menghapus (super_admin only). Semua perubahan tercatat di <strong>Audit Log</strong>.
       </div>
 
+      {/* FILTER */}
+      <Card title="Filter & Pencarian" sub="Pilih periode atau cari nama klien">
+        <Field label="Periode">
+          <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+            {[
+              { value: 'today', label: 'Hari Ini' },
+              { value: 'week', label: '7 Hari' },
+              { value: 'month', label: 'Bulan Ini' },
+              { value: '3months', label: '3 Bulan' },
+              { value: 'all', label: 'Semua (2 thn)' },
+              { value: 'custom', label: '📅 Custom' },
+            ].map(p => (
+              <button key={p.value} type="button"
+                className={'btn btn-sm ' + (filterPreset === p.value ? 'btn-primary' : 'btn-ghost')}
+                onClick={() => setFilterPreset(p.value)}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+
+        {filterPreset === 'custom' && (
+          <div className="form-row">
+            <Field label="Dari Tanggal">
+              <input type="date" className="form-input" value={customFrom}
+                onChange={e => setCustomFrom(e.target.value)}/>
+            </Field>
+            <Field label="Sampai Tanggal">
+              <input type="date" className="form-input" value={customTo}
+                onChange={e => setCustomTo(e.target.value)}/>
+            </Field>
+          </div>
+        )}
+
+        <Field label="🔍 Cari Klien" hint="Cari berdasarkan nama atau nomor HP">
+          <input type="text" className="form-input" value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Ketik nama klien atau no HP..."/>
+        </Field>
+
+        <div style={{padding:'8px 12px',background:'var(--cream)',borderRadius:8,fontSize:12,color:'var(--muted)',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+          <span>
+            {(() => {
+              const { from, to } = getDateRange();
+              return `📅 ${fmtDate(from)} — ${fmtDate(to)}`;
+            })()}
+          </span>
+          <span style={{color:'var(--plum)',fontWeight:500}}>
+            {trxs.length} transaksi
+          </span>
+        </div>
+      </Card>
+
       <Card>
         {loading ? <Loader text="Memuat..."/> :
-         !trxs.length ? <Empty title="Belum ada transaksi" sub="Klik 'Input Transaksi' untuk mulai mencatat."/> : (
+         !trxs.length ? <Empty title="Belum ada transaksi" sub="Belum ada transaksi di periode ini, atau hasil pencarian kosong."/> : (
           <>
           {/* MOBILE CARD LAYOUT */}
           <div className="table-mobile-cards">
