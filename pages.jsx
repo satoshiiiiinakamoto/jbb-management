@@ -595,6 +595,91 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
       <Card>
         {loading ? <Loader text="Memuat..."/> :
          !trxs.length ? <Empty title="Belum ada transaksi" sub="Klik 'Input Transaksi' untuk mulai mencatat."/> : (
+          <>
+          {/* MOBILE CARD LAYOUT */}
+          <div className="table-mobile-cards">
+            {trxs.map(t => {
+              const wasEdited = editedIds.has(t.id);
+              return (
+                <div key={t.id} className="row-card">
+                  <div className="row-header">
+                    <div>
+                      <div style={{fontWeight:500,fontSize:14,color:'var(--plum-deep)'}}>
+                        {t.client_name_snapshot || '—'}
+                      </div>
+                      <div style={{fontSize:11,color:'var(--muted)',marginTop:2}}>
+                        {fmtDate(t.date)} · <span style={{fontFamily:'JetBrains Mono, monospace'}}>{fmtTime(t.start_time)}</span>
+                      </div>
+                      {t.client_phone_snapshot && (
+                        <div style={{fontSize:11,color:'var(--muted)',fontFamily:'JetBrains Mono, monospace'}}>
+                          {t.client_phone_snapshot}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{display:'flex',flexDirection:'column',gap:3,alignItems:'flex-end'}}>
+                      {t.is_overtime && <span className="badge badge-amber" style={{fontSize:9}}>lembur</span>}
+                      {t.is_home_service && <span className="badge badge-gold" style={{fontSize:9}}>HS</span>}
+                      {wasEdited && <span className="badge" style={{background:'#fdf6e3',color:'#b8893d',fontSize:9}}>edited</span>}
+                    </div>
+                  </div>
+
+                  {isSuper && !currentBranchId && (
+                    <div className="row-detail">
+                      <span className="row-detail-label">Cabang</span>
+                      <span><span className="badge badge-mauve" style={{fontSize:10}}>{t.branch?.name}</span></span>
+                    </div>
+                  )}
+
+                  <div>
+                    <div className="row-detail-label" style={{marginBottom:4}}>Treatment</div>
+                    {(t.items || []).map((it, i) => (
+                      <div key={i} style={{fontSize:12,marginBottom:3,paddingLeft:8,borderLeft:'2px solid var(--mauve-tint)'}}>
+                        <div style={{color:'var(--plum)',fontWeight:500}}>{it.service_name}</div>
+                        <div style={{color:'var(--muted)',fontSize:11}}>oleh {it.employee?.full_name || '—'}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="row-detail">
+                    <span className="row-detail-label">Omset</span>
+                    <span style={{fontWeight:500}}>{fmtRp(t.total_amount)}</span>
+                  </div>
+                  <div className="row-detail">
+                    <span className="row-detail-label">Komisi</span>
+                    <span style={{color:'var(--mauve)',fontWeight:500}}>{fmtRp(t.total_commission)}</span>
+                  </div>
+
+                  {canEdit && (
+                    <div className="row-actions">
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => setPhotoTargetId(t.id)}
+                      >
+                        📸 Foto
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => setEditingId(t.id)}
+                      >
+                        ✏️ Edit
+                      </button>
+                      {canDelete && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => setDeleteTarget(t)}
+                          style={{color:'var(--red)'}}
+                        >
+                          🗑 Hapus
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* DESKTOP TABLE LAYOUT */}
           <div className="table-wrap">
             <table className="table">
               <thead>
@@ -678,6 +763,7 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </Card>
 
