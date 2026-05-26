@@ -184,7 +184,10 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
   const [isHomeService, setIsHomeService] = useStateP(false);
   const [homeServiceFee, setHomeServiceFee] = useStateP('');
   const [notes, setNotes] = useStateP('');
-  const [items, setItems] = useStateP([{ employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '' }]);
+  const [paymentMethod, setPaymentMethod] = useStateP('cash');
+  // shareWith: array of additional employee_ids (multi-employee support)
+  // share_percents: parallel array of percentages [main, ...sharedWith]
+  const [items, setItems] = useStateP([{ employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '', share_with: [], share_percents: [100] }]);
   const [employees, setEmployees] = useStateP([]);
   const [loadingEmployees, setLoadingEmployees] = useStateP(true);
   const [submitting, setSubmitting] = useStateP(false);
@@ -223,7 +226,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
     setItems(prev => prev.map((it, i) => i === idx ? { ...it, ...patch } : it));
   }
   function addItem() {
-    setItems(prev => [...prev, { employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '' }]);
+    setItems(prev => [...prev, { employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '', share_with: [], share_percents: [100] }]);
   }
   function removeItem(idx) {
     setItems(prev => prev.length === 1 ? prev : prev.filter((_, i) => i !== idx));
@@ -264,6 +267,23 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
     if (!items.length || items.some(it => !it.employee_id || !it.service_name || !it.price)) {
       toast('Lengkapi semua item', 'error'); return;
     }
+    // Validate: shared_with all picked, percents sum to 100
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const allEmps = [it.employee_id, ...(it.share_with || [])];
+      if (new Set(allEmps).size !== allEmps.length) {
+        toast(`Treatment #${i+1}: karyawan tidak boleh sama`, 'error'); return;
+      }
+      if (allEmps.some(e => !e)) {
+        toast(`Treatment #${i+1}: semua karyawan harus dipilih`, 'error'); return;
+      }
+      if (allEmps.length > 1) {
+        const total = (it.share_percents || []).reduce((s, p) => s + (Number(p) || 0), 0);
+        if (Math.abs(total - 100) > 0.01) {
+          toast(`Treatment #${i+1}: total persentase harus 100% (sekarang ${total}%)`, 'error'); return;
+        }
+      }
+    }
     for (const it of items) {
       const svc = getServiceDef(it.service_name);
       if (svc?.commission_type === 'fixed_amount' && !it.fixed_commission) {
@@ -274,20 +294,49 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
 
     setSubmitting(true);
     try {
-      const itemsPayload = items.map(it => {
+      // Expand items: shared treatments become multiple rows with same share_group_id
+      const itemsPayload = [];
+      for (const it of items) {
+        const allEmps = [it.employee_id, ...(it.share_with || [])];
+        const isShared = allEmps.length > 1;
+        const totalPrice = Number(it.price);
         const com = getItemCommission(it);
-        // Normalize commission_type for DB: only 'percent' or 'fixed_amount' allowed
         const dbCommissionType = com.type === 'percent_manual' ? 'percent' : com.type;
-        return {
-          employee_id: it.employee_id,
-          service_name: it.service_name,
-          price: Number(it.price),
-          commission_type: dbCommissionType,
-          commission_rate: com.rate,
-          commission_amount: com.amount,
-          notes: it.notes || null,
-        };
-      });
+
+        // Generate share_group_id once per treatment (only used if shared)
+        const shareGroupId = isShared ? (crypto.randomUUID ? crypto.randomUUID() : ('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c==='x' ? r : (r&0x3|0x8)).toString(16); }))) : null;
+
+        allEmps.forEach((empId, idx) => {
+          const sharePercent = isShared ? Number(it.share_percents[idx] || 0) : 100;
+          const splitPrice = Math.round(totalPrice * sharePercent / 100);
+
+          // For shared: recalculate commission based on split price
+          let splitCommissionAmount;
+          if (isShared) {
+            if (com.type === 'fixed_amount') {
+              // Fixed commission is also split by share percent
+              splitCommissionAmount = Math.round(com.amount * sharePercent / 100);
+            } else {
+              // Percentage-based: rate × split_price
+              splitCommissionAmount = Math.round(splitPrice * com.rate / 100);
+            }
+          } else {
+            splitCommissionAmount = com.amount;
+          }
+
+          itemsPayload.push({
+            employee_id: empId,
+            service_name: it.service_name,
+            price: splitPrice,
+            commission_type: dbCommissionType,
+            commission_rate: com.rate,
+            commission_amount: splitCommissionAmount,
+            notes: it.notes || null,
+            share_group_id: shareGroupId,
+            share_percent: sharePercent,
+          });
+        });
+      }
 
       const newTrx = await createTransaction({
         branchId: effectiveBranchId,
@@ -298,6 +347,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
         notes,
         items: itemsPayload,
         createdBy: profile.id,
+        paymentMethod,
       });
 
       toast('Transaksi tersimpan! 🎉 Sekarang upload foto.', 'success');
@@ -451,11 +501,182 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
                           <span style={{fontWeight:500,color:'var(--plum)'}}>Komisi: {fmtRp(com.amount)}</span>
                         </div>
                       )}
+
+                      {/* Multi-employee sharing */}
+                      <div style={{marginTop:12,paddingTop:12,borderTop:'1px dashed var(--line)'}}>
+                        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8,gap:8,flexWrap:'wrap'}}>
+                          <span className="eyebrow" style={{fontSize:10}}>
+                            👥 Kerjasama: {(item.share_with?.length || 0) + 1} karyawan
+                          </span>
+                          <div style={{display:'flex',gap:6}}>
+                            <button type="button" className="btn btn-ghost btn-sm"
+                              onClick={() => {
+                                const currentShareWith = item.share_with || [];
+                                const newShareWith = [...currentShareWith, ''];
+                                const newCount = newShareWith.length + 1; // +1 for main employee
+                                // Recalculate equal percentages
+                                const eqPercent = Math.floor(100 / newCount * 100) / 100;
+                                const remainder = +(100 - eqPercent * (newCount - 1)).toFixed(2);
+                                const newPercents = Array(newCount).fill(eqPercent);
+                                newPercents[newCount - 1] = remainder;
+                                updateItem(idx, { share_with: newShareWith, share_percents: newPercents });
+                              }}
+                              style={{padding:'4px 10px',fontSize:11}}>
+                              + Tambah Karyawan
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Show share editor only if shared */}
+                        {(item.share_with?.length || 0) > 0 && (
+                          <div style={{padding:12,background:'#fef9f2',borderRadius:8,border:'1px solid #f0e0c0'}}>
+                            <div style={{fontSize:11,color:'var(--muted)',marginBottom:10,lineHeight:1.5}}>
+                              💡 <strong>Treatment dikerjakan bersama.</strong> Harga & komisi akan dibagi sesuai persentase. Total harus = 100%.
+                            </div>
+
+                            {/* Main employee row (already selected above) */}
+                            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,padding:8,background:'var(--paper)',borderRadius:6}}>
+                              <div style={{flex:1,fontSize:13,fontWeight:500,color:'var(--plum)'}}>
+                                👤 {employees.find(e => e.id === item.employee_id)?.full_name || '(belum pilih)'}
+                                <div style={{fontSize:10,color:'var(--muted)'}}>Karyawan utama</div>
+                              </div>
+                              <input type="number" className="form-input"
+                                value={item.share_percents?.[0] || 0}
+                                onChange={e => {
+                                  const newPercents = [...(item.share_percents || [])];
+                                  newPercents[0] = Number(e.target.value);
+                                  updateItem(idx, { share_percents: newPercents });
+                                }}
+                                min="1" max="100" step="0.01"
+                                style={{width:80,textAlign:'center'}}/>
+                              <span style={{fontSize:12,color:'var(--muted)'}}>%</span>
+                            </div>
+
+                            {/* Shared employees rows */}
+                            {(item.share_with || []).map((empId, sidx) => (
+                              <div key={sidx} style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,padding:8,background:'var(--paper)',borderRadius:6}}>
+                                <select className="form-select"
+                                  value={empId}
+                                  onChange={e => {
+                                    const newShareWith = [...(item.share_with || [])];
+                                    newShareWith[sidx] = e.target.value;
+                                    updateItem(idx, { share_with: newShareWith });
+                                  }}
+                                  style={{flex:1,fontSize:12}}>
+                                  <option value="">— pilih karyawan partner —</option>
+                                  {employees
+                                    .filter(emp => emp.id !== item.employee_id && !(item.share_with || []).some((id, i) => i !== sidx && id === emp.id))
+                                    .map(emp => (
+                                      <option key={emp.id} value={emp.id}>
+                                        {emp.full_name} {emp.job_title ? `· ${emp.job_title}` : ''}
+                                      </option>
+                                    ))}
+                                </select>
+                                <input type="number" className="form-input"
+                                  value={item.share_percents?.[sidx + 1] || 0}
+                                  onChange={e => {
+                                    const newPercents = [...(item.share_percents || [])];
+                                    newPercents[sidx + 1] = Number(e.target.value);
+                                    updateItem(idx, { share_percents: newPercents });
+                                  }}
+                                  min="1" max="100" step="0.01"
+                                  style={{width:80,textAlign:'center'}}/>
+                                <span style={{fontSize:12,color:'var(--muted)'}}>%</span>
+                                <button type="button"
+                                  onClick={() => {
+                                    const newShareWith = (item.share_with || []).filter((_, i) => i !== sidx);
+                                    const newCount = newShareWith.length + 1;
+                                    const eqPercent = Math.floor(100 / newCount * 100) / 100;
+                                    const remainder = +(100 - eqPercent * (newCount - 1)).toFixed(2);
+                                    const newPercents = Array(newCount).fill(eqPercent);
+                                    newPercents[newCount - 1] = remainder;
+                                    updateItem(idx, { share_with: newShareWith, share_percents: newPercents });
+                                  }}
+                                  className="btn btn-ghost btn-sm"
+                                  style={{padding:'4px 8px',fontSize:11,color:'var(--red)'}}>
+                                  ✕
+                                </button>
+                              </div>
+                            ))}
+
+                            {/* Total percentage indicator */}
+                            {(() => {
+                              const total = (item.share_percents || []).reduce((s, p) => s + (Number(p) || 0), 0);
+                              const isValid = Math.abs(total - 100) < 0.01;
+                              return (
+                                <div style={{
+                                  marginTop:8,padding:'6px 10px',borderRadius:6,
+                                  background: isValid ? '#ecf5ef' : '#fdf0f0',
+                                  fontSize:12,
+                                  color: isValid ? 'var(--green)' : 'var(--red)',
+                                  display:'flex',justifyContent:'space-between',alignItems:'center',
+                                }}>
+                                  <span>Total persentase</span>
+                                  <span style={{fontWeight:600}}>
+                                    {isValid ? '✓ ' : '⚠️ '}{total.toFixed(2)}% {!isValid && '(harus 100%)'}
+                                  </span>
+                                </div>
+                              );
+                            })()}
+
+                            {/* Preview per-employee split */}
+                            {item.price && (
+                              <div style={{marginTop:10,padding:10,background:'var(--cream)',borderRadius:6,fontSize:11}}>
+                                <div className="eyebrow" style={{fontSize:9,marginBottom:6}}>Pembagian harga & komisi:</div>
+                                {[item.employee_id, ...(item.share_with || [])].map((empId, i) => {
+                                  const pct = Number(item.share_percents?.[i] || 0);
+                                  const splitPrice = Math.round(Number(item.price) * pct / 100);
+                                  const splitCom = isFixedComm
+                                    ? Math.round(com.amount * pct / 100)
+                                    : Math.round(splitPrice * com.rate / 100);
+                                  const empName = employees.find(e => e.id === empId)?.full_name || '(belum pilih)';
+                                  return (
+                                    <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontFamily:'JetBrains Mono, monospace'}}>
+                                      <span>{empName} ({pct}%)</span>
+                                      <span style={{color:'var(--plum)'}}>{fmtRp(splitPrice)} → komisi {fmtRp(splitCom)}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
               </div>
             )}
+          </Card>
+
+          <Card title="Cara Pembayaran" sub="Pilih metode pembayaran dari klien">
+            <Field>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(160px, 1fr))',gap:8}}>
+                {PAYMENT_METHODS.map(pm => (
+                  <label key={pm.value}
+                    style={{
+                      display:'flex',alignItems:'center',gap:10,
+                      padding:'12px 14px',
+                      border:'2px solid',
+                      borderColor: paymentMethod === pm.value ? 'var(--mauve)' : 'var(--line)',
+                      borderRadius:10,
+                      background: paymentMethod === pm.value ? 'var(--mauve-tint)' : 'var(--paper)',
+                      cursor:'pointer',
+                      transition:'all 0.15s',
+                    }}>
+                    <input type="radio" name="paymentMethod"
+                      value={pm.value}
+                      checked={paymentMethod === pm.value}
+                      onChange={() => setPaymentMethod(pm.value)}
+                      style={{accentColor:'var(--mauve)'}}/>
+                    <span style={{fontSize:18}}>{pm.icon}</span>
+                    <span style={{fontSize:13,fontWeight:500,color: paymentMethod === pm.value ? 'var(--plum)' : 'var(--text)'}}>
+                      {pm.label}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </Field>
           </Card>
 
           <Card title="Home Service" sub="Opsional — komisi treatment sudah termasuk dalam biaya HS">
@@ -617,6 +838,11 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                       )}
                     </div>
                     <div style={{display:'flex',flexDirection:'column',gap:3,alignItems:'flex-end'}}>
+                      {t.payment_method && (
+                        <span className="badge" style={{fontSize:9,background:'var(--mauve-tint)',color:'var(--plum)'}}>
+                          {getPaymentMethodIcon(t.payment_method)} {getPaymentMethodLabel(t.payment_method).replace('Transfer ', '')}
+                        </span>
+                      )}
                       {t.is_overtime && <span className="badge badge-amber" style={{fontSize:9}}>lembur</span>}
                       {t.is_home_service && <span className="badge badge-gold" style={{fontSize:9}}>HS</span>}
                       {wasEdited && <span className="badge" style={{background:'#fdf6e3',color:'#b8893d',fontSize:9}}>edited</span>}
@@ -632,12 +858,22 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
 
                   <div>
                     <div className="row-detail-label" style={{marginBottom:4}}>Treatment</div>
-                    {(t.items || []).map((it, i) => (
-                      <div key={i} style={{fontSize:12,marginBottom:3,paddingLeft:8,borderLeft:'2px solid var(--mauve-tint)'}}>
-                        <div style={{color:'var(--plum)',fontWeight:500}}>{it.service_name}</div>
-                        <div style={{color:'var(--muted)',fontSize:11}}>oleh {it.employee?.full_name || '—'}</div>
-                      </div>
-                    ))}
+                    {(t.items || []).map((it, i) => {
+                      const sharePercent = Number(it.share_percent || 100);
+                      const isShared = it.share_group_id && sharePercent < 100;
+                      return (
+                        <div key={i} style={{fontSize:12,marginBottom:3,paddingLeft:8,borderLeft:'2px solid var(--mauve-tint)'}}>
+                          <div style={{color:'var(--plum)',fontWeight:500}}>
+                            {it.service_name}
+                            {isShared && <span className="badge" style={{fontSize:8,background:'var(--mauve-tint)',color:'var(--mauve)',marginLeft:4}}>shared {sharePercent}%</span>}
+                          </div>
+                          <div style={{color:'var(--muted)',fontSize:11}}>
+                            oleh {it.employee?.full_name || '—'}
+                            {isShared && <span> · {fmtRp(it.price)}</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
 
                   <div className="row-detail">
@@ -711,6 +947,13 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                       <span style={{fontFamily:'JetBrains Mono, monospace',fontSize:12}}>{fmtTime(t.start_time)}</span>
                       {t.is_overtime && <span className="badge badge-amber" style={{marginLeft:6,fontSize:10}}>lembur</span>}
                       {t.is_home_service && <span className="badge badge-gold" style={{marginLeft:6,fontSize:10}}>HS</span>}
+                      {t.payment_method && (
+                        <div style={{marginTop:4}}>
+                          <span className="badge" style={{fontSize:9,background:'var(--mauve-tint)',color:'var(--plum)'}}>
+                            {getPaymentMethodIcon(t.payment_method)} {getPaymentMethodLabel(t.payment_method).replace('Transfer ', '')}
+                          </span>
+                        </div>
+                      )}
                     </td>
                     {isSuper && !currentBranchId && <td><span className="badge badge-mauve" style={{fontSize:10}}>{t.branch?.name}</span></td>}
                     <td>
@@ -718,12 +961,17 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                       {t.client_phone_snapshot && <div style={{fontSize:11,color:'var(--muted)',fontFamily:'JetBrains Mono, monospace'}}>{t.client_phone_snapshot}</div>}
                     </td>
                     <td>
-                      {(t.items || []).map((it, i) => (
-                        <div key={i} style={{fontSize:12,marginBottom:2}}>
-                          <span style={{color:'var(--plum)',fontWeight:500}}>{it.service_name}</span>
-                          <span style={{color:'var(--muted)'}}> • {it.employee?.full_name || '—'}</span>
-                        </div>
-                      ))}
+                      {(t.items || []).map((it, i) => {
+                        const sharePercent = Number(it.share_percent || 100);
+                        const isShared = it.share_group_id && sharePercent < 100;
+                        return (
+                          <div key={i} style={{fontSize:12,marginBottom:2}}>
+                            <span style={{color:'var(--plum)',fontWeight:500}}>{it.service_name}</span>
+                            <span style={{color:'var(--muted)'}}> • {it.employee?.full_name || '—'}</span>
+                            {isShared && <span className="badge" style={{fontSize:9,background:'var(--mauve-tint)',color:'var(--mauve)',marginLeft:4}}>{sharePercent}%</span>}
+                          </div>
+                        );
+                      })}
                     </td>
                     <td className="table-numeric" style={{fontWeight:500}}>{fmtRp(t.total_amount)}</td>
                     <td className="table-numeric" style={{color:'var(--mauve)',fontWeight:500}}>{fmtRp(t.total_commission)}</td>
@@ -2649,7 +2897,8 @@ function PayrollPage({ profile, currentBranchId, branches }) {
                   {isSuper && !effectiveBranchId && <th>Cabang</th>}
                   <th className="table-numeric">Gapok</th>
                   <th className="table-numeric">U. Makan</th>
-                  <th className="table-numeric">Komisi</th>
+                  <th className="table-numeric">Komisi Treatment</th>
+                  <th className="table-numeric">Komisi HS</th>
                   <th>Absensi</th>
                   <th className="table-numeric">Bonus</th>
                   <th className="table-numeric">Potongan</th>
@@ -2701,9 +2950,13 @@ function PayrollPage({ profile, currentBranchId, branches }) {
                     </td>
                     <td className="table-numeric">{fmtRpOrDash(p.meal_allowance)}</td>
                     <td className="table-numeric">
-                      <div style={{fontWeight:500,color:'var(--mauve)'}}>{fmtRp(p.treatment_commission + p.hs_commission)}</div>
-                      {p.hs_commission > 0 && (
-                        <div style={{fontSize:10,color:'var(--muted)'}}>HS: {fmtRp(p.hs_commission)}</div>
+                      <div style={{fontWeight:500,color:'var(--mauve)'}}>{fmtRp(p.treatment_commission)}</div>
+                    </td>
+                    <td className="table-numeric">
+                      {p.hs_commission > 0 ? (
+                        <div style={{fontWeight:500,color:'var(--gold)'}}>{fmtRp(p.hs_commission)}</div>
+                      ) : (
+                        <span style={{color:'var(--muted)'}}>—</span>
                       )}
                     </td>
                     <td style={{fontSize:11}}>

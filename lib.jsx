@@ -93,6 +93,28 @@ const ROLES = [
 ];
 
 // =====================================================
+// Payment Methods — Tahap F
+// =====================================================
+const PAYMENT_METHODS = [
+  { value: 'cash', label: 'Cash', icon: '💵', category: 'cash' },
+  { value: 'qris', label: 'QRIS', icon: '📱', category: 'digital' },
+  { value: 'bca', label: 'Transfer BCA', icon: '🏦', category: 'bank' },
+  { value: 'mandiri', label: 'Transfer Mandiri', icon: '🏦', category: 'bank' },
+  { value: 'bni', label: 'Transfer BNI', icon: '🏦', category: 'bank' },
+  { value: 'btn', label: 'Transfer BTN', icon: '🏦', category: 'bank' },
+];
+
+function getPaymentMethodLabel(value) {
+  const m = PAYMENT_METHODS.find(p => p.value === value);
+  return m ? m.label : (value || 'Cash');
+}
+
+function getPaymentMethodIcon(value) {
+  const m = PAYMENT_METHODS.find(p => p.value === value);
+  return m ? m.icon : '💵';
+}
+
+// =====================================================
 // Commission calculator
 // =====================================================
 function isOvertime(timeStr) {
@@ -323,6 +345,7 @@ async function upsertClient(branchId, fullName, phone) {
 async function createTransaction({
   branchId, clientName, clientPhone, date, startTime,
   isHomeService, homeServiceFee, notes, items, createdBy,
+  paymentMethod = 'cash',
 }) {
   const isOT = isOvertime(startTime);
   const totalAmount = items.reduce((sum, it) => sum + (Number(it.price) || 0), 0);
@@ -352,6 +375,7 @@ async function createTransaction({
       total_commission: totalCommission + (isHomeService ? (Number(homeServiceFee) || 0) : 0),
       notes: notes || null,
       created_by: createdBy,
+      payment_method: paymentMethod,
     })
     .select().single();
 
@@ -370,6 +394,8 @@ async function createTransaction({
       commission_rate: Number(it.commission_rate) || 0,
       commission_amount: Number(it.commission_amount) || 0,
       notes: it.notes || null,
+      share_group_id: it.share_group_id || null,
+      share_percent: it.share_percent != null ? Number(it.share_percent) : 100,
     };
   });
 
@@ -1228,6 +1254,7 @@ async function getEmployeePeriodTransactions(employeeId, periodStart, periodEnd)
     .from('transaction_items')
     .select(`
       id, service_name, price, commission_amount, commission_rate, commission_type,
+      share_group_id, share_percent,
       transaction:transactions(
         id, date, start_time, is_overtime, is_home_service, home_service_fee,
         client_name_snapshot, client_phone_snapshot
@@ -1290,6 +1317,10 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       const it = trx.items[i];
       const isFirst = i === 0;
       runningCommission += Number(it.commission_amount || 0);
+      // Shared treatment info
+      const sharePercent = Number(it.share_percent || 100);
+      const isShared = it.share_group_id && sharePercent < 100;
+      const sharedTag = isShared ? ` <span class="tag tag-mauve">shared ${sharePercent}%</span>` : '';
       detailRows += `
         <tr>
           <td class="cell-date">${isFirst ? fmtDate(trx.date) : ''}</td>
@@ -1299,6 +1330,7 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
             ${escapeHtml(it.service_name)}
             ${trx.is_overtime && isFirst ? '<span class="tag tag-amber">lembur</span>' : ''}
             ${trx.is_home_service && isFirst ? '<span class="tag tag-gold">HS</span>' : ''}
+            ${sharedTag}
           </td>
           <td class="cell-num">${fmtRp(it.price)}</td>
           <td class="cell-num cell-commission">${fmtRp(it.commission_amount)}</td>
@@ -1453,6 +1485,7 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
   }
   .tag-amber { background: #fdf6e3; color: #b8893d; }
   .tag-gold { background: #f7efe0; color: #a8884a; }
+  .tag-mauve { background: #f3eef5; color: #7a667e; }
 
   .breakdown-table { margin-top: 10px; }
   .breakdown-table th { font-size: 10px; }
@@ -1988,22 +2021,99 @@ async function updateTransactionFull({
   homeServiceFee,
   notes,
   items,
+  paymentMethod,
 }) {
-  // items: [{employee_id, service_name, service_category, price, commission_type, commission_rate, commission_amount, notes}]
-  const { data, error } = await sb.rpc('update_transaction_full', {
-    p_transaction_id: transactionId,
-    p_date: date,
-    p_start_time: startTime,
-    p_client_name: clientName,
-    p_client_phone: clientPhone,
-    p_is_overtime: isOvertime,
-    p_is_home_service: isHomeService,
-    p_home_service_fee: homeServiceFee || 0,
-    p_notes: notes || null,
-    p_items: items,
+  // First try RPC (for backward compatibility with older deployments)
+  // If items have share_group_id/share_percent OR payment_method is set,
+  // we need to bypass RPC and do direct ops since RPC signature is fixed.
+
+  const needsDirectOps = paymentMethod != null
+    || items.some(it => it.share_group_id || (it.share_percent != null && it.share_percent !== 100));
+
+  if (!needsDirectOps) {
+    // Use existing RPC for simple updates
+    const { data, error } = await sb.rpc('update_transaction_full', {
+      p_transaction_id: transactionId,
+      p_date: date,
+      p_start_time: startTime,
+      p_client_name: clientName,
+      p_client_phone: clientPhone,
+      p_is_overtime: isOvertime,
+      p_is_home_service: isHomeService,
+      p_home_service_fee: homeServiceFee || 0,
+      p_notes: notes || null,
+      p_items: items,
+    });
+    if (error) throw error;
+    return data;
+  }
+
+  // Direct ops (when payment_method or share fields are used)
+  // Calculate totals
+  const totalAmount = items.reduce((sum, it) => sum + (Number(it.price) || 0), 0);
+  const totalCommission = items.reduce((sum, it) => sum + (Number(it.commission_amount) || 0), 0);
+  const finalCommission = totalCommission + (isHomeService ? (Number(homeServiceFee) || 0) : 0);
+
+  // Get existing trx for branch_id
+  const { data: existingTrx, error: fetchErr } = await sb
+    .from('transactions')
+    .select('branch_id')
+    .eq('id', transactionId)
+    .single();
+  if (fetchErr) throw fetchErr;
+  const branchId = existingTrx.branch_id;
+
+  // Update transaction header
+  const updatePayload = {
+    date,
+    start_time: startTime,
+    client_name_snapshot: clientName,
+    client_phone_snapshot: clientPhone,
+    is_overtime: isOvertime,
+    is_home_service: isHomeService,
+    home_service_fee: Number(homeServiceFee) || 0,
+    total_amount: totalAmount,
+    total_commission: finalCommission,
+    notes: notes || null,
+  };
+  if (paymentMethod != null) updatePayload.payment_method = paymentMethod;
+
+  const { error: updateErr } = await sb
+    .from('transactions')
+    .update(updatePayload)
+    .eq('id', transactionId);
+  if (updateErr) throw updateErr;
+
+  // Delete existing items
+  const { error: delErr } = await sb
+    .from('transaction_items')
+    .delete()
+    .eq('transaction_id', transactionId);
+  if (delErr) throw delErr;
+
+  // Re-insert items
+  const itemRows = items.map(it => {
+    const svc = getServiceDef(it.service_name);
+    return {
+      transaction_id: transactionId,
+      branch_id: branchId,
+      employee_id: it.employee_id,
+      service_name: it.service_name,
+      service_category: svc?.category || it.service_category || 'other',
+      price: Number(it.price) || 0,
+      commission_type: it.commission_type,
+      commission_rate: Number(it.commission_rate) || 0,
+      commission_amount: Number(it.commission_amount) || 0,
+      notes: it.notes || null,
+      share_group_id: it.share_group_id || null,
+      share_percent: it.share_percent != null ? Number(it.share_percent) : 100,
+    };
   });
-  if (error) throw error;
-  return data;
+
+  const { error: insertErr } = await sb.from('transaction_items').insert(itemRows);
+  if (insertErr) throw insertErr;
+
+  return transactionId;
 }
 
 // Delete transaction (super_admin only)
@@ -2323,8 +2433,11 @@ Object.assign(window, {
   getTransactionDetail, updateTransactionFull, deleteTransaction,
   checkTransactionEdited, getEditedTransactionIds,
   // Tahap E - Photos
+  // Tahap E - Photos
   PHOTO_BUCKET, compressImage,
   uploadTreatmentPhoto, getTransactionPhotos, deleteTreatmentPhoto,
   markPhotoMarketing, refreshPhotoSignedUrl, updatePhotoSkipReason,
   listMarketingPhotos, listAllPhotos,
+  // Tahap F - Payment + Multi-employee
+  PAYMENT_METHODS, getPaymentMethodLabel, getPaymentMethodIcon,
 });
