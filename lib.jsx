@@ -2508,6 +2508,8 @@ async function getPaymentFlowBreakdown({ from, to, branchId = null }) {
 }
 
 
+// Expose
+Object.assign(window, {
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
   fmtRp, fmtRpOrDash, fmtNumber, fmtDate, fmtTime, todayStr, nowTimeStr, currentMonth,
   dateToYMD, startOfWeekMonday, endOfWeekSunday, DATE_PRESETS,
