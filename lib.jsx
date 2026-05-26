@@ -1313,14 +1313,38 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
   const trxList = Object.values(byTrx).sort((a, b) => a.date.localeCompare(b.date));
 
   for (const trx of trxList) {
+    // For HS transactions: distribute the home_service_fee across items equally
+    // So each item's "komisi" cell shows its portion of the HS fee in gold
+    const isHS = trx.is_home_service;
+    const hsFee = Number(trx.home_service_fee || 0);
+    const hsPortionPerItem = isHS && trx.items.length > 0 ? Math.round(hsFee / trx.items.length) : 0;
+    // Handle remainder so total still equals hsFee (last item gets the remainder)
+    const hsRemainder = isHS ? hsFee - (hsPortionPerItem * trx.items.length) : 0;
+
     for (let i = 0; i < trx.items.length; i++) {
       const it = trx.items[i];
       const isFirst = i === 0;
-      runningCommission += Number(it.commission_amount || 0);
+      const isLast = i === trx.items.length - 1;
       // Shared treatment info
       const sharePercent = Number(it.share_percent || 100);
       const isShared = it.share_group_id && sharePercent < 100;
       const sharedTag = isShared ? ` <span class="tag tag-mauve">shared ${sharePercent}%</span>` : '';
+
+      // Calculate effective commission to display
+      let displayCommission;
+      let commissionColor;
+      if (isHS) {
+        // HS: show portion of HS fee in gold
+        displayCommission = hsPortionPerItem + (isLast ? hsRemainder : 0);
+        commissionColor = '#a8884a'; // gold
+        runningCommission += displayCommission;
+      } else {
+        // Regular: show treatment commission as usual
+        displayCommission = Number(it.commission_amount || 0);
+        commissionColor = ''; // default mauve via CSS
+        runningCommission += displayCommission;
+      }
+
       detailRows += `
         <tr>
           <td class="cell-date">${isFirst ? fmtDate(trx.date) : ''}</td>
@@ -1333,11 +1357,10 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
             ${sharedTag}
           </td>
           <td class="cell-num">${fmtRp(it.price)}</td>
-          <td class="cell-num cell-commission">${fmtRp(it.commission_amount)}</td>
+          <td class="cell-num cell-commission" style="${commissionColor ? `color: ${commissionColor}; font-weight: 600;` : ''}">${fmtRp(displayCommission)}</td>
         </tr>
       `;
     }
-    // Home service fee row (counted separately, distributed by lib calculation already)
   }
 
   // Empty state
@@ -1712,8 +1735,8 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       </tr>
       ${hsCommission > 0 ? `
       <tr>
-        <td colspan="4" style="text-align: right; font-weight: 500;">Komisi Home Service</td>
-        <td colspan="2" class="cell-num" style="font-weight: 600;">${fmtRp(hsCommission)}</td>
+        <td colspan="4" style="text-align: right; font-weight: 500; color: #a8884a;">Total Komisi Home Service</td>
+        <td colspan="2" class="cell-num" style="font-weight: 600; color: #a8884a;">${fmtRp(hsCommission)}</td>
       </tr>
       ` : ''}
     </tfoot>
@@ -1748,8 +1771,8 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       </tr>
       ${hsCommission > 0 ? `
       <tr>
-        <td>Komisi Home Service</td>
-        <td class="cell-num">${fmtRp(hsCommission)}</td>
+        <td style="color: #a8884a;">Komisi Home Service</td>
+        <td class="cell-num" style="color: #a8884a; font-weight: 500;">${fmtRp(hsCommission)}</td>
       </tr>
       ` : ''}
       ${payroll.bonus > 0 ? `
