@@ -1884,41 +1884,24 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
-// Open slip in new window
+// Open slip in in-page modal with iframe (works on iOS Safari, Android, all browsers)
 function printSlip(slipHtml) {
-  const w = window.open('', '_blank', 'width=900,height=1000');
-  if (!w) {
-    toast('Browser memblokir popup. Izinkan popup untuk situs ini.', 'error');
-    return;
-  }
-  w.document.write(slipHtml);
-  w.document.close();
+  showSlipModal(slipHtml, 'slip-gaji');
 }
 
-// Print multiple slips in one window (each with page-break)
+// Print multiple slips combined
 function printMultipleSlips(slips) {
   if (!slips.length) {
     toast('Tidak ada slip untuk diprint', 'error');
     return;
   }
 
-  // Combine: take the head from first slip, then concat all bodies with page breaks
-  const w = window.open('', '_blank', 'width=900,height=1000');
-  if (!w) {
-    toast('Browser memblokir popup.', 'error');
-    return;
-  }
-
-  // Extract first slip's full doc, then inject other slips as additional sections
+  // Combine: take first slip as base, append others as additional pages
   const firstSlip = slips[0];
-
-  // Parse the first slip to inject additional sections
-  // We'll do this by inserting more .slip divs before </body>
   let combinedHtml = firstSlip;
 
   if (slips.length > 1) {
     const additionalSections = slips.slice(1).map(slipHtml => {
-      // Extract only the .slip div from each subsequent slip
       const slipMatch = slipHtml.match(/<div class="slip">([\s\S]*?)<\/div>\s*<\/body>/);
       if (slipMatch) {
         return `<div class="page-break"></div><div class="slip">${slipMatch[1]}</div>`;
@@ -1929,8 +1912,164 @@ function printMultipleSlips(slips) {
     combinedHtml = firstSlip.replace('</body>', additionalSections + '\n</body>');
   }
 
-  w.document.write(combinedHtml);
-  w.document.close();
+  showSlipModal(combinedHtml, `slip-gaji-${slips.length}-karyawan`);
+}
+
+// Show slip in iframe modal (works on iOS Safari, Android, all browsers)
+function showSlipModal(slipHtml, downloadName = 'slip-gaji') {
+  // Remove any existing modal
+  const existing = document.getElementById('jbb-slip-modal');
+  if (existing) existing.remove();
+
+  // Create modal overlay
+  const overlay = document.createElement('div');
+  overlay.id = 'jbb-slip-modal';
+  overlay.style.cssText = `
+    position: fixed;
+    inset: 0;
+    background: rgba(36, 26, 44, 0.85);
+    z-index: 99999;
+    display: flex;
+    flex-direction: column;
+    backdrop-filter: blur(4px);
+  `;
+
+  // Header bar with action buttons
+  const header = document.createElement('div');
+  header.style.cssText = `
+    background: #fdfbf9;
+    padding: 12px 16px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    border-bottom: 1px solid #e5dce5;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    padding-top: max(12px, env(safe-area-inset-top));
+  `;
+  header.innerHTML = `
+    <div style="font-family: 'Cormorant Garamond', serif; font-size: 18px; color: #3d2e44; font-weight: 500;">
+      📄 Slip Gaji
+    </div>
+    <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+      <button id="jbb-slip-print" style="
+        padding: 8px 16px;
+        background: #7a667e;
+        color: white;
+        border: none;
+        border-radius: 100px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        min-height: 38px;
+      ">🖨️ Print</button>
+      <button id="jbb-slip-download" style="
+        padding: 8px 16px;
+        background: #f3eef5;
+        color: #3d2e44;
+        border: none;
+        border-radius: 100px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        min-height: 38px;
+      ">📥 Download HTML</button>
+      <button id="jbb-slip-close" style="
+        padding: 8px 14px;
+        background: transparent;
+        color: #7a667e;
+        border: 1px solid #d4c8d8;
+        border-radius: 100px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        min-height: 38px;
+      ">✕ Tutup</button>
+    </div>
+  `;
+
+  // Iframe container
+  const iframeWrap = document.createElement('div');
+  iframeWrap.style.cssText = `
+    flex: 1;
+    background: white;
+    overflow: hidden;
+    padding-bottom: env(safe-area-inset-bottom);
+  `;
+
+  const iframe = document.createElement('iframe');
+  iframe.id = 'jbb-slip-iframe';
+  iframe.style.cssText = `
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: white;
+  `;
+  iframeWrap.appendChild(iframe);
+
+  overlay.appendChild(header);
+  overlay.appendChild(iframeWrap);
+  document.body.appendChild(overlay);
+
+  // Write slip content to iframe
+  const doc = iframe.contentDocument || iframe.contentWindow.document;
+  doc.open();
+  doc.write(slipHtml);
+  doc.close();
+
+  // Wait for iframe content & fonts to load before allowing print
+  let isReady = false;
+  iframe.onload = () => { isReady = true; };
+  // Fallback: also mark ready after a short delay
+  setTimeout(() => { isReady = true; }, 800);
+
+  // Close button
+  document.getElementById('jbb-slip-close').onclick = () => overlay.remove();
+
+  // Click outside iframe to close
+  overlay.onclick = (e) => {
+    if (e.target === overlay) overlay.remove();
+  };
+
+  // ESC key to close
+  function onKey(e) {
+    if (e.key === 'Escape') {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey);
+    }
+  }
+  document.addEventListener('keydown', onKey);
+
+  // Print button: trigger print inside iframe
+  document.getElementById('jbb-slip-print').onclick = () => {
+    try {
+      // Focus iframe first (required for some browsers)
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+    } catch (err) {
+      console.error('Print failed:', err);
+      alert('Print gagal. Coba pakai tombol Download HTML, lalu print dari file yang ter-download.');
+    }
+  };
+
+  // Download HTML button: save the slip as standalone .html file
+  document.getElementById('jbb-slip-download').onclick = () => {
+    try {
+      const blob = new Blob([slipHtml], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${downloadName}-${new Date().toISOString().split('T')[0]}.html`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      console.error('Download failed:', err);
+      alert('Download gagal.');
+    }
+  };
 }
 
 // =====================================================
