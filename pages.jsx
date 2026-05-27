@@ -3239,6 +3239,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
         annual_leave_days: currentAdjustment.annual_leave_days || 0,
         sick_leave_certified_days: currentAdjustment.sick_leave_certified_days || 0,
         unpaid_leave_days: currentAdjustment.unpaid_leave_days || 0,
+        unpaid_leave_weekend_days: currentAdjustment.unpaid_leave_weekend_days || 0,
         bonus: currentAdjustment.bonus || 0,
         extra_deduction: currentAdjustment.extra_deduction || 0,
         notes: currentAdjustment.notes || '',
@@ -3249,6 +3250,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
         annual_leave_days: 0,
         sick_leave_certified_days: 0,
         unpaid_leave_days: 0,
+        unpaid_leave_weekend_days: 0,
         bonus: 0,
         extra_deduction: 0,
         notes: '',
@@ -3265,12 +3267,15 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
     if (!employee) return null;
     const baseSalary = Number(employee.base_salary) || 0;
     const unpaid = Number(form.unpaid_leave_days) || 0;
+    const unpaidWeekend = Number(form.unpaid_leave_weekend_days) || 0;
+    const effectiveAbsent = unpaid + (unpaidWeekend * 2);
     const standardDays = Number(form.standard_work_days) || 26;
-    const actualSalary = unpaid > 0
-      ? Math.round(baseSalary * (1 - unpaid / standardDays))
+    const dailyWage = Math.round(baseSalary / standardDays);
+    const actualSalary = effectiveAbsent > 0
+      ? Math.round(baseSalary * (1 - effectiveAbsent / standardDays))
       : baseSalary;
     const deduction = baseSalary - actualSalary;
-    return { actualSalary, deduction };
+    return { actualSalary, deduction, effectiveAbsent, dailyWage };
   }, [form, employee]);
 
   // Annual leave check
@@ -3307,6 +3312,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
         annual_leave_days: annualLeave,
         sick_leave_certified_days: sickCertified,
         unpaid_leave_days: unpaid,
+        unpaid_leave_weekend_days: Number(form.unpaid_leave_weekend_days) || 0,
         bonus: Number(form.bonus) || 0,
         extra_deduction: Number(form.extra_deduction) || 0,
         notes: form.notes || null,
@@ -3353,7 +3359,8 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
           <div style={{padding:'12px 14px',background:'var(--mauve-tint)',borderRadius:8,fontSize:12,color:'var(--plum)',marginBottom:18,lineHeight:1.6}}>
             <strong>Aturan JBB:</strong><br/>
             • Cuti tahunan, sakit + surat dokter → <strong>tidak potong gaji</strong><br/>
-            • Sakit tanpa surat, izin pribadi, mangkir → <strong>potong gaji</strong> (per hari)<br/>
+            • Absen tanpa surat / izin pribadi → <strong>potong gaji harian</strong> (1×)<br/>
+            • Absen di hari weekend (Sabtu/Minggu) → <strong>potong 2× gaji harian</strong><br/>
             • Standar hari kerja: 26 hari/bulan
           </div>
 
@@ -3363,7 +3370,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
               min="20" max="31"/>
           </Field>
 
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:14,marginBottom:14}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:14}}>
             <Field
               label="Cuti Tahunan (hari)"
               hint={leaveBalance ? `Sisa: ${Math.max(0, annualLeaveRemaining)}/${leaveBalance.total_quota || 7}` : 'Jatah 7 hari/tahun'}
@@ -3379,16 +3386,25 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
                 onChange={e => update({ sick_leave_certified_days: e.target.value })}
                 min="0" max="31"/>
             </Field>
-            <Field label="Izin / Sakit tanpa Surat / Mangkir" hint="POTONG GAJI" error={null}>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:14}}>
+            <Field label="Absen (hari biasa)" hint="Senin–Jumat · POTONG GAJI 1×" error={null}>
               <input type="number" className="form-input" value={form.unpaid_leave_days}
                 onChange={e => update({ unpaid_leave_days: e.target.value })}
                 min="0" max="31"
                 style={Number(form.unpaid_leave_days) > 0 ? {borderColor:'var(--amber)',background:'#fdf6e3'} : {}}/>
             </Field>
+            <Field label="Absen Weekend (Sabtu/Minggu)" hint="POTONG GAJI 2×" error={null}>
+              <input type="number" className="form-input" value={form.unpaid_leave_weekend_days}
+                onChange={e => update({ unpaid_leave_weekend_days: e.target.value })}
+                min="0" max="10"
+                style={Number(form.unpaid_leave_weekend_days) > 0 ? {borderColor:'var(--red)',background:'#fef0e8'} : {}}/>
+            </Field>
           </div>
 
           {/* PREVIEW */}
-          {preview && Number(form.unpaid_leave_days) > 0 && (
+          {preview && (Number(form.unpaid_leave_days) > 0 || Number(form.unpaid_leave_weekend_days) > 0) && (
             <div style={{
               padding:'12px 14px',background:'#fdf6e3',borderRadius:8,
               fontSize:13,color:'var(--plum)',marginBottom:18,lineHeight:1.7,
@@ -3397,7 +3413,14 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
               <strong>⚠️ Potongan gaji aktif:</strong><br/>
               Gaji pokok {fmtRp(employee.base_salary)} → <strong style={{color:'var(--red)'}}>{fmtRp(preview.actualSalary)}</strong><br/>
               <span style={{fontSize:11,color:'var(--muted)'}}>
-                Formula: {fmtRp(employee.base_salary)} × (1 − {form.unpaid_leave_days}/{form.standard_work_days}) = potongan {fmtRp(preview.deduction)}
+                Gaji harian: {fmtRp(preview.dailyWage)} ({fmtRp(employee.base_salary)} / {form.standard_work_days} hari)<br/>
+                {Number(form.unpaid_leave_days) > 0 && (
+                  <>Absen biasa: {form.unpaid_leave_days} × {fmtRp(preview.dailyWage)} = {fmtRp(Number(form.unpaid_leave_days) * preview.dailyWage)}<br/></>
+                )}
+                {Number(form.unpaid_leave_weekend_days) > 0 && (
+                  <>Absen weekend: {form.unpaid_leave_weekend_days} × 2 × {fmtRp(preview.dailyWage)} = {fmtRp(Number(form.unpaid_leave_weekend_days) * 2 * preview.dailyWage)}<br/></>
+                )}
+                Total potongan: <strong style={{color:'var(--red)'}}>{fmtRp(preview.deduction)}</strong> ({preview.effectiveAbsent} hari efektif)
               </span>
             </div>
           )}

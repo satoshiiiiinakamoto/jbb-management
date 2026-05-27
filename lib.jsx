@@ -957,12 +957,15 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
   const annualLeave = Number(adjustment?.annual_leave_days) || 0;
   const sickCertified = Number(adjustment?.sick_leave_certified_days) || 0;
   const unpaidLeave = Number(adjustment?.unpaid_leave_days) || 0;
+  const unpaidLeaveWeekend = Number(adjustment?.unpaid_leave_weekend_days) || 0;
   const bonus = Number(adjustment?.bonus) || 0;
   const extraDeduction = Number(adjustment?.extra_deduction) || 0;
 
-  // Calculate prorated base salary (only unpaid leave reduces it)
-  const baseSalaryActual = unpaidLeave > 0
-    ? Math.round(baseSalary * (1 - unpaidLeave / standardDays))
+  // Daily wage = base salary / standard work days
+  // Weekend absence counts as 2 days (double deduction)
+  const effectiveAbsentDays = unpaidLeave + (unpaidLeaveWeekend * 2);
+  const baseSalaryActual = effectiveAbsentDays > 0
+    ? Math.round(baseSalary * (1 - effectiveAbsentDays / standardDays))
     : baseSalary;
 
   const salaryDeduction = baseSalary - baseSalaryActual;
@@ -980,6 +983,8 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
     annual_leave_days: annualLeave,
     sick_leave_certified_days: sickCertified,
     unpaid_leave_days: unpaidLeave,
+    unpaid_leave_weekend_days: unpaidLeaveWeekend,
+    effective_absent_days: effectiveAbsentDays,
     standard_work_days: standardDays,
     bonus,
     extra_deduction: extraDeduction,
@@ -1075,7 +1080,8 @@ const AUDIT_FIELD_LABELS = {
   standard_work_days: 'Standar Hari Kerja',
   annual_leave_days: 'Cuti Tahunan',
   sick_leave_certified_days: 'Sakit + Surat',
-  unpaid_leave_days: 'Izin/Mangkir',
+  unpaid_leave_days: 'Absen (tanpa surat)',
+  unpaid_leave_weekend_days: 'Absen Weekend',
   bonus: 'Bonus',
   extra_deduction: 'Potongan Tambahan',
   // clients
@@ -1265,7 +1271,8 @@ function exportPayrollToExcel({ rows, periodLabel, branchLabel, totals }) {
     'Komisi HS': r.payroll.hs_commission,
     'Cuti Tahunan (hari)': r.payroll.annual_leave_days,
     'Sakit + Surat (hari)': r.payroll.sick_leave_certified_days,
-    'Izin/Mangkir (hari)': r.payroll.unpaid_leave_days,
+    'Izin/Absen (hari)': r.payroll.unpaid_leave_days,
+    'Absen Weekend (hari)': r.payroll.unpaid_leave_weekend_days || 0,
     'Standar Hari Kerja': r.payroll.standard_work_days,
     Bonus: r.payroll.bonus,
     'Potongan Tambahan': r.payroll.extra_deduction,
@@ -1755,11 +1762,17 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       <div class="value">${payroll.sick_leave_certified_days} hari</div>
     </div>
     <div class="absensi-item unpaid">
-      <div class="label">Izin / Sakit no Surat / Mangkir</div>
+      <div class="label">Absen (tanpa surat)</div>
       <div class="value">${payroll.unpaid_leave_days} hari</div>
     </div>
+    ${payroll.unpaid_leave_weekend_days > 0 ? `
+    <div class="absensi-item unpaid" style="background:#fef0e8;border-color:#e8a87c;">
+      <div class="label">Absen Weekend (2x potongan)</div>
+      <div class="value">${payroll.unpaid_leave_weekend_days} hari</div>
+    </div>
+    ` : ''}
     <div class="absensi-note">
-      Standar hari kerja: ${payroll.standard_work_days} hari. Cuti tahunan & sakit dengan surat dokter tidak dipotong dari gaji pokok.
+      Standar hari kerja: ${payroll.standard_work_days} hari. Cuti tahunan & sakit dengan surat dokter tidak dipotong dari gaji pokok. Absen weekend dihitung 2x gaji harian.
     </div>
   </div>
 
@@ -1802,7 +1815,7 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       ${payroll.salary_deduction > 0 ? `
       <tr>
         <td style="padding-left: 20px; font-size: 11px; color: #6b5b6e;">
-          Potongan karena izin/mangkir (${payroll.unpaid_leave_days} hari × ${fmtRp(Math.round(payroll.base_salary / payroll.standard_work_days))})
+          Potongan absen (${payroll.unpaid_leave_days} hari biasa${payroll.unpaid_leave_weekend_days > 0 ? ` + ${payroll.unpaid_leave_weekend_days} hari weekend × 2` : ''} = ${payroll.effective_absent_days} hari × ${fmtRp(Math.round(payroll.base_salary / payroll.standard_work_days))})
         </td>
         <td class="cell-num neg">−${fmtRp(payroll.salary_deduction)}</td>
       </tr>
@@ -1847,8 +1860,8 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
   <div class="signature-area">
     <div class="sig-box">
       <div class="sig-line">
-        <div class="sig-name">${escapeHtml(generatedBy?.full_name || '_________________')}</div>
-        <div class="sig-role">Kasir / HR</div>
+        <div class="sig-name">Ami</div>
+        <div class="sig-role">Owner</div>
       </div>
     </div>
     <div class="sig-box">
