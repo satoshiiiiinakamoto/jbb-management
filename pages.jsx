@@ -483,10 +483,10 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
                         </Field>
                         {isFixedComm ? (
                           <Field label="Komisi Karyawan (Rp) *"
-                            hint={`Range 50.000 – 250.000. ${isOT && effectiveBranchId !== 'bdg' ? '+Rp 5.000 lembur' : isOT && effectiveBranchId === 'bdg' ? 'Tidak ada bonus lembur (Bandung)' : ''}`}>
+                            hint={`Input manual. ${isOT && effectiveBranchId !== 'bdg' ? '+Rp 5.000 lembur' : isOT && effectiveBranchId === 'bdg' ? 'Tidak ada bonus lembur (Bandung)' : ''}`}>
                             <input type="number" className="form-input" value={item.fixed_commission}
                               onChange={e => updateItem(idx, { fixed_commission: e.target.value })}
-                              placeholder="100000" min="50000" max="250000" step="1000" required/>
+                              placeholder="50000" min="0" step="1000" required/>
                           </Field>
                         ) : item.service_name && isHomeService ? (
                           <Field
@@ -1563,8 +1563,8 @@ function EditTransactionModal({ open, transactionId, profile, branches, onClose,
       if (!it.service_name) { toast(`Treatment #${i+1} wajib dipilih`, 'error'); return; }
       if (!it.price || Number(it.price) <= 0) { toast(`Harga treatment #${i+1} wajib diisi`, 'error'); return; }
       const svc = getServiceDef(it.service_name);
-      if (svc?.commission_type === 'fixed_amount' && (!it.fixed_commission || Number(it.fixed_commission) < 50000 || Number(it.fixed_commission) > 250000)) {
-        toast('Komisi sulam alis harus 50.000 – 250.000', 'error');
+      if (svc?.commission_type === 'fixed_amount' && (!it.fixed_commission || Number(it.fixed_commission) <= 0)) {
+        toast('Komisi sulam alis wajib diisi (> 0)', 'error');
         return;
       }
       // Share validation
@@ -1791,10 +1791,10 @@ function EditTransactionModal({ open, transactionId, profile, branches, onClose,
                         placeholder="200000" min="0" step="1000" required/>
                     </Field>
                     {isFixedComm ? (
-                      <Field label="Komisi Karyawan (Rp) *" hint="50.000 – 250.000">
+                      <Field label="Komisi Karyawan (Rp) *" hint="Input manual">
                         <input type="number" className="form-input" value={item.fixed_commission}
                           onChange={e => updateItem(idx, { fixed_commission: e.target.value })}
-                          placeholder="100000" min="50000" max="250000" step="1000" required/>
+                          placeholder="50000" min="0" step="1000" required/>
                       </Field>
                     ) : item.service_name && isHomeService ? (
                       <Field label="Komisi Treatment (Rp)" hint="Default Rp 0 (HS mode)">
