@@ -1309,11 +1309,62 @@ function getBrandForBranch(branchId) {
 // INVOICE / RECEIPT — Thermal 58mm
 // =====================================================
 
+// Per-branch invoice header info (address, phone, instagram).
+// Keyed by branch_id. Falls back to JBB generic if not found.
+const BRANCH_INFO = {
+  bdg: {
+    name: 'Jewel Beauty Bandung',
+    address: 'Commercial Area Apartment La Grande Tamansari, Jalan Merdeka No. 25-29, Bandung 40117',
+    phone: '0813-2465-5419',
+    ig: '@jewelbeautybandung',
+  },
+  smr: {
+    name: 'Jewel Beauty Summarecon',
+    address: 'Ruko Shappire No. 6, Summarecon Bandung',
+    phone: '+62 853-5350-6458',
+    ig: '@jewelbeautybandung.summarecon',
+  },
+  vli: {
+    name: 'VIALI Beauty',
+    address: 'Piazza The Mozia, Blok E9 No. 22, BSD City',
+    phone: '+62 881-0825-39229',
+    ig: '@vialibeauty',
+  },
+  jgj: {
+    name: 'JBB Jogja',
+    address: 'Ruko Kuning No. 8B, Jalan Ring Road Utara (Samping Pakuwon Mall), Yogyakarta',
+    phone: '+62 821-2817-0907',
+    ig: '@jogjabeautybar',
+  },
+  jmb: {
+    name: 'JBB Jogja Jambon',
+    address: 'Ruko IBC Nomor 5, Jalan Jambon, Kota Yogyakarta',
+    phone: '+62 858-4632-4762',
+    ig: '@jogjabeautybar.jambon',
+  },
+  cms: {
+    name: 'JBB Ciamis',
+    address: 'Perum Imbanagara Estate No. 2-4, Jl. Yogaswara, Warungwetan, Imbanagara, Kec. Ciamis, Kabupaten Ciamis, Jawa Barat 46219',
+    phone: '+62 822-1687-7778',
+    ig: '@jbb.ciamis',
+  },
+};
+
+function getBranchInfo(branchId, fallbackName = '') {
+  return BRANCH_INFO[branchId] || {
+    name: fallbackName || 'Jewel Beauty',
+    address: '',
+    phone: '',
+    ig: '',
+  };
+}
+
 // Generate thermal-receipt HTML (58mm) for a transaction.
 // trx = result of getTransactionDetail (has branch, items[].employee, payments[])
 function generateInvoiceHTML(trx) {
   const brand = getBrandForBranch(trx.branch_id);
-  const branchName = trx.branch?.name || '';
+  const isViali = trx.branch_id === 'vli';
+  const info = getBranchInfo(trx.branch_id, trx.branch?.name || '');
   const items = trx.items || [];
   const payments = (trx.payments || []).slice().sort((a, b) => (b.is_dp ? 1 : 0) - (a.is_dp ? 1 : 0));
 
@@ -1324,11 +1375,12 @@ function generateInvoiceHTML(trx) {
   // Format short transaction number from id (last 6 chars uppercase)
   const trxNo = (trx.id || '').replace(/-/g, '').slice(-6).toUpperCase();
 
-  // Date & time
+  // Date = transaction date. Time = WHEN INVOICE IS PRINTED (now), not treatment start time.
   const dateStr = fmtDate(trx.date);
-  const timeStr = trx.start_time ? trx.start_time.slice(0, 5) : '';
+  const now = new Date();
+  const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
-  // Build items rows. Group shared treatments? For receipt, list each item line with its employee.
+  // Build items rows (no "lembur" badge — this is for the client)
   const itemRows = items.map(it => {
     const empName = it.employee?.full_name || '—';
     const sharePct = (it.share_percent != null && it.share_percent < 100) ? ` (${it.share_percent}%)` : '';
@@ -1353,6 +1405,8 @@ function generateInvoiceHTML(trx) {
   const totalPaid = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
   const showSisa = payments.length > 0 && totalPaid < grandTotal;
   const sisa = grandTotal - totalPaid;
+
+  const officialName = isViali ? 'VIALI' : 'JBB';
 
   return `<!DOCTYPE html>
 <html lang="id">
@@ -1386,8 +1440,10 @@ function generateInvoiceHTML(trx) {
     font-weight: 600;
     letter-spacing: 1px;
   }
-  .tagline { font-size: 9px; color: #555; margin-bottom: 2px; }
-  .branch { font-size: 10px; font-weight: bold; margin-bottom: 6px; }
+  .tagline { font-size: 9px; color: #555; margin-bottom: 3px; }
+  .branch { font-size: 10px; font-weight: bold; margin-bottom: 3px; }
+  .addr { font-size: 8.5px; color: #333; line-height: 1.35; margin-bottom: 2px; }
+  .contact { font-size: 8.5px; color: #333; }
   .divider { border-top: 1px dashed #000; margin: 6px 0; }
   .meta { font-size: 10px; }
   .meta-row { display: flex; justify-content: space-between; }
@@ -1403,6 +1459,8 @@ function generateInvoiceHTML(trx) {
   .sisa { display: flex; justify-content: space-between; font-weight: bold; color: #a00; }
   .footer { text-align: center; font-size: 9px; margin-top: 8px; color: #333; }
   .footer-thanks { font-family: 'Cormorant Garamond', serif; font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .footer-note { font-size: 8px; color: #444; line-height: 1.4; margin-top: 6px; text-align: left; }
+  .disclaimer { font-size: 7.5px; color: #555; line-height: 1.4; margin-top: 6px; text-align: justify; border-top: 1px dotted #999; padding-top: 5px; }
 
   @media print {
     @page { size: 58mm auto; margin: 0; }
@@ -1416,7 +1474,10 @@ function generateInvoiceHTML(trx) {
     <div class="center">
       <div class="brand">${escapeHtml(brand.name)}</div>
       <div class="tagline">${escapeHtml(brand.tagline)}</div>
-      <div class="branch">${escapeHtml(branchName)}</div>
+      <div class="branch">${escapeHtml(info.name)}</div>
+      ${info.address ? `<div class="addr">${escapeHtml(info.address)}</div>` : ''}
+      ${info.phone ? `<div class="contact">Telp: ${escapeHtml(info.phone)}</div>` : ''}
+      ${info.ig ? `<div class="contact">IG: ${escapeHtml(info.ig)}</div>` : ''}
     </div>
 
     <div class="divider"></div>
@@ -1426,7 +1487,6 @@ function generateInvoiceHTML(trx) {
       <div class="meta-row"><span>Tgl</span><span>${dateStr}</span></div>
       <div class="meta-row"><span>Jam</span><span>${timeStr}</span></div>
       <div class="meta-row"><span>Klien</span><span>${escapeHtml(trx.client_name_snapshot || '-')}</span></div>
-      ${trx.is_overtime ? `<div class="meta-row"><span></span><span>(Lembur)</span></div>` : ''}
       ${trx.is_home_service ? `<div class="meta-row"><span></span><span>(Home Service)</span></div>` : ''}
     </div>
 
@@ -1450,6 +1510,12 @@ function generateInvoiceHTML(trx) {
     <div class="footer">
       <div class="footer-thanks">Terima Kasih</div>
       <div>Sampai jumpa kembali ✨</div>
+      <div class="footer-note">
+        Kritik &amp; saran, silakan sampaikan ke www.jbb-indonesia.com
+      </div>
+      <div class="disclaimer">
+        ${officialName} tidak bertanggung jawab atas transaksi atau pembayaran yang dilakukan di luar nama resmi ${officialName} atau di luar rekening resmi ${officialName}. Pastikan setiap pembayaran dilakukan melalui jalur resmi.
+      </div>
     </div>
   </div>
 </body>
