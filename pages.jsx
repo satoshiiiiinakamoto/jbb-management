@@ -403,6 +403,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
   const [submitting, setSubmitting] = useStateP(false);
   const [savedTransactionId, setSavedTransactionId] = useStateP(null);
   const [showPhotoUploadAfter, setShowPhotoUploadAfter] = useStateP(false);
+  const [showInvoicePrompt, setShowInvoicePrompt] = useStateP(false);
 
   const isOT = isOvertime(startTime);
 
@@ -1093,9 +1094,39 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
         profile={profile}
         onClose={() => {
           setShowPhotoUploadAfter(false);
-          setPage('transactions');
+          setShowInvoicePrompt(true);
         }}
       />
+
+      {/* Invoice prompt after save (before leaving page) */}
+      {showInvoicePrompt && savedTransactionId && (
+        <div style={{
+          position:'fixed',inset:0,background:'rgba(36,26,44,0.6)',
+          zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',
+          padding:20,backdropFilter:'blur(3px)',
+        }} onClick={() => { setShowInvoicePrompt(false); setPage('transactions'); }}>
+          <div style={{
+            background:'var(--paper)',borderRadius:16,padding:'24px 22px',maxWidth:340,width:'100%',
+            boxShadow:'0 12px 40px rgba(0,0,0,0.2)',textAlign:'center',
+          }} onClick={e => e.stopPropagation()}>
+            <div style={{fontSize:36,marginBottom:8}}>🧾</div>
+            <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:22,fontWeight:600,color:'var(--plum-deep)',marginBottom:6}}>
+              Transaksi Tersimpan
+            </div>
+            <div style={{fontSize:13,color:'var(--muted)',marginBottom:18,lineHeight:1.5}}>
+              Mau cetak / download invoice untuk klien sekarang? Bisa juga dilakukan nanti dari tab Transaksi.
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              <button className="btn btn-primary" onClick={() => printInvoice(savedTransactionId)}>
+                🧾 Cetak / Download Invoice
+              </button>
+              <button className="btn btn-ghost" onClick={() => { setShowInvoicePrompt(false); setPage('transactions'); }}>
+                Nanti saja
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1359,31 +1390,39 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                     <span style={{color:'var(--mauve)',fontWeight:500}}>{fmtRp(t.total_commission)}</span>
                   </div>
 
-                  {canEdit && (
-                    <div className="row-actions">
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => setPhotoTargetId(t.id)}
-                      >
-                        📸 Foto
-                      </button>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => setEditingId(t.id)}
-                      >
-                        ✏️ Edit
-                      </button>
-                      {canDelete && (
+                  <div className="row-actions">
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => printInvoice(t.id)}
+                    >
+                      🧾 Invoice
+                    </button>
+                    {canEdit && (
+                      <>
                         <button
                           className="btn btn-ghost btn-sm"
-                          onClick={() => setDeleteTarget(t)}
-                          style={{color:'var(--red)'}}
+                          onClick={() => setPhotoTargetId(t.id)}
                         >
-                          🗑 Hapus
+                          📸 Foto
                         </button>
-                      )}
-                    </div>
-                  )}
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => setEditingId(t.id)}
+                        >
+                          ✏️ Edit
+                        </button>
+                        {canDelete && (
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => setDeleteTarget(t)}
+                            style={{color:'var(--red)'}}
+                          >
+                            🗑 Hapus
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -1399,7 +1438,7 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                   <th>Pelanggan</th><th>Treatment</th>
                   <th className="table-numeric">Total Omset</th>
                   <th className="table-numeric">Komisi</th>
-                  {canEdit && <th>Aksi</th>}
+                  <th>Aksi</th>
                 </tr>
               </thead>
               <tbody>
@@ -1465,36 +1504,45 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                     </td>
                     <td className="table-numeric" style={{fontWeight:500}}>{fmtRp(t.total_amount)}</td>
                     <td className="table-numeric" style={{color:'var(--mauve)',fontWeight:500}}>{fmtRp(t.total_commission)}</td>
-                    {canEdit && (
-                      <td>
-                        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                          <button
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => setPhotoTargetId(t.id)}
-                            title="Lihat & kelola foto treatment"
-                          >
-                            📸 Foto
-                          </button>
-                          <button
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => setEditingId(t.id)}
-                            title="Edit transaksi"
-                          >
-                            ✏️ Edit
-                          </button>
-                          {canDelete && (
+                    <td>
+                      <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => printInvoice(t.id)}
+                          title="Cetak / download invoice"
+                        >
+                          🧾 Invoice
+                        </button>
+                        {canEdit && (
+                          <>
                             <button
                               className="btn btn-ghost btn-sm"
-                              onClick={() => setDeleteTarget(t)}
-                              title="Hapus transaksi (super_admin only)"
-                              style={{color:'var(--red)'}}
+                              onClick={() => setPhotoTargetId(t.id)}
+                              title="Lihat & kelola foto treatment"
                             >
-                              🗑 Hapus
+                              📸 Foto
                             </button>
-                          )}
-                        </div>
-                      </td>
-                    )}
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => setEditingId(t.id)}
+                              title="Edit transaksi"
+                            >
+                              ✏️ Edit
+                            </button>
+                            {canDelete && (
+                              <button
+                                className="btn btn-ghost btn-sm"
+                                onClick={() => setDeleteTarget(t)}
+                                title="Hapus transaksi (super_admin only)"
+                                style={{color:'var(--red)'}}
+                              >
+                                🗑 Hapus
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                   );
                 })}

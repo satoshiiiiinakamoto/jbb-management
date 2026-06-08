@@ -1305,6 +1305,169 @@ function getBrandForBranch(branchId) {
   };
 }
 
+// =====================================================
+// INVOICE / RECEIPT — Thermal 58mm
+// =====================================================
+
+// Generate thermal-receipt HTML (58mm) for a transaction.
+// trx = result of getTransactionDetail (has branch, items[].employee, payments[])
+function generateInvoiceHTML(trx) {
+  const brand = getBrandForBranch(trx.branch_id);
+  const branchName = trx.branch?.name || '';
+  const items = trx.items || [];
+  const payments = (trx.payments || []).slice().sort((a, b) => (b.is_dp ? 1 : 0) - (a.is_dp ? 1 : 0));
+
+  const subtotal = items.reduce((s, it) => s + Number(it.price || 0), 0);
+  const hsFee = trx.is_home_service ? Number(trx.home_service_fee || 0) : 0;
+  const grandTotal = subtotal + hsFee;
+
+  // Format short transaction number from id (last 6 chars uppercase)
+  const trxNo = (trx.id || '').replace(/-/g, '').slice(-6).toUpperCase();
+
+  // Date & time
+  const dateStr = fmtDate(trx.date);
+  const timeStr = trx.start_time ? trx.start_time.slice(0, 5) : '';
+
+  // Build items rows. Group shared treatments? For receipt, list each item line with its employee.
+  const itemRows = items.map(it => {
+    const empName = it.employee?.full_name || '—';
+    const sharePct = (it.share_percent != null && it.share_percent < 100) ? ` (${it.share_percent}%)` : '';
+    return `
+      <div class="item">
+        <div class="item-name">${escapeHtml(it.service_name)}${sharePct}</div>
+        <div class="item-row">
+          <span class="item-emp">oleh ${escapeHtml(empName)}</span>
+          <span class="item-price">${fmtRp(it.price)}</span>
+        </div>
+      </div>`;
+  }).join('');
+
+  const paymentRows = payments.length > 0
+    ? payments.map(p => `
+        <div class="pay-row">
+          <span>${p.is_dp ? 'DP' : 'Bayar'} (${getPaymentMethodLabel(p.payment_method)})</span>
+          <span>${fmtRp(p.amount)}</span>
+        </div>`).join('')
+    : `<div class="pay-row"><span>Pembayaran (${getPaymentMethodLabel(trx.payment_method || 'cash')})</span><span>${fmtRp(grandTotal)}</span></div>`;
+
+  const totalPaid = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
+  const showSisa = payments.length > 0 && totalPaid < grandTotal;
+  const sisa = grandTotal - totalPaid;
+
+  return `<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Invoice ${trxNo}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Courier New', monospace;
+    background: #f0f0f0;
+    padding: 12px;
+    display: flex;
+    justify-content: center;
+  }
+  .receipt {
+    width: 58mm;
+    max-width: 220px;
+    background: #fff;
+    padding: 10px 8px;
+    color: #000;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+  .center { text-align: center; }
+  .brand {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 1px;
+  }
+  .tagline { font-size: 9px; color: #555; margin-bottom: 2px; }
+  .branch { font-size: 10px; font-weight: bold; margin-bottom: 6px; }
+  .divider { border-top: 1px dashed #000; margin: 6px 0; }
+  .meta { font-size: 10px; }
+  .meta-row { display: flex; justify-content: space-between; }
+  .item { margin-bottom: 5px; }
+  .item-name { font-weight: bold; font-size: 11px; }
+  .item-row { display: flex; justify-content: space-between; font-size: 10px; }
+  .item-emp { color: #333; font-style: italic; }
+  .item-price { white-space: nowrap; }
+  .totals { font-size: 11px; }
+  .total-row { display: flex; justify-content: space-between; }
+  .grand { font-weight: bold; font-size: 13px; }
+  .pay-row { display: flex; justify-content: space-between; font-size: 10px; }
+  .sisa { display: flex; justify-content: space-between; font-weight: bold; color: #a00; }
+  .footer { text-align: center; font-size: 9px; margin-top: 8px; color: #333; }
+  .footer-thanks { font-family: 'Cormorant Garamond', serif; font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+
+  @media print {
+    @page { size: 58mm auto; margin: 0; }
+    body { background: #fff; padding: 0; }
+    .receipt { width: 100%; max-width: none; padding: 4px 6px; }
+  }
+</style>
+</head>
+<body>
+  <div class="receipt">
+    <div class="center">
+      <div class="brand">${escapeHtml(brand.name)}</div>
+      <div class="tagline">${escapeHtml(brand.tagline)}</div>
+      <div class="branch">${escapeHtml(branchName)}</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="meta">
+      <div class="meta-row"><span>No</span><span>#${trxNo}</span></div>
+      <div class="meta-row"><span>Tgl</span><span>${dateStr}</span></div>
+      <div class="meta-row"><span>Jam</span><span>${timeStr}</span></div>
+      <div class="meta-row"><span>Klien</span><span>${escapeHtml(trx.client_name_snapshot || '-')}</span></div>
+      ${trx.is_overtime ? `<div class="meta-row"><span></span><span>(Lembur)</span></div>` : ''}
+      ${trx.is_home_service ? `<div class="meta-row"><span></span><span>(Home Service)</span></div>` : ''}
+    </div>
+
+    <div class="divider"></div>
+
+    ${itemRows}
+
+    <div class="divider"></div>
+
+    <div class="totals">
+      <div class="total-row"><span>Subtotal</span><span>${fmtRp(subtotal)}</span></div>
+      ${hsFee > 0 ? `<div class="total-row"><span>Biaya Home Service</span><span>${fmtRp(hsFee)}</span></div>` : ''}
+      <div class="total-row grand"><span>TOTAL</span><span>${fmtRp(grandTotal)}</span></div>
+    </div>
+
+    <div class="divider"></div>
+
+    ${paymentRows}
+    ${showSisa ? `<div class="sisa"><span>SISA</span><span>${fmtRp(sisa)}</span></div>` : ''}
+
+    <div class="footer">
+      <div class="footer-thanks">Terima Kasih</div>
+      <div>Sampai jumpa kembali ✨</div>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+// Show invoice in print/download modal (reuses showSlipModal)
+async function printInvoice(transactionId) {
+  try {
+    const trx = await getTransactionDetail(transactionId);
+    const html = generateInvoiceHTML(trx);
+    const trxNo = (trx.id || '').replace(/-/g, '').slice(-6).toUpperCase();
+    showSlipModal(html, `invoice-${trxNo}`, '🧾 Invoice');
+  } catch (err) {
+    toast('Gagal membuat invoice: ' + (err.message || err), 'error');
+  }
+}
+
 // Fetch transactions for an employee in a period (for slip detail)
 async function getEmployeePeriodTransactions(employeeId, periodStart, periodEnd) {
   const { data, error } = await sb
@@ -1929,7 +2092,7 @@ function printMultipleSlips(slips) {
 }
 
 // Show slip in iframe modal (works on iOS Safari, Android, all browsers)
-function showSlipModal(slipHtml, downloadName = 'slip-gaji') {
+function showSlipModal(slipHtml, downloadName = 'slip-gaji', modalTitle = '📄 Slip Gaji') {
   // Remove any existing modal
   const existing = document.getElementById('jbb-slip-modal');
   if (existing) existing.remove();
@@ -1963,7 +2126,7 @@ function showSlipModal(slipHtml, downloadName = 'slip-gaji') {
   `;
   header.innerHTML = `
     <div style="font-family: 'Cormorant Garamond', serif; font-size: 18px; color: #3d2e44; font-weight: 500;">
-      📄 Slip Gaji
+      ${modalTitle}
     </div>
     <div style="display: flex; gap: 6px; flex-wrap: wrap;">
       <button id="jbb-slip-print" style="
@@ -2851,6 +3014,7 @@ Object.assign(window, {
   exportToExcel, exportReportToExcel, exportPayrollToExcel,
   generateSlipHTML, getEmployeePeriodTransactions, printSlip, printMultipleSlips,
   getBrandForBranch, escapeHtml,
+  generateInvoiceHTML, printInvoice,
   getMyDashboardStats, getMyRecentTransactions, getMyTopServices, getMyTopClients,
   getEmployeeDashboardStatsAdmin, getEmployeeTransactionsAdmin,
   getEmployeeTopServicesAdmin, getEmployeeTopClientsAdmin,
