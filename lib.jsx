@@ -1459,6 +1459,8 @@ function generateInvoiceHTML(trx) {
   .sisa { display: flex; justify-content: space-between; font-weight: bold; color: #a00; }
   .footer { text-align: center; font-size: 9px; margin-top: 8px; color: #333; }
   .footer-thanks { font-family: 'Cormorant Garamond', serif; font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .review-note { font-size: 8.5px; color: #222; line-height: 1.5; margin-top: 7px; text-align: center; }
+  .review-note strong { font-size: 9px; }
   .footer-note { font-size: 8px; color: #444; line-height: 1.4; margin-top: 6px; text-align: left; }
   .disclaimer { font-size: 7.5px; color: #555; line-height: 1.4; margin-top: 6px; text-align: justify; border-top: 1px dotted #999; padding-top: 5px; }
 
@@ -1510,6 +1512,12 @@ function generateInvoiceHTML(trx) {
     <div class="footer">
       <div class="footer-thanks">Terima Kasih</div>
       <div>Sampai jumpa kembali ✨</div>
+      <div class="review-note">
+        <strong>Jika Anda puas, ceritakan ke teman.<br/>
+        Jika ada kekurangan, sampaikan dulu kepada kami —<br/>
+        akan kami perbaiki segera.</strong><br/>
+        Sebagai UMKM yang sedang berjuang, ulasan baik &amp; masukan langsung dari Anda sangat berarti untuk kami terus berkembang. 🙏
+      </div>
       <div class="footer-note">
         Kritik &amp; saran, silakan sampaikan ke www.jbb-indonesia.com
       </div>
