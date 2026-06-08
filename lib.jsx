@@ -1536,9 +1536,184 @@ async function printInvoice(transactionId) {
     const trx = await getTransactionDetail(transactionId);
     const html = generateInvoiceHTML(trx);
     const trxNo = (trx.id || '').replace(/-/g, '').slice(-6).toUpperCase();
-    showSlipModal(html, `invoice-${trxNo}`, '🧾 Invoice');
+    showSlipModal(html, `invoice-${trxNo}`, '🧾 Invoice', () => downloadInvoicePNG(trx));
   } catch (err) {
     toast('Gagal membuat invoice: ' + (err.message || err), 'error');
+  }
+}
+
+// Render a receipt to a canvas (no external library) and return the canvas element.
+// Single-pass layout: each op stores its own y-step so measure & render stay in sync.
+function drawInvoiceToCanvas(trx) {
+  const brand = getBrandForBranch(trx.branch_id);
+  const isViali = trx.branch_id === 'vli';
+  const info = getBranchInfo(trx.branch_id, trx.branch?.name || '');
+  const items = trx.items || [];
+  const payments = (trx.payments || []).slice().sort((a, b) => (b.is_dp ? 1 : 0) - (a.is_dp ? 1 : 0));
+  const subtotal = items.reduce((s, it) => s + Number(it.price || 0), 0);
+  const hsFee = trx.is_home_service ? Number(trx.home_service_fee || 0) : 0;
+  const grandTotal = subtotal + hsFee;
+  const trxNo = (trx.id || '').replace(/-/g, '').slice(-6).toUpperCase();
+  const dateStr = fmtDate(trx.date);
+  const now = new Date();
+  const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const totalPaid = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
+  const showSisa = payments.length > 0 && totalPaid < grandTotal;
+  const sisa = grandTotal - totalPaid;
+  const officialName = isViali ? 'VIALI' : 'JBB';
+
+  const SCALE = 3;
+  const W = 384;
+  const PAD = 20;
+  const innerW = W - PAD * 2;
+  const cv = document.createElement('canvas');
+  const ctx = cv.getContext('2d');
+
+  const F = (size, weight = 'normal', family = "'Courier New', monospace") => `${weight} ${size}px ${family}`;
+  const SERIF = "Georgia, 'Times New Roman', serif";
+
+  function wrapText(text, font, maxW) {
+    ctx.font = font;
+    const words = String(text).split(/\s+/);
+    const lines = [];
+    let line = '';
+    for (const w of words) {
+      const test = line ? line + ' ' + w : w;
+      if (ctx.measureText(test).width > maxW && line) {
+        lines.push(line); line = w;
+      } else { line = test; }
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  // Build ops list, each with explicit step. Then total height = sum of steps + paddings.
+  const ops = [];
+  const addText = (text, font, color, align, step) => ops.push({ type: 'text', text, font, color, align, step });
+  const addWrapped = (text, font, color, align, stepPerLine, maxW) => {
+    for (const ln of wrapText(text, font, maxW || innerW)) ops.push({ type: 'text', text: ln, font, color, align, step: stepPerLine });
+  };
+  const addGap = (px) => ops.push({ type: 'gap', step: px });
+  const addDivider = () => ops.push({ type: 'divider', step: 12 });
+  const addRow = (left, right, font, color) => ops.push({ type: 'row', left, right, font, color, step: 16 });
+
+  // HEADER
+  addText(brand.name, F(30, 'bold', SERIF), '#000', 'center', 32);
+  addText(brand.tagline, F(11), '#555', 'center', 15);
+  addText(info.name, F(13, 'bold'), '#000', 'center', 17);
+  if (info.address) addWrapped(info.address, F(10), '#333', 'center', 13);
+  if (info.phone) addText('Telp: ' + info.phone, F(10), '#333', 'center', 13);
+  if (info.ig) addText('IG: ' + info.ig, F(10), '#333', 'center', 13);
+  addGap(4);
+  addDivider();
+
+  // META
+  addRow('No', '#' + trxNo, F(12), '#000');
+  addRow('Tgl', dateStr, F(12), '#000');
+  addRow('Jam', timeStr, F(12), '#000');
+  addRow('Klien', trx.client_name_snapshot || '-', F(12), '#000');
+  if (trx.is_home_service) addRow('', '(Home Service)', F(12), '#000');
+  addDivider();
+
+  // ITEMS
+  for (const it of items) {
+    const empName = it.employee?.full_name || '—';
+    const sharePct = (it.share_percent != null && it.share_percent < 100) ? ` (${it.share_percent}%)` : '';
+    addWrapped(it.service_name + sharePct, F(13, 'bold'), '#000', 'left', 16);
+    addRow('oleh ' + empName, fmtRp(it.price), F(11), '#333');
+    addGap(3);
+  }
+  addDivider();
+
+  // TOTALS
+  addRow('Subtotal', fmtRp(subtotal), F(12), '#000');
+  if (hsFee > 0) addRow('Biaya Home Service', fmtRp(hsFee), F(11), '#000');
+  addRow('TOTAL', fmtRp(grandTotal), F(15, 'bold'), '#000');
+  addDivider();
+
+  // PAYMENTS
+  if (payments.length > 0) {
+    for (const p of payments) addRow(`${p.is_dp ? 'DP' : 'Bayar'} (${getPaymentMethodLabel(p.payment_method)})`, fmtRp(p.amount), F(11), '#000');
+  } else {
+    addRow(`Pembayaran (${getPaymentMethodLabel(trx.payment_method || 'cash')})`, fmtRp(grandTotal), F(11), '#000');
+  }
+  if (showSisa) addRow('SISA', fmtRp(sisa), F(12, 'bold'), '#a00');
+
+  // FOOTER
+  addGap(8);
+  addText('Terima Kasih', F(15, 'bold', SERIF), '#000', 'center', 18);
+  addText('Sampai jumpa kembali', F(11), '#333', 'center', 16);
+  addGap(4);
+  addWrapped('Jika Anda puas, ceritakan ke teman. Jika ada kekurangan, sampaikan dulu kepada kami — akan kami perbaiki segera.', F(10, 'bold'), '#111', 'center', 13);
+  addGap(2);
+  addWrapped('Sebagai UMKM yang sedang berjuang, ulasan baik & masukan langsung dari Anda sangat berarti untuk kami terus berkembang.', F(9.5), '#333', 'center', 12);
+  addGap(4);
+  addWrapped('Kritik & saran, silakan sampaikan ke www.jbb-indonesia.com', F(9), '#444', 'center', 12);
+  addGap(6);
+  addDivider();
+  addWrapped(`${officialName} tidak bertanggung jawab atas transaksi atau pembayaran yang dilakukan di luar nama resmi ${officialName} atau di luar rekening resmi ${officialName}. Pastikan setiap pembayaran dilakukan melalui jalur resmi.`, F(8.5), '#555', 'left', 11);
+
+  // Total height
+  const totalH = ops.reduce((s, o) => s + o.step, 0) + PAD * 2;
+
+  cv.width = W * SCALE;
+  cv.height = Math.ceil(totalH * SCALE);
+  ctx.scale(SCALE, SCALE);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, W, totalH);
+
+  // Render
+  let yy = PAD;
+  for (const op of ops) {
+    if (op.type === 'text') {
+      ctx.font = op.font;
+      ctx.fillStyle = op.color;
+      ctx.textBaseline = 'top';
+      ctx.textAlign = op.align === 'center' ? 'center' : 'left';
+      ctx.fillText(op.text, op.align === 'center' ? W / 2 : PAD, yy);
+    } else if (op.type === 'divider') {
+      ctx.strokeStyle = '#000';
+      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(PAD, yy + 2);
+      ctx.lineTo(W - PAD, yy + 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (op.type === 'row') {
+      ctx.font = op.font;
+      ctx.fillStyle = op.color;
+      ctx.textBaseline = 'top';
+      ctx.textAlign = 'left';
+      ctx.fillText(op.left, PAD, yy);
+      ctx.textAlign = 'right';
+      ctx.fillText(op.right, W - PAD, yy);
+    }
+    yy += op.step;
+  }
+
+  return cv;
+}
+
+// Trigger PNG download of the invoice.
+function downloadInvoicePNG(trx) {
+  try {
+    const cv = drawInvoiceToCanvas(trx);
+    const trxNo = (trx.id || '').replace(/-/g, '').slice(-6).toUpperCase();
+    cv.toBlob((blob) => {
+      if (!blob) { toast('Gagal membuat PNG', 'error'); return; }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `invoice-${trxNo}-${new Date().toISOString().split('T')[0]}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, 'image/png');
+  } catch (err) {
+    console.error('PNG export failed:', err);
+    toast('Gagal membuat PNG: ' + (err.message || err), 'error');
   }
 }
 
@@ -2166,7 +2341,7 @@ function printMultipleSlips(slips) {
 }
 
 // Show slip in iframe modal (works on iOS Safari, Android, all browsers)
-function showSlipModal(slipHtml, downloadName = 'slip-gaji', modalTitle = '📄 Slip Gaji') {
+function showSlipModal(slipHtml, downloadName = 'slip-gaji', modalTitle = '📄 Slip Gaji', onPng = null) {
   // Remove any existing modal
   const existing = document.getElementById('jbb-slip-modal');
   if (existing) existing.remove();
@@ -2214,6 +2389,17 @@ function showSlipModal(slipHtml, downloadName = 'slip-gaji', modalTitle = '📄 
         cursor: pointer;
         min-height: 38px;
       ">🖨️ Print</button>
+      ${onPng ? `<button id="jbb-slip-png" style="
+        padding: 8px 16px;
+        background: #c9a961;
+        color: #fff;
+        border: none;
+        border-radius: 100px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        min-height: 38px;
+      ">🖼️ PNG</button>` : ''}
       <button id="jbb-slip-download" style="
         padding: 8px 16px;
         background: #f3eef5;
@@ -2302,6 +2488,19 @@ function showSlipModal(slipHtml, downloadName = 'slip-gaji', modalTitle = '📄 
       alert('Print gagal. Coba pakai tombol Download HTML, lalu print dari file yang ter-download.');
     }
   };
+
+  // PNG button (only present if onPng provided)
+  const pngBtn = document.getElementById('jbb-slip-png');
+  if (pngBtn && onPng) {
+    pngBtn.onclick = () => {
+      try {
+        onPng();
+      } catch (err) {
+        console.error('PNG failed:', err);
+        alert('Gagal membuat PNG.');
+      }
+    };
+  }
 
   // Download HTML button: save the slip as standalone .html file
   document.getElementById('jbb-slip-download').onclick = () => {
@@ -3088,7 +3287,7 @@ Object.assign(window, {
   exportToExcel, exportReportToExcel, exportPayrollToExcel,
   generateSlipHTML, getEmployeePeriodTransactions, printSlip, printMultipleSlips,
   getBrandForBranch, escapeHtml,
-  generateInvoiceHTML, printInvoice,
+  generateInvoiceHTML, printInvoice, drawInvoiceToCanvas, downloadInvoicePNG,
   getMyDashboardStats, getMyRecentTransactions, getMyTopServices, getMyTopClients,
   getEmployeeDashboardStatsAdmin, getEmployeeTransactionsAdmin,
   getEmployeeTopServicesAdmin, getEmployeeTopClientsAdmin,
