@@ -54,34 +54,175 @@ function LoginPage({ onLoggedIn }) {
 }
 
 // ----- Admin Dashboard -----
+// ===== Chart color palette (JBB design tokens) =====
+const CHART_COLORS = ['#7a667e', '#c9a961', '#4a7c59', '#a85555', '#3d2e44', '#b8893d'];
+
+// ----- Donut chart (SVG) -----
+function DonutChart({ data, valueKey = 'count', size = 200 }) {
+  const total = data.reduce((s, d) => s + (Number(d[valueKey]) || 0), 0);
+  if (total === 0) {
+    return <div style={{textAlign:'center',color:'var(--muted)',fontSize:13,padding:'40px 0'}}>Belum ada data</div>;
+  }
+  const cx = size / 2, cy = size / 2;
+  const r = size / 2 - 10;
+  const inner = r * 0.58;
+  let angle = -Math.PI / 2; // start at top
+  const segs = data.map((d, i) => {
+    const val = Number(d[valueKey]) || 0;
+    const frac = val / total;
+    const a0 = angle;
+    const a1 = angle + frac * 2 * Math.PI;
+    angle = a1;
+    const large = (a1 - a0) > Math.PI ? 1 : 0;
+    const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+    const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+    const xi1 = cx + inner * Math.cos(a1), yi1 = cy + inner * Math.sin(a1);
+    const xi0 = cx + inner * Math.cos(a0), yi0 = cy + inner * Math.sin(a0);
+    const path = `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1} L ${xi1} ${yi1} A ${inner} ${inner} 0 ${large} 0 ${xi0} ${yi0} Z`;
+    return { path, color: CHART_COLORS[i % CHART_COLORS.length], pct: Math.round(frac * 100) };
+  });
+  return (
+    <div style={{display:'flex',gap:20,alignItems:'center',flexWrap:'wrap',justifyContent:'center'}}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        {segs.map((s, i) => <path key={i} d={s.path} fill={s.color}/>)}
+        <text x={cx} y={cy - 6} textAnchor="middle" style={{fontFamily:"'Cormorant Garamond', serif",fontSize:28,fontWeight:600,fill:'var(--plum-deep)'}}>{total}</text>
+        <text x={cx} y={cy + 14} textAnchor="middle" style={{fontSize:10,fill:'var(--muted)'}}>total treatment</text>
+      </svg>
+      <div style={{display:'flex',flexDirection:'column',gap:8,minWidth:140}}>
+        {data.map((d, i) => (
+          <div key={i} style={{display:'flex',alignItems:'center',gap:8,fontSize:13}}>
+            <span style={{width:12,height:12,borderRadius:3,background:CHART_COLORS[i % CHART_COLORS.length],flexShrink:0}}/>
+            <span style={{flex:1,color:'var(--plum)'}}>{d.label}</span>
+            <span style={{fontWeight:600,color:'var(--plum-deep)'}}>{d[valueKey]}</span>
+            <span style={{color:'var(--muted)',fontSize:11,width:34,textAlign:'right'}}>{segs[i].pct}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ----- Horizontal bar chart (SVG) -----
+function BarChart({ data, isRupiah = true, color = '#c9a961' }) {
+  if (!data.length || data.every(d => !d.value)) {
+    return <div style={{textAlign:'center',color:'var(--muted)',fontSize:13,padding:'40px 0'}}>Belum ada data</div>;
+  }
+  const max = Math.max(...data.map(d => d.value), 1);
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:12}}>
+      {data.map((d, i) => {
+        const pct = (d.value / max) * 100;
+        return (
+          <div key={i}>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:13,marginBottom:4}}>
+              <span style={{color:'var(--plum)',fontWeight:500}}>{d.label}</span>
+              <span style={{color:'var(--plum-deep)',fontWeight:600,fontFamily:isRupiah?"'JetBrains Mono', monospace":'inherit',fontSize:12}}>
+                {isRupiah ? fmtRp(d.value) : d.value}
+              </span>
+            </div>
+            <div style={{height:14,background:'var(--mauve-tint)',borderRadius:7,overflow:'hidden'}}>
+              <div style={{width:`${pct}%`,height:'100%',background:color,borderRadius:7,transition:'width 0.4s ease'}}/>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ----- Line/area chart (SVG) -----
+function LineChart({ data, height = 220 }) {
+  if (!data.length) {
+    return <div style={{textAlign:'center',color:'var(--muted)',fontSize:13,padding:'40px 0'}}>Belum ada data</div>;
+  }
+  const W = 760, H = height, padL = 44, padR = 16, padT = 20, padB = 30;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const maxOmset = Math.max(...data.map(d => d.omset), 1);
+  // round max up to a nice number
+  const niceMax = Math.ceil(maxOmset / 100000) * 100000 || 100000;
+  const n = data.length;
+  const xFor = i => padL + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const yFor = v => padT + plotH - (v / niceMax) * plotH;
+
+  const pts = data.map((d, i) => ({ x: xFor(i), y: yFor(d.omset), d }));
+  const linePath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+  const areaPath = `${linePath} L ${pts[pts.length-1].x.toFixed(1)} ${(padT+plotH).toFixed(1)} L ${pts[0].x.toFixed(1)} ${(padT+plotH).toFixed(1)} Z`;
+
+  // y-axis ticks (4 steps)
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => ({ v: niceMax * f, y: yFor(niceMax * f) }));
+  // x labels: show subset to avoid crowding
+  const labelStep = Math.ceil(n / 12);
+
+  return (
+    <div style={{overflowX:'auto'}}>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" style={{minWidth:420}}>
+        <defs>
+          <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#7a667e" stopOpacity="0.25"/>
+            <stop offset="100%" stopColor="#7a667e" stopOpacity="0"/>
+          </linearGradient>
+        </defs>
+        {ticks.map((t, i) => (
+          <g key={i}>
+            <line x1={padL} y1={t.y} x2={W - padR} y2={t.y} stroke="var(--line)" strokeWidth="1" strokeDasharray="3 3"/>
+            <text x={padL - 6} y={t.y + 3} textAnchor="end" style={{fontSize:9,fill:'var(--muted)'}}>
+              {t.v >= 1000000 ? (t.v/1000000).toFixed(t.v >= 10000000 ? 0 : 1) + 'jt' : t.v >= 1000 ? Math.round(t.v/1000) + 'rb' : Math.round(t.v)}
+            </text>
+          </g>
+        ))}
+        <path d={areaPath} fill="url(#areaGrad)"/>
+        <path d={linePath} fill="none" stroke="#7a667e" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/>
+        {pts.map((p, i) => (
+          <circle key={i} cx={p.x} cy={p.y} r={n > 20 ? 2 : 3.5} fill="#c9a961" stroke="#fff" strokeWidth="1">
+            <title>{`${p.d.label}: ${fmtRp(p.d.omset)} (${p.d.count} trx)`}</title>
+          </circle>
+        ))}
+        {data.map((d, i) => (i % labelStep === 0 || i === n - 1) && (
+          <text key={i} x={xFor(i)} y={H - 10} textAnchor="middle" style={{fontSize:9,fill:'var(--muted)'}}>{d.label}</text>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
 function AdminDashboard({ profile, setPage, currentBranchId, branches }) {
-  const [stats, setStats] = useStateP({ today: null, month: null, employees: null });
-  const [loadingStats, setLoadingStats] = useStateP(true);
-
   const isSuper = profile.role === 'super_admin';
-  const currentBranch = branches.find(b => b.id === currentBranchId);
-  const scopeLabel = currentBranchId
-    ? currentBranch?.name || ''
-    : isSuper ? 'Semua Cabang (JBB Group)' : '';
+  const [period, setPeriod] = useStateP('period');
+  const [customFrom, setCustomFrom] = useStateP('');
+  const [customTo, setCustomTo] = useStateP('');
+  const [data, setData] = useStateP(null);
+  const [loading, setLoading] = useStateP(true);
 
-  async function loadStats() {
-    setLoadingStats(true);
+  const currentBranch = branches.find(b => b.id === currentBranchId);
+  // employee/branch_admin always scoped to own branch; super can see all (null) or one
+  const filterBranch = isSuper ? currentBranchId : profile.branch_id;
+  const scopeLabel = filterBranch
+    ? (branches.find(b => b.id === filterBranch)?.name || '')
+    : 'Semua Cabang (JBB Group)';
+
+  async function load() {
+    setLoading(true);
     try {
-      const filterBranch = isSuper ? currentBranchId : profile.branch_id;
-      const [today, month, emps] = await Promise.all([
-        getTodayStats(filterBranch),
-        getMonthStats(filterBranch),
-        listEmployees(filterBranch, true),
-      ]);
-      setStats({ today, month, employees: emps.length });
+      const range = getDashboardRange(period, customFrom, customTo);
+      const d = await getDashboardData({
+        branchId: filterBranch,
+        from: range.from,
+        to: range.to,
+        grain: range.grain,
+      });
+      setData(d);
     } catch (err) {
-      console.error('Stats load error:', err);
+      console.error('Dashboard load error:', err);
+      toast('Gagal memuat dashboard: ' + err.message, 'error');
     } finally {
-      setLoadingStats(false);
+      setLoading(false);
     }
   }
 
-  useEffectP(() => { loadStats(); }, [currentBranchId]);
+  useEffectP(() => { load(); }, [currentBranchId, period, customFrom, customTo]);
+
+  const range = getDashboardRange(period, customFrom, customTo);
+  const showBranchChart = !filterBranch; // only meaningful when viewing all branches
 
   return (
     <div className="page">
@@ -89,20 +230,84 @@ function AdminDashboard({ profile, setPage, currentBranchId, branches }) {
         title={isSuper ? 'Dashboard JBB Group' : 'Dashboard Cabang'}
         sub={`Halo, ${profile.full_name}`}
       />
-      <div style={{marginBottom:20,padding:'12px 16px',background:'var(--mauve-tint)',borderRadius:10,fontSize:13,color:'var(--plum)'}}>
-        <strong>Scope:</strong> {scopeLabel}
-        {isSuper && !currentBranchId && (
-          <div style={{fontSize:12,marginTop:4,color:'var(--muted)'}}>
-            Pilih cabang dari dropdown di pojok kanan atas untuk filter ke satu cabang.
+
+      {/* SCOPE + PERIOD CONTROLS */}
+      <Card>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:12,marginBottom:14}}>
+          <div style={{fontSize:13,color:'var(--plum)'}}>
+            <strong>Scope:</strong> {scopeLabel}
+            {isSuper && (
+              <span style={{color:'var(--muted)',fontSize:12}}> · ganti cabang dari dropdown pojok kanan atas</span>
+            )}
+          </div>
+          <div style={{fontSize:12,color:'var(--muted)'}}>
+            📅 {fmtDate(range.from)} — {fmtDate(range.to)}
+          </div>
+        </div>
+        <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+          {[
+            { value: 'today', label: 'Hari Ini' },
+            { value: 'period', label: 'Periode (26–25)' },
+            { value: 'month', label: 'Bulan Ini' },
+            { value: 'year', label: 'Tahun Ini' },
+            { value: 'custom', label: '📅 Custom' },
+          ].map(p => (
+            <button key={p.value} type="button"
+              className={'btn btn-sm ' + (period === p.value ? 'btn-primary' : 'btn-ghost')}
+              onClick={() => setPeriod(p.value)}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {period === 'custom' && (
+          <div className="form-row" style={{marginTop:12}}>
+            <Field label="Dari Tanggal">
+              <input type="date" className="form-input" value={customFrom} onChange={e => setCustomFrom(e.target.value)}/>
+            </Field>
+            <Field label="Sampai Tanggal">
+              <input type="date" className="form-input" value={customTo} onChange={e => setCustomTo(e.target.value)}/>
+            </Field>
           </div>
         )}
-      </div>
+      </Card>
+
+      {/* KPI CARDS */}
       <div className="metrics-grid">
-        <Metric label="Omset Hari Ini" value={loadingStats ? '...' : fmtRp(stats.today?.total)} sub={loadingStats ? 'memuat...' : `${stats.today?.count || 0} transaksi`}/>
-        <Metric label="Komisi Hari Ini" value={loadingStats ? '...' : fmtRp(stats.today?.commission)} sub="semua karyawan"/>
-        <Metric label="Karyawan Aktif" value={loadingStats ? '...' : stats.employees} sub={currentBranch ? currentBranch.name : 'group total'}/>
-        <Metric label="Bulan Ini" value={loadingStats ? '...' : fmtRp(stats.month?.total)} sub="total omset"/>
+        <Metric label="Total Transaksi" value={loading ? '...' : (data?.kpi.totalTransactions ?? 0)} sub={loading ? 'memuat...' : 'periode ini'}/>
+        <Metric label="Total Omset" value={loading ? '...' : fmtRp(data?.kpi.totalOmset)} sub="periode ini"/>
+        <Metric label="Total Komisi" value={loading ? '...' : fmtRp(data?.kpi.totalCommission)} sub="treatment + HS"/>
+        <Metric label="Estimasi Payroll" value={loading ? '...' : fmtRp(data?.kpi.estPayroll)} sub="gaji pokok + komisi"/>
       </div>
+
+      {loading ? (
+        <Card><Loader text="Memuat grafik..."/></Card>
+      ) : (
+        <>
+          {/* ROW: DONUT + BAR CATEGORY */}
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(320px, 1fr))',gap:16}}>
+            <Card title="Jenis Treatment" sub="Distribusi treatment di periode ini">
+              <DonutChart data={data.treatmentDist} valueKey="count"/>
+            </Card>
+            <Card title="Omset per Kategori" sub="Pendapatan per jenis layanan">
+              <BarChart data={data.omsetByCategory} isRupiah={true} color="#c9a961"/>
+            </Card>
+          </div>
+
+          {/* ROW: BRANCH BAR (only for all-branch view) */}
+          {showBranchChart && (
+            <Card title="Omset per Cabang" sub="Perbandingan antar cabang JBB Group">
+              <BarChart data={data.omsetByBranch} isRupiah={true} color="#7a667e"/>
+            </Card>
+          )}
+
+          {/* ROW: TREND LINE */}
+          <Card title={range.grain === 'month' ? 'Tren Omset Bulanan' : 'Tren Omset Harian'} sub={range.grain === 'month' ? 'Per bulan sepanjang tahun' : 'Per hari di periode ini'}>
+            <LineChart data={data.trend}/>
+          </Card>
+        </>
+      )}
+
+      {/* QUICK ACTIONS */}
       <Card title="Aksi Cepat">
         <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
           <button className="btn btn-primary" onClick={() => setPage('newTransaction')}>+ Input Transaksi</button>

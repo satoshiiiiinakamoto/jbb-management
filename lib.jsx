@@ -2689,9 +2689,148 @@ async function getPaymentFlowBreakdown({ from, to, branchId = null }) {
 }
 
 
+// =====================================================
+// DASHBOARD DATA — KPI + Charts (multi-branch, period aware)
+// =====================================================
+
+const CATEGORY_LABELS = {
+  lash: 'Eyelash',
+  brow: 'Brow & Sulam',
+  facial: 'Facial',
+  nail: 'Nail',
+  other: 'Lainnya',
+};
+
+// Compute date range for a dashboard period preset
+function getDashboardRange(preset, customFrom = null, customTo = null) {
+  const today = new Date();
+  const ymd = d => dateToYMD(d);
+  switch (preset) {
+    case 'today':
+      return { from: ymd(today), to: ymd(today), grain: 'day' };
+    case 'period': {
+      // Payroll period 26 -> 25 (same logic as tab Gaji)
+      const p = getPayrollPeriod(today);
+      return { from: p.period_start, to: p.period_end, grain: 'day' };
+    }
+    case 'month': {
+      const start = new Date(today.getFullYear(), today.getMonth(), 1);
+      const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+      return { from: ymd(start), to: ymd(end), grain: 'day' };
+    }
+    case 'year': {
+      const start = new Date(today.getFullYear(), 0, 1);
+      const end = new Date(today.getFullYear(), 11, 31);
+      return { from: ymd(start), to: ymd(end), grain: 'month' };
+    }
+    case 'custom':
+      return {
+        from: customFrom || ymd(new Date(today.getFullYear(), today.getMonth(), 1)),
+        to: customTo || ymd(today),
+        grain: 'day',
+      };
+    default: {
+      // default = payroll period 26 -> 25
+      const p = getPayrollPeriod(today);
+      return { from: p.period_start, to: p.period_end, grain: 'day' };
+    }
+  }
+}
+
+// Main dashboard data fetcher.
+// branchId = null means ALL branches (super_admin).
+async function getDashboardData({ branchId = null, from, to, grain = 'day' }) {
+  const trxs = await getReportTransactions({ from, to, branchId });
+  const allItems = trxs.flatMap(t => (t.items || []).map(it => ({ ...it, _trx: t })));
+
+  // KPI numbers
+  const totalTransactions = trxs.length;
+  const totalOmset = trxs.reduce((s, t) => s + Number(t.total_amount || 0), 0);
+  const totalCommission = allItems.reduce((s, it) => s + Number(it.commission_amount || 0), 0)
+    + trxs.filter(t => t.is_home_service).reduce((s, t) => s + Number(t.home_service_fee || 0), 0);
+
+  // Treatment distribution (by category) — donut
+  const byCategory = {};
+  for (const it of allItems) {
+    const cat = it.service_category || 'other';
+    if (!byCategory[cat]) byCategory[cat] = { count: 0, revenue: 0 };
+    byCategory[cat].count += 1;
+    byCategory[cat].revenue += Number(it.price || 0);
+  }
+  const treatmentDist = Object.entries(byCategory)
+    .map(([cat, v]) => ({ key: cat, label: CATEGORY_LABELS[cat] || cat, count: v.count, revenue: v.revenue }))
+    .sort((a, b) => b.count - a.count);
+
+  // Omset per category — bar
+  const omsetByCategory = treatmentDist
+    .map(d => ({ label: d.label, value: d.revenue }))
+    .sort((a, b) => b.value - a.value);
+
+  // Omset per branch — bar
+  const byBranch = {};
+  for (const t of trxs) {
+    const bid = t.branch_id || 'unknown';
+    const bname = t.branch?.name || bid;
+    if (!byBranch[bid]) byBranch[bid] = { label: bname, value: 0 };
+    byBranch[bid].value += Number(t.total_amount || 0);
+  }
+  const omsetByBranch = Object.values(byBranch).sort((a, b) => b.value - a.value);
+
+  // Trend line — per day or per month
+  const trend = [];
+  if (grain === 'month') {
+    const byMonth = {};
+    for (const t of trxs) {
+      const m = (t.date || '').slice(0, 7);
+      if (!byMonth[m]) byMonth[m] = { count: 0, omset: 0 };
+      byMonth[m].count += 1;
+      byMonth[m].omset += Number(t.total_amount || 0);
+    }
+    const yr = (from || '').slice(0, 4);
+    const MONTH_SHORT = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+    for (let mo = 1; mo <= 12; mo++) {
+      const key = `${yr}-${String(mo).padStart(2, '0')}`;
+      trend.push({ label: MONTH_SHORT[mo - 1], count: byMonth[key]?.count || 0, omset: byMonth[key]?.omset || 0 });
+    }
+  } else {
+    const byDay = {};
+    for (const t of trxs) {
+      const d = t.date;
+      if (!byDay[d]) byDay[d] = { count: 0, omset: 0 };
+      byDay[d].count += 1;
+      byDay[d].omset += Number(t.total_amount || 0);
+    }
+    const start = new Date(from + 'T00:00:00');
+    const end = new Date(to + 'T00:00:00');
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const key = dateToYMD(d);
+      trend.push({ label: String(d.getDate()), fullDate: key, count: byDay[key]?.count || 0, omset: byDay[key]?.omset || 0 });
+    }
+  }
+
+  // Estimated payroll = base+meal of active employees + total commission (indicative)
+  let estPayroll = 0;
+  try {
+    const emps = await listPayrollEligibleEmployees(branchId);
+    const baseSalaries = (emps || []).reduce((s, e) => s + Number(e.base_salary || 0) + Number(e.meal_allowance || 0), 0);
+    estPayroll = baseSalaries + totalCommission;
+  } catch (err) {
+    estPayroll = totalCommission;
+  }
+
+  return {
+    kpi: { totalTransactions, totalOmset, totalCommission, estPayroll },
+    treatmentDist,
+    omsetByCategory,
+    omsetByBranch,
+    trend,
+  };
+}
+
 // Expose
 Object.assign(window, {
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
+  CATEGORY_LABELS, getDashboardRange, getDashboardData,
   fmtRp, fmtRpOrDash, fmtNumber, fmtDate, fmtTime, todayStr, nowTimeStr, currentMonth,
   dateToYMD, startOfWeekMonday, endOfWeekSunday, DATE_PRESETS,
   isOvertime, isSalaryOptional, getServiceDef, calcCommission, getRoleLabel,
