@@ -4194,8 +4194,12 @@ function AuditLogPage({ profile, branches }) {
       return `${user} menghapus ${tableLabel.toLowerCase()} ${name ? '"' + name + '"' : ''}`;
     }
     if (log.action === 'UPDATE') {
-      const fields = (log.changed_fields || []).map(getFieldLabel).join(', ');
       const name = log.new_data?.full_name || log.new_data?.service_name || log.new_data?.client_name_snapshot || log.new_data?.id?.slice(0, 8);
+      // Input-time UPDATE = side effect of creating the record, not a real edit
+      if (log.is_input_side_effect) {
+        return `${user} input ${tableLabel.toLowerCase()} ${name ? '"' + name + '"' : ''}`;
+      }
+      const fields = (log.changed_fields || []).map(getFieldLabel).join(', ');
       return `${user} mengubah ${fields || 'data'} di ${tableLabel.toLowerCase()} ${name ? '"' + name + '"' : ''}`;
     }
     return '—';
@@ -4284,8 +4288,8 @@ function AuditLogPage({ profile, branches }) {
                       alignItems:'flex-start',
                     }}
                   >
-                    <span className={'badge ' + getActionBadge(log.action)} style={{minWidth:55,textAlign:'center'}}>
-                      {getActionLabel(log.action)}
+                    <span className={'badge ' + (log.is_input_side_effect ? 'badge-green' : getActionBadge(log.action))} style={{minWidth:55,textAlign:'center'}}>
+                      {log.is_input_side_effect ? 'Input' : getActionLabel(log.action)}
                     </span>
 
                     <div style={{flex:1,minWidth:0}}>

@@ -1012,7 +1012,35 @@ async function listAuditLog({ limit = 100, tableName = null, action = null, user
 
   const { data, error } = await query;
   if (error) throw error;
-  return data || [];
+  return markInputTimeUpdates(data || []);
+}
+
+// Re-classify UPDATE entries that happen at input-time as part of "input", not a real edit.
+// An UPDATE on a record is considered input-time if it occurs within INPUT_WINDOW_MS
+// of that same record's INSERT (e.g. trigger recalculating totals right after creation).
+// Adds `is_input_side_effect: true` to such rows so the UI can label them as "Input".
+function markInputTimeUpdates(logs, windowMs = 15000) {
+  if (!logs || !logs.length) return logs || [];
+  // Find earliest INSERT time per record_id
+  const insertTime = {};
+  for (const l of logs) {
+    if (l.action === 'INSERT' && l.record_id) {
+      const t = new Date(l.created_at).getTime();
+      if (!(l.record_id in insertTime) || t < insertTime[l.record_id]) {
+        insertTime[l.record_id] = t;
+      }
+    }
+  }
+  return logs.map(l => {
+    if (l.action === 'UPDATE' && l.record_id && (l.record_id in insertTime)) {
+      const t = new Date(l.created_at).getTime();
+      const diff = Math.abs(t - insertTime[l.record_id]);
+      if (diff <= windowMs) {
+        return { ...l, is_input_side_effect: true };
+      }
+    }
+    return l;
+  });
 }
 
 async function getAuditSummary(days = 7) {
@@ -2800,14 +2828,35 @@ async function checkTransactionEdited(transactionId) {
 // Get list of edited transaction IDs (for batch checking)
 async function getEditedTransactionIds(transactionIds) {
   if (!transactionIds.length) return new Set();
+  // Fetch both INSERT and UPDATE events with timestamps, so we can tell a real edit
+  // from an input-time side-effect (UPDATE that happens right after the INSERT).
   const { data, error } = await sb
     .from('audit_log')
-    .select('record_id')
+    .select('record_id, action, created_at')
     .eq('table_name', 'transactions')
-    .eq('action', 'UPDATE')
+    .in('action', ['INSERT', 'UPDATE'])
     .in('record_id', transactionIds);
   if (error) return new Set();
-  return new Set((data || []).map(r => r.record_id));
+
+  const INPUT_WINDOW_MS = 15000;
+  const insertTime = {};
+  for (const r of (data || [])) {
+    if (r.action === 'INSERT') {
+      const t = new Date(r.created_at).getTime();
+      if (!(r.record_id in insertTime) || t < insertTime[r.record_id]) insertTime[r.record_id] = t;
+    }
+  }
+  const edited = new Set();
+  for (const r of (data || [])) {
+    if (r.action !== 'UPDATE') continue;
+    const t = new Date(r.created_at).getTime();
+    const ins = insertTime[r.record_id];
+    // Real edit only if UPDATE happens meaningfully after the INSERT (or no INSERT in batch)
+    if (ins == null || (t - ins) > INPUT_WINDOW_MS) {
+      edited.add(r.record_id);
+    }
+  }
+  return edited;
 }
 
 // =====================================================
