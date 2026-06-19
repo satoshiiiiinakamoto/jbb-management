@@ -608,7 +608,7 @@ const DATE_PRESETS = [
 async function getReportTransactions({ from, to, branchId = null, employeeId = null }) {
   let query = sb
     .from('transactions')
-    .select('*, items:transaction_items(*, employee:employees(id, full_name, job_title)), branch:branches(id, name)')
+    .select('*, items:transaction_items(*, employee:employees(id, full_name, job_title)), payments:transaction_payments(*), branch:branches(id, name)')
     .gte('date', from)
     .lte('date', to)
     .order('date', { ascending: false })
@@ -3163,6 +3163,36 @@ async function replaceTransactionPayments(transactionId, branchId, payments, cre
 }
 
 // Get payment flow breakdown for laporan
+// Compute payment flow breakdown from an array of transactions that already
+// include their `payments` (from getReportTransactions). No extra query needed.
+// Falls back to the transaction's own total/payment_method if a transaction has
+// no payment rows (older data), so nothing is missed.
+function computePaymentFlow(transactions) {
+  const trxs = transactions || [];
+  const byMethod = {};
+  const bump = (method, amount, isDp) => {
+    const m = method || 'cash';
+    if (!byMethod[m]) byMethod[m] = { payment_method: m, total_amount: 0, payment_count: 0, dp_count: 0, full_count: 0 };
+    byMethod[m].total_amount += Number(amount || 0);
+    byMethod[m].payment_count += 1;
+    if (isDp) byMethod[m].dp_count += 1;
+    else byMethod[m].full_count += 1;
+  };
+
+  for (const t of trxs) {
+    const pays = t.payments || [];
+    if (pays.length > 0) {
+      for (const p of pays) bump(p.payment_method, p.amount, p.is_dp);
+    } else {
+      // No payment rows recorded → treat the whole transaction as one full payment
+      const grand = Number(t.total_amount || 0) + (t.is_home_service ? Number(t.home_service_fee || 0) : 0);
+      if (grand > 0) bump(t.payment_method || 'cash', grand, false);
+    }
+  }
+
+  return Object.values(byMethod).sort((a, b) => b.total_amount - a.total_amount);
+}
+
 // Payment flow breakdown — computed directly from transaction_payments table.
 // Uses paid_at when available, but falls back to the parent transaction's date
 // when paid_at is NULL (older/quick-input rows). This makes the report work for
@@ -3379,5 +3409,5 @@ Object.assign(window, {
   PAYMENT_METHODS, getPaymentMethodLabel, getPaymentMethodIcon,
   // Tahap G - DP & Payment Flow
   insertTransactionPayments, getTransactionPayments, replaceTransactionPayments,
-  getPaymentFlowBreakdown,
+  getPaymentFlowBreakdown, computePaymentFlow,
 });

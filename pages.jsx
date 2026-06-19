@@ -3089,23 +3089,15 @@ function ReportsPage({ profile, currentBranchId, branches }) {
   async function loadData() {
     setLoading(true);
     try {
-      const [data, flowData] = await Promise.all([
-        getReportTransactions({
-          from: range.from,
-          to: range.to,
-          branchId: effectiveBranchId,
-        }),
-        getPaymentFlowBreakdown({
-          from: range.from,
-          to: range.to,
-          branchId: effectiveBranchId,
-        }).catch(err => {
-          console.warn('Payment flow load:', err);
-          return [];
-        }),
-      ]);
+      const data = await getReportTransactions({
+        from: range.from,
+        to: range.to,
+        branchId: effectiveBranchId,
+      });
       setTransactions(data);
-      setPaymentFlow(flowData);
+      // Derive payment flow directly from loaded transactions (they include payments).
+      // No separate query → no silent failure, works for every period.
+      setPaymentFlow(computePaymentFlow(data));
     } catch (err) {
       toast('Gagal memuat laporan: ' + err.message, 'error');
     } finally {
