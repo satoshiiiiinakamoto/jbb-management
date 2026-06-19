@@ -3164,14 +3164,14 @@ async function replaceTransactionPayments(transactionId, branchId, payments, cre
 
 // Get payment flow breakdown for laporan
 // Payment flow breakdown — computed directly from transaction_payments table.
-// Avoids dependency on the get_payment_flow_breakdown RPC (which failed for some
-// period ranges). Groups by payment_method and counts DP vs full/pelunasan.
+// Uses paid_at when available, but falls back to the parent transaction's date
+// when paid_at is NULL (older/quick-input rows). This makes the report work for
+// every period regardless of whether paid_at was filled.
 async function getPaymentFlowBreakdown({ from, to, branchId = null }) {
+  // Join to parent transaction to get its date as a fallback for paid_at.
   let query = sb
     .from('transaction_payments')
-    .select('payment_method, amount, is_dp, paid_at')
-    .gte('paid_at', from)
-    .lte('paid_at', to);
+    .select('payment_method, amount, is_dp, paid_at, transaction:transactions(date)');
   if (branchId) query = query.eq('branch_id', branchId);
 
   const { data, error } = await query;
@@ -3180,6 +3180,11 @@ async function getPaymentFlowBreakdown({ from, to, branchId = null }) {
   const rows = data || [];
   const byMethod = {};
   for (const p of rows) {
+    // Effective date = paid_at if set, else parent transaction date
+    const effDate = p.paid_at || p.transaction?.date || null;
+    if (!effDate) continue;               // no usable date → skip
+    if (effDate < from || effDate > to) continue;  // outside selected period
+
     const m = p.payment_method || 'cash';
     if (!byMethod[m]) {
       byMethod[m] = { payment_method: m, total_amount: 0, payment_count: 0, dp_count: 0, full_count: 0 };
@@ -3190,7 +3195,6 @@ async function getPaymentFlowBreakdown({ from, to, branchId = null }) {
     else byMethod[m].full_count += 1;
   }
 
-  // Return sorted by total_amount desc, matching the previous RPC shape
   return Object.values(byMethod).sort((a, b) => b.total_amount - a.total_amount);
 }
 
