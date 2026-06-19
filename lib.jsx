@@ -3163,14 +3163,35 @@ async function replaceTransactionPayments(transactionId, branchId, payments, cre
 }
 
 // Get payment flow breakdown for laporan
+// Payment flow breakdown — computed directly from transaction_payments table.
+// Avoids dependency on the get_payment_flow_breakdown RPC (which failed for some
+// period ranges). Groups by payment_method and counts DP vs full/pelunasan.
 async function getPaymentFlowBreakdown({ from, to, branchId = null }) {
-  const { data, error } = await sb.rpc('get_payment_flow_breakdown', {
-    p_from: from,
-    p_to: to,
-    p_branch_id: branchId,
-  });
+  let query = sb
+    .from('transaction_payments')
+    .select('payment_method, amount, is_dp, paid_at')
+    .gte('paid_at', from)
+    .lte('paid_at', to);
+  if (branchId) query = query.eq('branch_id', branchId);
+
+  const { data, error } = await query;
   if (error) throw error;
-  return data || [];
+
+  const rows = data || [];
+  const byMethod = {};
+  for (const p of rows) {
+    const m = p.payment_method || 'cash';
+    if (!byMethod[m]) {
+      byMethod[m] = { payment_method: m, total_amount: 0, payment_count: 0, dp_count: 0, full_count: 0 };
+    }
+    byMethod[m].total_amount += Number(p.amount || 0);
+    byMethod[m].payment_count += 1;
+    if (p.is_dp) byMethod[m].dp_count += 1;
+    else byMethod[m].full_count += 1;
+  }
+
+  // Return sorted by total_amount desc, matching the previous RPC shape
+  return Object.values(byMethod).sort((a, b) => b.total_amount - a.total_amount);
 }
 
 
