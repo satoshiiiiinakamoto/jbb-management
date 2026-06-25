@@ -924,10 +924,34 @@ async function getPeriodCommissionByEmployee(periodStart, periodEnd, branchId = 
     }
   }
 
+  // Tips per employee (Tahap 3) — from transaction_tips, scoped to period via parent transaction date
+  let tipsQuery = sb
+    .from('transaction_tips')
+    .select('employee_id, amount, transactions!inner(date, branch_id)')
+    .gte('transactions.date', periodStart)
+    .lte('transactions.date', periodEnd);
+
+  if (branchId) tipsQuery = tipsQuery.eq('transactions.branch_id', branchId);
+
+  const { data: tipsData, error: tipsErr } = await tipsQuery;
+  if (!tipsErr && tipsData) {
+    for (const row of tipsData) {
+      const empId = row.employee_id;
+      if (!byEmployee[empId]) {
+        byEmployee[empId] = {
+          employee_id: empId,
+          treatment_commission: 0,
+          items_count: 0,
+          transaction_ids: new Set(),
+          hs_commission: 0,
+        };
+      }
+      byEmployee[empId].tips = (byEmployee[empId].tips || 0) + Number(row.amount || 0);
+    }
+  }
+
   return byEmployee;
 }
-
-// Get payroll adjustments for a period (all employees)
 async function listPayrollAdjustments(periodStart, branchId = null) {
   let query = sb
     .from('payroll_adjustments')
@@ -974,6 +998,7 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
   const mealAllowance = Number(employee.meal_allowance) || 0;
   const treatmentCommission = Number(commissions?.treatment_commission || 0);
   const hsCommission = Number(commissions?.hs_commission || 0);
+  const tips = Number(commissions?.tips || 0);
 
   // Adjustments (or defaults if no adjustment row exists)
   const standardDays = Number(adjustment?.standard_work_days) || defaultStandardDays;
@@ -993,8 +1018,8 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
 
   const salaryDeduction = baseSalary - baseSalaryActual;
 
-  // Total take-home
-  const total = baseSalaryActual + mealAllowance + treatmentCommission + hsCommission + bonus - extraDeduction;
+  // Total take-home (tips added — they belong to the beautician)
+  const total = baseSalaryActual + mealAllowance + treatmentCommission + hsCommission + tips + bonus - extraDeduction;
 
   return {
     base_salary: baseSalary,
@@ -1003,6 +1028,7 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
     meal_allowance: mealAllowance,
     treatment_commission: treatmentCommission,
     hs_commission: hsCommission,
+    tips: tips,
     annual_leave_days: annualLeave,
     sick_leave_certified_days: sickCertified,
     unpaid_leave_days: unpaidLeave,
@@ -1303,6 +1329,7 @@ function exportPayrollToExcel({ rows, periodLabel, branchLabel, totals }) {
       { Metric: 'Total Gaji Pokok (setelah potong)', Nilai: totals.base },
       { Metric: 'Total Uang Makan', Nilai: totals.meal },
       { Metric: 'Total Komisi', Nilai: totals.commission },
+      { Metric: 'Total Tips', Nilai: totals.tips || 0 },
       { Metric: 'Total Bonus', Nilai: totals.bonus },
       { Metric: 'Total Potongan Tambahan', Nilai: totals.deduction },
       { Metric: 'TOTAL PAYROLL', Nilai: totals.total },
@@ -1320,6 +1347,7 @@ function exportPayrollToExcel({ rows, periodLabel, branchLabel, totals }) {
     'Uang Makan': r.payroll.meal_allowance,
     'Komisi Treatment': r.payroll.treatment_commission,
     'Komisi HS': r.payroll.hs_commission,
+    'Tips': r.payroll.tips || 0,
     'Cuti Tahunan (hari)': r.payroll.annual_leave_days,
     'Sakit + Surat (hari)': r.payroll.sick_leave_certified_days,
     'Izin/Absen (hari)': r.payroll.unpaid_leave_days,
@@ -2299,6 +2327,12 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       <tr>
         <td style="color: #a8884a;">Komisi Home Service</td>
         <td class="cell-num" style="color: #a8884a; font-weight: 500;">${fmtRp(hsCommission)}</td>
+      </tr>
+      ` : ''}
+      ${(payroll.tips || 0) > 0 ? `
+      <tr>
+        <td style="color: #7a667e;">Tips dari Client 💝</td>
+        <td class="cell-num pos" style="color: #7a667e; font-weight: 500;">+${fmtRp(payroll.tips)}</td>
       </tr>
       ` : ''}
       ${payroll.bonus > 0 ? `

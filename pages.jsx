@@ -3864,10 +3864,11 @@ function PayrollPage({ profile, currentBranchId, branches }) {
       base: acc.base + r.payroll.base_salary_actual,
       meal: acc.meal + r.payroll.meal_allowance,
       commission: acc.commission + r.payroll.treatment_commission + r.payroll.hs_commission,
+      tips: acc.tips + (r.payroll.tips || 0),
       bonus: acc.bonus + r.payroll.bonus,
       deduction: acc.deduction + r.payroll.extra_deduction,
       total: acc.total + r.payroll.total,
-    }), { base: 0, meal: 0, commission: 0, bonus: 0, deduction: 0, total: 0 });
+    }), { base: 0, meal: 0, commission: 0, tips: 0, bonus: 0, deduction: 0, total: 0 });
   }, [rows]);
 
   const scopeLabel = effectiveBranchId
@@ -4045,6 +4046,9 @@ function PayrollPage({ profile, currentBranchId, branches }) {
         <Metric label="Total Karyawan" value={loading ? '...' : rows.length} sub="dalam payroll"/>
         <Metric label="Total Gaji Pokok" value={loading ? '...' : fmtRp(totals.base + totals.meal)} sub="setelah pemotongan"/>
         <Metric label="Total Komisi" value={loading ? '...' : fmtRp(totals.commission)} sub="treatment + home service"/>
+        {totals.tips > 0 && (
+          <Metric label="Total Tips" value={loading ? '...' : fmtRp(totals.tips)} sub="tips dari client"/>
+        )}
         <Metric label="Total Payroll" value={loading ? '...' : fmtRp(totals.total)} sub={scopeLabel}/>
       </div>
 
