@@ -3453,6 +3453,121 @@ async function getDashboardData({ branchId = null, from, to, grain = 'day' }) {
   };
 }
 
+// =====================================================
+// EXPENSES (Uang Keluar) — Tahap 4
+// =====================================================
+
+// List expenses in a date range (and optional branch)
+async function listExpenses({ from, to, branchId = null } = {}) {
+  let query = sb
+    .from('expenses')
+    .select('*, branch:branches(id, name)')
+    .order('date', { ascending: false })
+    .order('created_at', { ascending: false });
+  if (from) query = query.gte('date', from);
+  if (to) query = query.lte('date', to);
+  if (branchId) query = query.eq('branch_id', branchId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+// Create an expense
+async function createExpense({ branchId, date, description, amount, paymentMethod, notes, createdBy }) {
+  const { data, error } = await sb.from('expenses').insert({
+    branch_id: branchId,
+    date: date || todayStr(),
+    description: description?.trim(),
+    amount: Number(amount) || 0,
+    payment_method: paymentMethod || 'cash',
+    notes: notes?.trim() || null,
+    created_by: createdBy || null,
+  }).select().single();
+  if (error) throw error;
+  return data;
+}
+
+// Update an expense (admin only — enforced by RLS)
+async function updateExpense(id, { date, description, amount, paymentMethod, notes }) {
+  const { data, error } = await sb.from('expenses').update({
+    date,
+    description: description?.trim(),
+    amount: Number(amount) || 0,
+    payment_method: paymentMethod || 'cash',
+    notes: notes?.trim() || null,
+    updated_at: new Date().toISOString(),
+  }).eq('id', id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+// Delete an expense (admin only — enforced by RLS)
+async function deleteExpense(id) {
+  const { error } = await sb.from('expenses').delete().eq('id', id);
+  if (error) throw error;
+}
+
+// Sum of tips grouped by payment method in a period
+async function getTipsTotalByMethod({ from, to, branchId = null }) {
+  let query = sb
+    .from('transaction_tips')
+    .select('amount, payment_method, transactions!inner(date, branch_id)')
+    .gte('transactions.date', from)
+    .lte('transactions.date', to);
+  if (branchId) query = query.eq('transactions.branch_id', branchId);
+  const { data, error } = await query;
+  if (error) return {};
+  const byMethod = {};
+  for (const t of (data || [])) {
+    const m = t.payment_method || 'qris';
+    byMethod[m] = (byMethod[m] || 0) + Number(t.amount || 0);
+  }
+  return byMethod;
+}
+
+// Total tips amount in a period (for reports)
+async function getTipsTotal({ from, to, branchId = null }) {
+  const byMethod = await getTipsTotalByMethod({ from, to, branchId });
+  return Object.values(byMethod).reduce((s, v) => s + v, 0);
+}
+
+// Compute cash balance per payment method for a period.
+// balance = money IN (transaction payments + tips) − money OUT (expenses)
+async function getCashBalance({ from, to, branchId = null }) {
+  const trxs = await getReportTransactions({ from, to, branchId });
+  const flow = computePaymentFlow(trxs);  // [{payment_method, total_amount, ...}]
+
+  const byMethod = {};
+  const ensure = (m) => {
+    if (!byMethod[m]) byMethod[m] = { method: m, in: 0, out: 0, balance: 0 };
+    return byMethod[m];
+  };
+
+  for (const f of flow) ensure(f.payment_method).in += Number(f.total_amount || 0);
+
+  // Tips money also enters our account (separate from omset)
+  const tips = await getTipsTotalByMethod({ from, to, branchId });
+  for (const [m, amt] of Object.entries(tips)) ensure(m).in += amt;
+
+  // Money OUT — expenses
+  const expenses = await listExpenses({ from, to, branchId });
+  for (const e of expenses) ensure(e.payment_method || 'cash').out += Number(e.amount || 0);
+
+  let totalIn = 0, totalOut = 0;
+  for (const m of Object.values(byMethod)) {
+    m.balance = m.in - m.out;
+    totalIn += m.in;
+    totalOut += m.out;
+  }
+
+  return {
+    byMethod: Object.values(byMethod).sort((a, b) => b.balance - a.balance),
+    totalIn,
+    totalOut,
+    totalBalance: totalIn - totalOut,
+  };
+}
+
 // Expose
 Object.assign(window, {
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
@@ -3496,5 +3611,7 @@ Object.assign(window, {
   // Tahap G - DP & Payment Flow
   insertTransactionPayments, getTransactionPayments, replaceTransactionPayments,
   insertTransactionTips, replaceTransactionTips,
+  listExpenses, createExpense, updateExpense, deleteExpense,
+  getCashBalance, getTipsTotal, getTipsTotalByMethod,
   getPaymentFlowBreakdown, computePaymentFlow,
 });

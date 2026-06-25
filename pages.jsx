@@ -3562,6 +3562,322 @@ function ReportsPage({ profile, currentBranchId, branches }) {
 }
 
 // =====================================================
+// KAS PAGE — Uang Keluar (pengeluaran) + saldo per metode
+// =====================================================
+function KasPage({ profile, currentBranchId, branches }) {
+  const isSuper = profile.role === 'super_admin';
+  const isAdmin = profile.role === 'super_admin' || profile.role === 'branch_admin';
+  const effectiveBranchId = isSuper ? currentBranchId : profile.branch_id;
+
+  // Period filter
+  const [presetId, setPresetId] = useStateP('thisMonth');
+  const [customFrom, setCustomFrom] = useStateP(todayStr());
+  const [customTo, setCustomTo] = useStateP(todayStr());
+
+  const range = useMemoP(() => {
+    if (presetId === 'custom') return { from: customFrom, to: customTo };
+    const preset = DATE_PRESETS.find(p => p.id === presetId);
+    return preset?.getRange() || { from: todayStr(), to: todayStr() };
+  }, [presetId, customFrom, customTo]);
+
+  // Data
+  const [expenses, setExpenses] = useStateP([]);
+  const [balance, setBalance] = useStateP(null);
+  const [loading, setLoading] = useStateP(true);
+
+  // New expense form
+  const [exDate, setExDate] = useStateP(todayStr());
+  const [exDesc, setExDesc] = useStateP('');
+  const [exAmount, setExAmount] = useStateP('');
+  const [exMethod, setExMethod] = useStateP('cash');
+  const [exNotes, setExNotes] = useStateP('');
+  const [submitting, setSubmitting] = useStateP(false);
+
+  // Edit state
+  const [editingId, setEditingId] = useStateP(null);
+  const [editForm, setEditForm] = useStateP({});
+  const [deleteTarget, setDeleteTarget] = useStateP(null);
+
+  async function loadData() {
+    setLoading(true);
+    try {
+      const [exp, bal] = await Promise.all([
+        listExpenses({ from: range.from, to: range.to, branchId: effectiveBranchId }),
+        getCashBalance({ from: range.from, to: range.to, branchId: effectiveBranchId }).catch(e => { console.warn('balance:', e); return null; }),
+      ]);
+      setExpenses(exp);
+      setBalance(bal);
+    } catch (err) {
+      toast('Gagal memuat kas: ' + (err.message || err), 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffectP(() => { loadData(); }, [range.from, range.to, effectiveBranchId]);
+
+  async function handleAddExpense() {
+    if (!effectiveBranchId) { toast('Pilih cabang dulu', 'error'); return; }
+    if (!exDesc.trim()) { toast('Keterangan wajib diisi', 'error'); return; }
+    if (!exAmount || Number(exAmount) <= 0) { toast('Jumlah harus > 0', 'error'); return; }
+    if (!exDate) { toast('Tanggal wajib diisi', 'error'); return; }
+    setSubmitting(true);
+    try {
+      await createExpense({
+        branchId: effectiveBranchId,
+        date: exDate,
+        description: exDesc,
+        amount: Number(exAmount),
+        paymentMethod: exMethod,
+        notes: exNotes,
+        createdBy: profile.id,
+      });
+      toast('Pengeluaran dicatat! 💸', 'success');
+      setExDesc(''); setExAmount(''); setExNotes(''); setExMethod('cash'); setExDate(todayStr());
+      loadData();
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function startEdit(e) {
+    setEditingId(e.id);
+    setEditForm({
+      date: e.date,
+      description: e.description,
+      amount: e.amount,
+      payment_method: e.payment_method,
+      notes: e.notes || '',
+    });
+  }
+
+  async function saveEdit(id) {
+    if (!editForm.description?.trim()) { toast('Keterangan wajib diisi', 'error'); return; }
+    if (!editForm.amount || Number(editForm.amount) <= 0) { toast('Jumlah harus > 0', 'error'); return; }
+    try {
+      await updateExpense(id, {
+        date: editForm.date,
+        description: editForm.description,
+        amount: Number(editForm.amount),
+        paymentMethod: editForm.payment_method,
+        notes: editForm.notes,
+      });
+      toast('Pengeluaran diperbarui', 'success');
+      setEditingId(null);
+      loadData();
+    } catch (err) {
+      toast('Gagal edit: ' + (err.message || err), 'error');
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    try {
+      await deleteExpense(deleteTarget.id);
+      toast('Pengeluaran dihapus', 'success');
+      setDeleteTarget(null);
+      loadData();
+    } catch (err) {
+      toast('Gagal hapus: ' + (err.message || err), 'error');
+    }
+  }
+
+  const totalExpense = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+  const branchName = effectiveBranchId ? branches.find(b => b.id === effectiveBranchId)?.name : null;
+
+  return (
+    <div className="page">
+      <PageHeader title="Kas — Uang Keluar" sub={branchName || (isSuper ? 'Pilih cabang di pojok kanan atas' : 'Cabang')}/>
+
+      {!effectiveBranchId && isSuper && (
+        <Card>
+          <Empty title="Pilih Cabang" desc="Pilih cabang di dropdown pojok kanan atas untuk melihat & mencatat pengeluaran."/>
+        </Card>
+      )}
+
+      {effectiveBranchId && (
+        <>
+          {/* PERIOD FILTER */}
+          <Card title="Filter Periode" sub="Pilih rentang waktu untuk saldo & daftar pengeluaran">
+            <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:presetId==='custom'?14:0}}>
+              {DATE_PRESETS.map(p => (
+                <button key={p.id}
+                  className={'btn btn-sm ' + (presetId === p.id ? 'btn-primary' : 'btn-ghost')}
+                  onClick={() => setPresetId(p.id)}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            {presetId === 'custom' && (
+              <div className="form-row">
+                <Field label="Dari Tanggal">
+                  <input type="date" className="form-input" value={customFrom} onChange={e => setCustomFrom(e.target.value)}/>
+                </Field>
+                <Field label="Sampai Tanggal">
+                  <input type="date" className="form-input" value={customTo} onChange={e => setCustomTo(e.target.value)}/>
+                </Field>
+              </div>
+            )}
+          </Card>
+
+          {/* SALDO SUMMARY */}
+          <Card title="Saldo Kas" sub="Uang masuk (transaksi + tips) − uang keluar (pengeluaran) per metode">
+            {loading ? <Loader text="Menghitung saldo..."/> : balance && balance.byMethod.length > 0 ? (
+              <>
+                <div className="metrics-grid" style={{marginBottom:16}}>
+                  {balance.byMethod.map(m => (
+                    <div key={m.method} style={{
+                      padding:16,borderRadius:12,
+                      background: m.balance >= 0 ? 'var(--cream)' : '#fbeaea',
+                      border:'1px solid ' + (m.balance >= 0 ? 'var(--gold-soft, #e8dcc0)' : '#e8c4c4'),
+                    }}>
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
+                        <span style={{fontSize:18}}>{getPaymentMethodIcon(m.method)}</span>
+                        <span style={{fontSize:13,fontWeight:600}}>{getPaymentMethodLabel(m.method)}</span>
+                      </div>
+                      <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:24,fontWeight:600,color:m.balance>=0?'var(--plum-deep)':'var(--red)'}}>
+                        {fmtRp(m.balance)}
+                      </div>
+                      <div style={{fontSize:11,color:'var(--muted)',marginTop:6,lineHeight:1.5}}>
+                        Masuk: {fmtRp(m.in)}<br/>
+                        Keluar: {fmtRp(m.out)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 16px',background:'var(--plum-deep)',borderRadius:12,color:'#fff'}}>
+                  <div>
+                    <div style={{fontSize:11,opacity:0.7,textTransform:'uppercase',letterSpacing:'0.05em'}}>Total Saldo Kas</div>
+                    <div style={{fontSize:11,opacity:0.6,marginTop:2}}>Masuk {fmtRp(balance.totalIn)} · Keluar {fmtRp(balance.totalOut)}</div>
+                  </div>
+                  <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:28,fontWeight:600}}>
+                    {fmtRp(balance.totalBalance)}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <Empty title="Belum ada data" desc="Belum ada transaksi atau pengeluaran di periode ini."/>
+            )}
+          </Card>
+
+          {/* INPUT PENGELUARAN */}
+          <Card title="Catat Pengeluaran Baru" sub="Beli kapas, cotton bud, perlengkapan, dll">
+            <div className="form-row">
+              <Field label="Tanggal *">
+                <input type="date" className="form-input" value={exDate} onChange={e => setExDate(e.target.value)}/>
+              </Field>
+              <Field label="Sumber Dana *">
+                <select className="form-select" value={exMethod} onChange={e => setExMethod(e.target.value)}>
+                  {PAYMENT_METHODS.map(pm => (
+                    <option key={pm.value} value={pm.value}>{pm.label}</option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <Field label="Keterangan / Dipakai Untuk Apa *">
+              <input className="form-input" value={exDesc} onChange={e => setExDesc(e.target.value)}
+                placeholder="Contoh: Beli kapas & cotton bud"/>
+            </Field>
+            <div className="form-row">
+              <Field label="Jumlah (Rp) *">
+                <input type="number" className="form-input" value={exAmount} onChange={e => setExAmount(e.target.value)}
+                  placeholder="50000" min="0" step="1000"/>
+              </Field>
+              <Field label="Catatan (opsional)">
+                <input className="form-input" value={exNotes} onChange={e => setExNotes(e.target.value)}
+                  placeholder="Toko, dll"/>
+              </Field>
+            </div>
+            <button className="btn btn-primary" onClick={handleAddExpense} disabled={submitting}>
+              {submitting ? 'Menyimpan...' : '💸 Catat Pengeluaran'}
+            </button>
+          </Card>
+
+          {/* DAFTAR PENGELUARAN */}
+          <Card title="Daftar Pengeluaran" sub={`${expenses.length} pengeluaran · Total ${fmtRp(totalExpense)}`}>
+            {loading ? <Loader text="Memuat..."/> : expenses.length === 0 ? (
+              <Empty title="Belum ada pengeluaran" desc="Catat pengeluaran pertama di form atas."/>
+            ) : (
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                {expenses.map(e => editingId === e.id ? (
+                  <div key={e.id} style={{padding:14,background:'var(--mauve-tint)',borderRadius:10}}>
+                    <div className="form-row">
+                      <Field label="Tanggal">
+                        <input type="date" className="form-input" value={editForm.date}
+                          onChange={ev => setEditForm({...editForm, date: ev.target.value})}/>
+                      </Field>
+                      <Field label="Sumber Dana">
+                        <select className="form-select" value={editForm.payment_method}
+                          onChange={ev => setEditForm({...editForm, payment_method: ev.target.value})}>
+                          {PAYMENT_METHODS.map(pm => <option key={pm.value} value={pm.value}>{pm.label}</option>)}
+                        </select>
+                      </Field>
+                    </div>
+                    <Field label="Keterangan">
+                      <input className="form-input" value={editForm.description}
+                        onChange={ev => setEditForm({...editForm, description: ev.target.value})}/>
+                    </Field>
+                    <Field label="Jumlah">
+                      <input type="number" className="form-input" value={editForm.amount}
+                        onChange={ev => setEditForm({...editForm, amount: ev.target.value})}/>
+                    </Field>
+                    <div style={{display:'flex',gap:8,marginTop:8}}>
+                      <button className="btn btn-primary btn-sm" onClick={() => saveEdit(e.id)}>Simpan</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setEditingId(null)}>Batal</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div key={e.id} style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',padding:'12px 14px',background:'var(--paper)',border:'1px solid var(--border, #eee)',borderRadius:10}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:500,fontSize:14}}>{e.description}</div>
+                      <div style={{fontSize:12,color:'var(--muted)',marginTop:3}}>
+                        {fmtDate(e.date)} · {getPaymentMethodIcon(e.payment_method)} {getPaymentMethodLabel(e.payment_method)}
+                        {e.notes ? ` · ${e.notes}` : ''}
+                      </div>
+                    </div>
+                    <div style={{textAlign:'right',marginLeft:12}}>
+                      <div style={{fontWeight:600,color:'var(--red)',fontSize:15,whiteSpace:'nowrap'}}>−{fmtRp(e.amount)}</div>
+                      {isAdmin && (
+                        <div style={{display:'flex',gap:4,marginTop:6,justifyContent:'flex-end'}}>
+                          <button className="btn btn-ghost btn-sm" style={{padding:'2px 8px',fontSize:11}}
+                            onClick={() => startEdit(e)}>✏️</button>
+                          <button className="btn btn-ghost btn-sm" style={{padding:'2px 8px',fontSize:11,color:'var(--red)'}}
+                            onClick={() => setDeleteTarget(e)}>🗑</button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </>
+      )}
+
+      {/* DELETE CONFIRM MODAL */}
+      {deleteTarget && (
+        <div style={{position:'fixed',inset:0,background:'rgba(36,26,44,0.6)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}
+          onClick={() => setDeleteTarget(null)}>
+          <div style={{background:'var(--paper)',borderRadius:16,padding:24,maxWidth:340,width:'100%'}} onClick={ev => ev.stopPropagation()}>
+            <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:20,fontWeight:600,marginBottom:8}}>Hapus Pengeluaran?</div>
+            <div style={{fontSize:13,color:'var(--muted)',marginBottom:18}}>
+              "{deleteTarget.description}" — {fmtRp(deleteTarget.amount)}. Tindakan ini tidak bisa dibatalkan.
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button className="btn btn-primary" style={{background:'var(--red)',flex:1}} onClick={confirmDelete}>Ya, Hapus</button>
+              <button className="btn btn-ghost" onClick={() => setDeleteTarget(null)}>Batal</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// =====================================================
 // ADJUST ATTENDANCE MODAL — input absensi & penyesuaian per karyawan
 // =====================================================
 function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, currentAdjustment, branchId, adjustedBy, leaveBalance }) {
