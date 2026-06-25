@@ -395,6 +395,9 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
   const [dpAmount, setDpAmount] = useStateP('');
   const [dpMethod, setDpMethod] = useStateP('qris');
   const [dpDate, setDpDate] = useStateP(todayStr());
+  // Tips states (Tahap 2) — tips per beautician (transfer/qris only)
+  const [hasTips, setHasTips] = useStateP(false);
+  const [tips, setTips] = useStateP([{ employee_id: '', amount: '', payment_method: 'qris' }]);
   // shareWith: array of additional employee_ids (multi-employee support)
   // share_percents: parallel array of percentages [main, ...sharedWith]
   const [items, setItems] = useStateP([{ employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '', share_with: [], share_percents: [100] }]);
@@ -566,6 +569,27 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
         ];
       }
 
+      // Build tips array (only if hasTips). Validate each tip.
+      let tipsArr = null;
+      if (hasTips) {
+        const validTips = tips.filter(t => t.employee_id && Number(t.amount) > 0);
+        // Check: if user toggled tips on but filled nothing meaningful
+        for (const t of tips) {
+          if ((t.employee_id && (!t.amount || Number(t.amount) <= 0)) ||
+              (!t.employee_id && Number(t.amount) > 0)) {
+            toast('Tips: pastikan setiap baris ada beautician DAN jumlah > 0', 'error');
+            setSubmitting(false); return;
+          }
+        }
+        if (validTips.length > 0) {
+          tipsArr = validTips.map(t => ({
+            employee_id: t.employee_id,
+            amount: Number(t.amount),
+            payment_method: t.payment_method || 'qris',
+          }));
+        }
+      }
+
       const newTrx = await createTransaction({
         branchId: effectiveBranchId,
         clientName: clientName.trim(),
@@ -577,6 +601,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
         createdBy: profile.id,
         paymentMethod,
         payments: paymentsArr,
+        tips: tipsArr,
       });
 
       toast('Transaksi tersimpan! 🎉 Sekarang upload foto.', 'success');
@@ -1028,6 +1053,80 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
                   })()}
                 </div>
               </>
+            )}
+          </Card>
+
+          <Card title="Tips dari Client" sub="Opsional — tips transfer/QRIS untuk beautician (tips cash langsung diterima beautician)">
+            <label style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',marginBottom:hasTips?14:0,padding:'10px 12px',background:'var(--cream)',borderRadius:10}}>
+              <input type="checkbox" checked={hasTips}
+                onChange={e => {
+                  const checked = e.target.checked;
+                  setHasTips(checked);
+                  if (!checked) setTips([{ employee_id: '', amount: '', payment_method: 'qris' }]);
+                }}
+                style={{accentColor:'var(--mauve)',width:18,height:18}}/>
+              <div>
+                <div style={{fontSize:14,fontWeight:500}}>💝 Ada tips dari client (transfer/QRIS)</div>
+                <div style={{fontSize:11,color:'var(--muted)'}}>Tips masuk ke rekening kita, lalu diberikan ke beautician. Tercatat di gaji mereka.</div>
+              </div>
+            </label>
+
+            {hasTips && (
+              <div>
+                {tips.map((tip, idx) => (
+                  <div key={idx} style={{padding:12,background:'var(--mauve-tint)',borderRadius:10,marginBottom:10}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                      <span className="eyebrow" style={{fontSize:10}}>Tips #{idx + 1}</span>
+                      {tips.length > 1 && (
+                        <button type="button"
+                          onClick={() => setTips(tips.filter((_, i) => i !== idx))}
+                          className="btn btn-ghost btn-sm" style={{padding:'2px 8px',fontSize:11,color:'var(--red)'}}>
+                          ✕ Hapus
+                        </button>
+                      )}
+                    </div>
+                    <Field label="Beautician Penerima *">
+                      <select className="form-select" value={tip.employee_id}
+                        onChange={e => {
+                          const next = [...tips]; next[idx] = { ...next[idx], employee_id: e.target.value }; setTips(next);
+                        }}>
+                        <option value="">— pilih beautician —</option>
+                        {employees.map(emp => (
+                          <option key={emp.id} value={emp.id}>{emp.full_name}{emp.job_title ? ` · ${emp.job_title}` : ''}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <div className="form-row">
+                      <Field label="Jumlah Tips (Rp) *">
+                        <input type="number" className="form-input" value={tip.amount}
+                          onChange={e => { const next = [...tips]; next[idx] = { ...next[idx], amount: e.target.value }; setTips(next); }}
+                          placeholder="20000" min="0" step="1000"/>
+                      </Field>
+                      <Field label="Metode">
+                        <select className="form-select" value={tip.payment_method}
+                          onChange={e => { const next = [...tips]; next[idx] = { ...next[idx], payment_method: e.target.value }; setTips(next); }}>
+                          {PAYMENT_METHODS.filter(pm => pm.value !== 'cash').map(pm => (
+                            <option key={pm.value} value={pm.value}>{pm.label}</option>
+                          ))}
+                        </select>
+                      </Field>
+                    </div>
+                  </div>
+                ))}
+                <button type="button" className="btn btn-ghost btn-sm"
+                  onClick={() => setTips([...tips, { employee_id: '', amount: '', payment_method: 'qris' }])}>
+                  + Tambah Tips (beautician lain)
+                </button>
+                {(() => {
+                  const totalTips = tips.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                  return totalTips > 0 ? (
+                    <div style={{marginTop:10,padding:'8px 12px',background:'var(--cream)',borderRadius:8,fontSize:13,display:'flex',justifyContent:'space-between'}}>
+                      <span style={{color:'var(--muted)'}}>Total tips</span>
+                      <span style={{fontWeight:600,color:'var(--plum)'}}>{fmtRp(totalTips)}</span>
+                    </div>
+                  ) : null;
+                })()}
+              </div>
             )}
           </Card>
 

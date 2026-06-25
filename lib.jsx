@@ -354,6 +354,7 @@ async function createTransaction({
   isHomeService, homeServiceFee, notes, items, createdBy,
   paymentMethod = 'cash',
   payments = null,  // [{ method, amount, is_dp, paid_at }] - if null, single payment with paymentMethod
+  tips = null,      // [{ employee_id, amount, payment_method }] - tips per beautician (transfer/qris only)
 }) {
   const isOT = isOvertime(startTime);
   const totalAmount = items.reduce((sum, it) => sum + (Number(it.price) || 0), 0);
@@ -430,6 +431,28 @@ async function createTransaction({
     }
   } catch (payErr) {
     console.warn('Payment insert failed (transaction still saved):', payErr);
+  }
+
+  // Insert tips (per beautician) — separate from omset, but recorded for payroll & cash flow
+  try {
+    if (tips && tips.length > 0) {
+      const tipRows = tips
+        .filter(t => t.employee_id && Number(t.amount) > 0)
+        .map(t => ({
+          transaction_id: trx.id,
+          branch_id: branchId,
+          employee_id: t.employee_id,
+          amount: Number(t.amount) || 0,
+          payment_method: t.payment_method || 'qris',
+          created_by: createdBy || null,
+        }));
+      if (tipRows.length > 0) {
+        const { error: tipErr } = await sb.from('transaction_tips').insert(tipRows);
+        if (tipErr) console.warn('Tips insert failed (transaction still saved):', tipErr);
+      }
+    }
+  } catch (tipErr) {
+    console.warn('Tips insert error (transaction still saved):', tipErr);
   }
 
   return trx;
@@ -2692,7 +2715,8 @@ async function getTransactionDetail(transactionId) {
         share_group_id, share_percent,
         employee:employees(id, full_name, job_title)
       ),
-      payments:transaction_payments(*)
+      payments:transaction_payments(*),
+      tips:transaction_tips(id, employee_id, amount, payment_method, employee:employees(id, full_name))
     `)
     .eq('id', transactionId)
     .single();
@@ -3149,6 +3173,34 @@ async function getTransactionPayments(transactionId) {
   return data || [];
 }
 
+// ===== TIPS helpers (Tahap 2) =====
+
+// Insert tips for a transaction. tips: [{ employee_id, amount, payment_method }]
+async function insertTransactionTips(transactionId, branchId, tips, createdBy) {
+  if (!tips || !tips.length) return [];
+  const rows = tips
+    .filter(t => t.employee_id && Number(t.amount) > 0)
+    .map(t => ({
+      transaction_id: transactionId,
+      branch_id: branchId,
+      employee_id: t.employee_id,
+      amount: Number(t.amount) || 0,
+      payment_method: t.payment_method || 'qris',
+      created_by: createdBy || null,
+    }));
+  if (!rows.length) return [];
+  const { data, error } = await sb.from('transaction_tips').insert(rows).select();
+  if (error) throw error;
+  return data || [];
+}
+
+// Replace all tips for a transaction (used in edit)
+async function replaceTransactionTips(transactionId, branchId, tips, createdBy) {
+  const { error: delErr } = await sb.from('transaction_tips').delete().eq('transaction_id', transactionId);
+  if (delErr) throw delErr;
+  return insertTransactionTips(transactionId, branchId, tips, createdBy);
+}
+
 // Replace all payments for a transaction (used in edit)
 async function replaceTransactionPayments(transactionId, branchId, payments, createdBy) {
   // Delete existing
@@ -3409,5 +3461,6 @@ Object.assign(window, {
   PAYMENT_METHODS, getPaymentMethodLabel, getPaymentMethodIcon,
   // Tahap G - DP & Payment Flow
   insertTransactionPayments, getTransactionPayments, replaceTransactionPayments,
+  insertTransactionTips, replaceTransactionTips,
   getPaymentFlowBreakdown, computePaymentFlow,
 });
