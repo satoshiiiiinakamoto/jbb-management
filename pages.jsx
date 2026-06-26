@@ -1516,6 +1516,15 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                     <span className="row-detail-label">Komisi</span>
                     <span style={{color:'var(--mauve)',fontWeight:500}}>{fmtRp(t.total_commission)}</span>
                   </div>
+                  {(t.tips || []).length > 0 && (() => {
+                    const tipTotal = (t.tips || []).reduce((s, tp) => s + Number(tp.amount || 0), 0);
+                    return (
+                      <div className="row-detail">
+                        <span className="row-detail-label">Tips 💝</span>
+                        <span style={{color:'var(--plum)',fontWeight:500}}>+{fmtRp(tipTotal)}</span>
+                      </div>
+                    );
+                  })()}
 
                   <div className="row-actions">
                     <button
@@ -1630,7 +1639,14 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                       })}
                     </td>
                     <td className="table-numeric" style={{fontWeight:500}}>{fmtRp(t.total_amount)}</td>
-                    <td className="table-numeric" style={{color:'var(--mauve)',fontWeight:500}}>{fmtRp(t.total_commission)}</td>
+                    <td className="table-numeric" style={{color:'var(--mauve)',fontWeight:500}}>
+                      {fmtRp(t.total_commission)}
+                      {(t.tips || []).length > 0 && (
+                        <div style={{fontSize:11,color:'var(--plum)',fontWeight:500,marginTop:2}}>
+                          +{fmtRp((t.tips || []).reduce((s, tp) => s + Number(tp.amount || 0), 0))} tips 💝
+                        </div>
+                      )}
+                    </td>
                     <td>
                       <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
                         <button
@@ -4429,6 +4445,11 @@ function PayrollPage({ profile, currentBranchId, branches }) {
         selectedPeriod.period_start,
         selectedPeriod.period_end
       );
+      const tipsDetail = await getEmployeePeriodTips(
+        row.employee.id,
+        selectedPeriod.period_start,
+        selectedPeriod.period_end
+      );
       const branch = branches.find(b => b.id === row.employee.branch_id);
       const slipHtml = generateSlipHTML({
         employee: row.employee,
@@ -4438,6 +4459,7 @@ function PayrollPage({ profile, currentBranchId, branches }) {
         branch,
         generatedBy: profile,
         isApproved: row.adjustment?.is_approved === true,
+        tipsDetail,
       });
       printSlip(slipHtml);
     } catch (err) {
@@ -4460,6 +4482,11 @@ function PayrollPage({ profile, currentBranchId, branches }) {
           selectedPeriod.period_start,
           selectedPeriod.period_end
         );
+        const tipsDetail = await getEmployeePeriodTips(
+          row.employee.id,
+          selectedPeriod.period_start,
+          selectedPeriod.period_end
+        );
         const branch = branches.find(b => b.id === row.employee.branch_id);
         slips.push(generateSlipHTML({
           employee: row.employee,
@@ -4469,6 +4496,7 @@ function PayrollPage({ profile, currentBranchId, branches }) {
           branch,
           generatedBy: profile,
           isApproved: row.adjustment?.is_approved === true,
+          tipsDetail,
         }));
       }
       printMultipleSlips(slips);
@@ -5157,28 +5185,36 @@ function EmployeeDashboardView({
         period.period_start,
         period.period_end
       );
+      const tipsDetail = await getEmployeePeriodTips(
+        employee.id,
+        period.period_start,
+        period.period_end
+      );
+      const totalTips = tipsDetail.reduce((s, t) => s + Number(t.amount || 0), 0);
       const slipHtml = generateSlipHTML({
         employee,
-        payroll: estimatedPayroll || {
+        payroll: estimatedPayroll ? { ...estimatedPayroll, tips: estimatedPayroll.tips != null ? estimatedPayroll.tips : totalTips } : {
           base_salary: Number(employee.base_salary) || 0,
           base_salary_actual: Number(employee.base_salary) || 0,
           salary_deduction: 0,
           meal_allowance: Number(employee.meal_allowance) || 0,
           treatment_commission: stats?.period_commission || 0,
           hs_commission: 0,
+          tips: totalTips,
           annual_leave_days: 0,
           sick_leave_certified_days: 0,
           unpaid_leave_days: 0,
           standard_work_days: 26,
           bonus: 0,
           extra_deduction: 0,
-          total: (Number(employee.base_salary) || 0) + (Number(employee.meal_allowance) || 0) + (stats?.period_commission || 0),
+          total: (Number(employee.base_salary) || 0) + (Number(employee.meal_allowance) || 0) + (stats?.period_commission || 0) + totalTips,
         },
         items,
         period,
         branch,
         generatedBy: profile,
         isApproved,
+        tipsDetail,
       });
       printSlip(slipHtml);
     } catch (err) {

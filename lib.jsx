@@ -461,7 +461,7 @@ async function createTransaction({
 async function listRecentTransactions(branchId = null, limit = 20) {
   let query = sb
     .from('transactions')
-    .select('*, items:transaction_items(*, employee:employees(full_name)), payments:transaction_payments(*), branch:branches(name)')
+    .select('*, items:transaction_items(*, employee:employees(full_name)), payments:transaction_payments(*), tips:transaction_tips(id, amount, payment_method, employee_id), branch:branches(name)')
     .order('date', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -475,7 +475,7 @@ async function listRecentTransactions(branchId = null, limit = 20) {
 async function listTransactionsByDateRange({ branchId = null, from, to, searchQuery = '' }) {
   let query = sb
     .from('transactions')
-    .select('*, items:transaction_items(*, employee:employees(full_name)), payments:transaction_payments(*), branch:branches(name)')
+    .select('*, items:transaction_items(*, employee:employees(full_name)), payments:transaction_payments(*), tips:transaction_tips(id, amount, payment_method, employee_id), branch:branches(name)')
     .gte('date', from)
     .lte('date', to)
     .order('date', { ascending: false })
@@ -1819,8 +1819,27 @@ async function getEmployeePeriodTransactions(employeeId, periodStart, periodEnd)
   return (data || []).filter(r => r.transaction);
 }
 
+// Get tip detail (per transaction) for one employee in a period — for slip breakdown
+async function getEmployeePeriodTips(employeeId, periodStart, periodEnd) {
+  const { data, error } = await sb
+    .from('transaction_tips')
+    .select(`
+      id, amount, payment_method,
+      transaction:transactions!inner(id, date, client_name_snapshot)
+    `)
+    .eq('employee_id', employeeId)
+    .gte('transaction.date', periodStart)
+    .lte('transaction.date', periodEnd);
+  if (error) return [];
+  return (data || []).filter(r => r.transaction).sort((a, b) => {
+    const dA = a.transaction?.date || '';
+    const dB = b.transaction?.date || '';
+    return dA < dB ? -1 : dA > dB ? 1 : 0;
+  });
+}
+
 // Generate slip HTML for one employee
-function generateSlipHTML({ employee, payroll, items, period, branch, generatedBy, isApproved = false }) {
+function generateSlipHTML({ employee, payroll, items, period, branch, generatedBy, isApproved = false, tipsDetail = [] }) {
   const brand = getBrandForBranch(employee.branch_id);
   const periodStartFmt = fmtDate(period.period_start);
   const periodEndFmt = fmtDate(period.period_end);
@@ -2296,6 +2315,36 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       ` : ''}
     </tfoot>
   </table>
+
+  ${(tipsDetail && tipsDetail.length > 0) ? `
+  <div class="section-title">Rincian Tips dari Client 💝</div>
+  <table class="detail-table">
+    <thead>
+      <tr>
+        <th>Tanggal</th>
+        <th>Client</th>
+        <th>Metode</th>
+        <th class="cell-num">Tips</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${tipsDetail.map(t => `
+      <tr>
+        <td>${fmtDate(t.transaction?.date)}</td>
+        <td>${escapeHtml(t.transaction?.client_name_snapshot || '-')}</td>
+        <td>${escapeHtml(getPaymentMethodLabel(t.payment_method))}</td>
+        <td class="cell-num" style="color: #7a667e; font-weight: 500;">${fmtRp(t.amount)}</td>
+      </tr>
+      `).join('')}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="3" style="text-align: right; font-weight: 500; padding-top: 12px; border-top: 1px solid #d4c8d8; color: #7a667e;">Total Tips</td>
+        <td class="cell-num" style="font-weight: 600; padding-top: 12px; border-top: 1px solid #d4c8d8; color: #7a667e;">${fmtRp(tipsDetail.reduce((s, t) => s + Number(t.amount || 0), 0))}</td>
+      </tr>
+    </tfoot>
+  </table>
+  ` : ''}
 
   <div class="section-title">Perhitungan Gaji</div>
   <table class="breakdown-table">
@@ -3591,7 +3640,7 @@ Object.assign(window, {
   listAuditLog, getAuditSummary, formatAuditDiff,
   getActionLabel, getActionColor, getActionBadge, getFieldLabel, formatAuditValue,
   exportToExcel, exportReportToExcel, exportPayrollToExcel,
-  generateSlipHTML, getEmployeePeriodTransactions, printSlip, printMultipleSlips,
+  generateSlipHTML, getEmployeePeriodTransactions, getEmployeePeriodTips, printSlip, printMultipleSlips,
   getBrandForBranch, escapeHtml,
   generateInvoiceHTML, printInvoice, drawInvoiceToCanvas, downloadInvoicePNG,
   getMyDashboardStats, getMyRecentTransactions, getMyTopServices, getMyTopClients,
