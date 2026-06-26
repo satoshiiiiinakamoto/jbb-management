@@ -1248,6 +1248,8 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
   const [customFrom, setCustomFrom] = useStateP('');
   const [customTo, setCustomTo] = useStateP('');
   const [paymentFilter, setPaymentFilter] = useStateP('all');  // 'all' or a payment_method value
+  const [beauticianFilter, setBeauticianFilter] = useStateP('all');  // 'all' or employee_id
+  const [treatmentFilter, setTreatmentFilter] = useStateP('all');  // 'all' or service_name
 
   const isSuper = profile.role === 'super_admin';
   const isBranchAdmin = profile.role === 'branch_admin';
@@ -1325,15 +1327,51 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
     ? (currentBranchId ? branches.find(b => b.id === currentBranchId)?.name : 'Semua Cabang')
     : branches.find(b => b.id === profile.branch_id)?.name;
 
-  // Apply payment-method filter (client-side). Matches main payment_method OR any DP/payment row.
+  // Build dropdown options from loaded transactions
+  const beauticianOptions = useMemoP(() => {
+    const map = new Map();
+    for (const t of trxs) {
+      for (const it of (t.items || [])) {
+        if (it.employee_id && it.employee?.full_name && !map.has(it.employee_id)) {
+          map.set(it.employee_id, it.employee.full_name);
+        }
+      }
+    }
+    return [...map.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [trxs]);
+
+  const treatmentOptions = useMemoP(() => {
+    const set = new Set();
+    for (const t of trxs) {
+      for (const it of (t.items || [])) {
+        if (it.service_name) set.add(it.service_name);
+      }
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [trxs]);
+
+  // Apply all client-side filters: payment method, beautician, treatment
   const displayedTrxs = useMemoP(() => {
-    if (paymentFilter === 'all') return trxs;
     return trxs.filter(t => {
-      if ((t.payment_method || 'cash') === paymentFilter) return true;
-      if ((t.payments || []).some(p => (p.payment_method || '') === paymentFilter)) return true;
-      return false;
+      // Payment filter
+      if (paymentFilter !== 'all') {
+        const mainMatch = (t.payment_method || 'cash') === paymentFilter;
+        const payMatch = (t.payments || []).some(p => (p.payment_method || '') === paymentFilter);
+        if (!mainMatch && !payMatch) return false;
+      }
+      // Beautician filter — any item done by this employee
+      if (beauticianFilter !== 'all') {
+        if (!(t.items || []).some(it => it.employee_id === beauticianFilter)) return false;
+      }
+      // Treatment filter — any item with this service
+      if (treatmentFilter !== 'all') {
+        if (!(t.items || []).some(it => it.service_name === treatmentFilter)) return false;
+      }
+      return true;
     });
-  }, [trxs, paymentFilter]);
+  }, [trxs, paymentFilter, beauticianFilter, treatmentFilter]);
+
+  const anyFilterActive = paymentFilter !== 'all' || beauticianFilter !== 'all' || treatmentFilter !== 'all';
 
   async function handleDelete() {
     if (!deleteTarget) return;
@@ -1417,6 +1455,32 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
           </div>
         </Field>
 
+        <div className="form-row">
+          <Field label="💇 Filter Beautician" hint="Transaksi yang dikerjakan beautician tertentu">
+            <select className="form-select" value={beauticianFilter} onChange={e => setBeauticianFilter(e.target.value)}>
+              <option value="all">— Semua Beautician —</option>
+              {beauticianOptions.map(b => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="✨ Filter Treatment" hint="Transaksi dengan treatment tertentu">
+            <select className="form-select" value={treatmentFilter} onChange={e => setTreatmentFilter(e.target.value)}>
+              <option value="all">— Semua Treatment —</option>
+              {treatmentOptions.map(s => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        {anyFilterActive && (
+          <button type="button" className="btn btn-ghost btn-sm" style={{marginBottom:8}}
+            onClick={() => { setPaymentFilter('all'); setBeauticianFilter('all'); setTreatmentFilter('all'); }}>
+            ✕ Reset semua filter
+          </button>
+        )}
+
         <div style={{padding:'8px 12px',background:'var(--cream)',borderRadius:8,fontSize:12,color:'var(--muted)',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
           <span>
             {(() => {
@@ -1425,14 +1489,14 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
             })()}
           </span>
           <span style={{color:'var(--plum)',fontWeight:500}}>
-            {displayedTrxs.length}{paymentFilter !== 'all' ? ` dari ${trxs.length}` : ''} transaksi
+            {displayedTrxs.length}{anyFilterActive ? ` dari ${trxs.length}` : ''} transaksi
           </span>
         </div>
       </Card>
 
       <Card>
         {loading ? <Loader text="Memuat..."/> :
-         !displayedTrxs.length ? <Empty title="Belum ada transaksi" sub={paymentFilter !== 'all' ? 'Tidak ada transaksi dengan metode pembayaran ini di periode terpilih.' : 'Belum ada transaksi di periode ini, atau hasil pencarian kosong.'}/> : (
+         !displayedTrxs.length ? <Empty title="Belum ada transaksi" sub={anyFilterActive ? 'Tidak ada transaksi yang cocok dengan filter ini di periode terpilih.' : 'Belum ada transaksi di periode ini, atau hasil pencarian kosong.'}/> : (
           <>
           {/* MOBILE CARD LAYOUT */}
           <div className="table-mobile-cards">
