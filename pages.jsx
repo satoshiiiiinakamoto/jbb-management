@@ -1100,7 +1100,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
                       <Field label="Jumlah Tips (Rp) *">
                         <input type="number" className="form-input" value={tip.amount}
                           onChange={e => { const next = [...tips]; next[idx] = { ...next[idx], amount: e.target.value }; setTips(next); }}
-                          placeholder="20000" min="0" step="1000"/>
+                          placeholder="20000" min="0" step="any"/>
                       </Field>
                       <Field label="Metode">
                         <select className="form-select" value={tip.payment_method}
@@ -3901,7 +3901,7 @@ function KasPage({ profile, currentBranchId, branches }) {
             <div className="form-row">
               <Field label="Jumlah (Rp) *">
                 <input type="number" className="form-input" value={exAmount} onChange={e => setExAmount(e.target.value)}
-                  placeholder="50000" min="0" step="1000"/>
+                  placeholder="50000" min="0" step="any"/>
               </Field>
               <Field label="Catatan (opsional)">
                 <input className="form-input" value={exNotes} onChange={e => setExNotes(e.target.value)}
@@ -4207,12 +4207,12 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
             <Field label="Bonus (Rp)" hint="THR, insentif, dll. Opsional">
               <input type="number" className="form-input" value={form.bonus}
                 onChange={e => update({ bonus: e.target.value })}
-                min="0" step="10000" placeholder="0"/>
+                min="0" step="any" placeholder="0"/>
             </Field>
             <Field label="Potongan Tambahan (Rp)" hint="Denda telat, kasbon, dll. Opsional">
               <input type="number" className="form-input" value={form.extra_deduction}
                 onChange={e => update({ extra_deduction: e.target.value })}
-                min="0" step="10000" placeholder="0"/>
+                min="0" step="any" placeholder="0"/>
             </Field>
           </div>
 
