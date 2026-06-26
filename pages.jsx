@@ -1247,6 +1247,7 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
   const [searchQuery, setSearchQuery] = useStateP('');
   const [customFrom, setCustomFrom] = useStateP('');
   const [customTo, setCustomTo] = useStateP('');
+  const [paymentFilter, setPaymentFilter] = useStateP('all');  // 'all' or a payment_method value
 
   const isSuper = profile.role === 'super_admin';
   const isBranchAdmin = profile.role === 'branch_admin';
@@ -1324,6 +1325,16 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
     ? (currentBranchId ? branches.find(b => b.id === currentBranchId)?.name : 'Semua Cabang')
     : branches.find(b => b.id === profile.branch_id)?.name;
 
+  // Apply payment-method filter (client-side). Matches main payment_method OR any DP/payment row.
+  const displayedTrxs = useMemoP(() => {
+    if (paymentFilter === 'all') return trxs;
+    return trxs.filter(t => {
+      if ((t.payment_method || 'cash') === paymentFilter) return true;
+      if ((t.payments || []).some(p => (p.payment_method || '') === paymentFilter)) return true;
+      return false;
+    });
+  }, [trxs, paymentFilter]);
+
   async function handleDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
@@ -1389,6 +1400,23 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
             placeholder="Ketik nama klien atau no HP..."/>
         </Field>
 
+        <Field label="💳 Filter Pembayaran" hint="Lihat transaksi berdasarkan metode pembayaran">
+          <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+            <button type="button"
+              className={'btn btn-sm ' + (paymentFilter === 'all' ? 'btn-primary' : 'btn-ghost')}
+              onClick={() => setPaymentFilter('all')}>
+              Semua
+            </button>
+            {PAYMENT_METHODS.map(pm => (
+              <button type="button" key={pm.value}
+                className={'btn btn-sm ' + (paymentFilter === pm.value ? 'btn-primary' : 'btn-ghost')}
+                onClick={() => setPaymentFilter(pm.value)}>
+                {pm.icon} {pm.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+
         <div style={{padding:'8px 12px',background:'var(--cream)',borderRadius:8,fontSize:12,color:'var(--muted)',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
           <span>
             {(() => {
@@ -1397,18 +1425,18 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
             })()}
           </span>
           <span style={{color:'var(--plum)',fontWeight:500}}>
-            {trxs.length} transaksi
+            {displayedTrxs.length}{paymentFilter !== 'all' ? ` dari ${trxs.length}` : ''} transaksi
           </span>
         </div>
       </Card>
 
       <Card>
         {loading ? <Loader text="Memuat..."/> :
-         !trxs.length ? <Empty title="Belum ada transaksi" sub="Belum ada transaksi di periode ini, atau hasil pencarian kosong."/> : (
+         !displayedTrxs.length ? <Empty title="Belum ada transaksi" sub={paymentFilter !== 'all' ? 'Tidak ada transaksi dengan metode pembayaran ini di periode terpilih.' : 'Belum ada transaksi di periode ini, atau hasil pencarian kosong.'}/> : (
           <>
           {/* MOBILE CARD LAYOUT */}
           <div className="table-mobile-cards">
-            {trxs.map(t => {
+            {displayedTrxs.map(t => {
               const wasEdited = editedIds.has(t.id);
               return (
                 <div key={t.id} className="row-card">
@@ -1541,7 +1569,7 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                 </tr>
               </thead>
               <tbody>
-                {trxs.map(t => {
+                {displayedTrxs.map(t => {
                   const wasEdited = editedIds.has(t.id);
                   return (
                   <tr key={t.id}>
@@ -3166,6 +3194,7 @@ function ReportsPage({ profile, currentBranchId, branches }) {
   const [employees, setEmployees] = useStateP([]);
   const [paymentFlow, setPaymentFlow] = useStateP([]);
   const [loading, setLoading] = useStateP(true);
+  const [flowDetailMethod, setFlowDetailMethod] = useStateP(null);  // payment method clicked for detail
 
   // Effective date range
   const range = useMemoP(() => {
@@ -3341,17 +3370,25 @@ function ReportsPage({ profile, currentBranchId, branches }) {
                     const total = paymentFlow.reduce((s, p) => s + Number(p.total_amount || 0), 0);
                     const pct = total > 0 ? ((Number(pf.total_amount) / total) * 100).toFixed(1) : 0;
                     return (
-                      <div key={pf.payment_method} style={{
+                      <div key={pf.payment_method}
+                        onClick={() => setFlowDetailMethod(pf.payment_method)}
+                        title="Klik untuk lihat transaksi yang pakai metode ini"
+                        style={{
                         padding:14,
                         background:'var(--paper)',
                         border:'1px solid var(--line)',
                         borderRadius:10,
-                      }}>
+                        cursor:'pointer',
+                        transition:'all 0.15s',
+                      }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--mauve)'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(122,102,126,0.12)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.boxShadow = 'none'; }}>
                         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
                           <span style={{fontSize:20}}>{getPaymentMethodIcon(pf.payment_method)}</span>
                           <span style={{fontSize:12,fontWeight:500,color:'var(--plum)'}}>
                             {getPaymentMethodLabel(pf.payment_method)}
                           </span>
+                          <span style={{marginLeft:'auto',fontSize:11,color:'var(--mauve)'}}>›</span>
                         </div>
                         <div style={{fontFamily:'Cormorant Garamond, serif',fontSize:22,fontWeight:400,color:'var(--plum-deep)',marginBottom:4}}>
                           {fmtRp(pf.total_amount)}
@@ -3395,6 +3432,87 @@ function ReportsPage({ profile, currentBranchId, branches }) {
               </>
             )}
           </Card>
+
+          {/* PAYMENT FLOW DETAIL MODAL — transactions using the clicked method */}
+          {flowDetailMethod && (() => {
+            const method = flowDetailMethod;
+            // Transactions that used this method (main payment_method or any payment row)
+            const matched = transactions.filter(t => {
+              if ((t.payment_method || 'cash') === method) return true;
+              if ((t.payments || []).some(p => (p.payment_method || '') === method)) return true;
+              return false;
+            });
+            // Sum the amount attributable to this method
+            let methodTotal = 0;
+            for (const t of matched) {
+              const pays = t.payments || [];
+              if (pays.length > 0) {
+                for (const p of pays) if ((p.payment_method || '') === method) methodTotal += Number(p.amount || 0);
+              } else if ((t.payment_method || 'cash') === method) {
+                methodTotal += Number(t.total_amount || 0) + (t.is_home_service ? Number(t.home_service_fee || 0) : 0);
+              }
+            }
+            return (
+              <div style={{position:'fixed',inset:0,background:'rgba(36,26,44,0.6)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+                onClick={() => setFlowDetailMethod(null)}>
+                <div style={{background:'var(--paper)',borderRadius:16,padding:0,maxWidth:560,width:'100%',maxHeight:'85vh',display:'flex',flexDirection:'column',overflow:'hidden'}}
+                  onClick={e => e.stopPropagation()}>
+                  {/* Header */}
+                  <div style={{padding:'18px 20px',borderBottom:'1px solid var(--line)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <div>
+                      <div style={{display:'flex',alignItems:'center',gap:8}}>
+                        <span style={{fontSize:22}}>{getPaymentMethodIcon(method)}</span>
+                        <span style={{fontFamily:"'Cormorant Garamond', serif",fontSize:22,fontWeight:600,color:'var(--plum-deep)'}}>
+                          {getPaymentMethodLabel(method)}
+                        </span>
+                      </div>
+                      <div style={{fontSize:12,color:'var(--muted)',marginTop:3}}>
+                        {matched.length} transaksi · Total {fmtRp(methodTotal)}
+                      </div>
+                    </div>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setFlowDetailMethod(null)}>✕ Tutup</button>
+                  </div>
+                  {/* List */}
+                  <div style={{overflowY:'auto',padding:'12px 16px'}}>
+                    {matched.length === 0 ? (
+                      <Empty title="Tidak ada transaksi" sub="Tidak ada transaksi dengan metode ini."/>
+                    ) : (
+                      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                        {matched.map(t => {
+                          const empNames = [...new Set((t.items || []).map(i => i.employee?.full_name).filter(Boolean))].join(', ');
+                          const pays = t.payments || [];
+                          const methodAmt = pays.length > 0
+                            ? pays.filter(p => (p.payment_method||'') === method).reduce((s,p)=>s+Number(p.amount||0),0)
+                            : Number(t.total_amount || 0) + (t.is_home_service ? Number(t.home_service_fee || 0) : 0);
+                          const isDpPartial = pays.length > 0 && pays.some(p => p.is_dp);
+                          return (
+                            <div key={t.id} style={{padding:'10px 12px',background:'var(--paper)',border:'1px solid var(--line)',borderRadius:10}}>
+                              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10}}>
+                                <div style={{flex:1,minWidth:0}}>
+                                  <div style={{fontWeight:500,fontSize:14}}>{t.client_name_snapshot || '-'}</div>
+                                  <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>
+                                    {fmtDate(t.date)}{t.start_time ? ` · ${t.start_time.slice(0,5)}` : ''}
+                                    {empNames ? ` · ${empNames}` : ''}
+                                  </div>
+                                  <div style={{fontSize:11,color:'var(--mauve)',marginTop:2}}>
+                                    {(t.items || []).map(i => i.service_name).join(', ')}
+                                  </div>
+                                </div>
+                                <div style={{textAlign:'right',whiteSpace:'nowrap'}}>
+                                  <div style={{fontWeight:600,color:'var(--plum-deep)'}}>{fmtRp(methodAmt)}</div>
+                                  {isDpPartial && <div style={{fontSize:10,color:'var(--amber)',marginTop:2}}>termasuk DP</div>}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* BREAKDOWN BY CATEGORY */}
           <Card title="Breakdown per Kategori" sub="Distribusi service di periode ini">
