@@ -5,7 +5,15 @@ function App() {
   const [loading, setLoading] = useStateA(true);
   const [session, setSession] = useStateA(null);
   const [profile, setProfile] = useStateA(null);
-  const [page, setPage] = useStateA('dashboard');
+  // Remember the last menu across reloads (Safari often reloads inactive tabs)
+  const [page, setPageRaw] = useStateA(() => {
+    try { return localStorage.getItem('jbb_last_page') || 'dashboard'; }
+    catch (e) { return 'dashboard'; }
+  });
+  const setPage = (p) => {
+    setPageRaw(p);
+    try { localStorage.setItem('jbb_last_page', p); } catch (e) {}
+  };
   const [branches, setBranches] = useStateA([]);
   const [currentBranchId, setCurrentBranchId] = useStateA(null);
 
@@ -30,6 +38,12 @@ function App() {
         setBranches(bs);
         if (p.role !== 'super_admin') {
           setCurrentBranchId(p.branch_id);
+        } else {
+          // Restore last selected branch for super_admin
+          try {
+            const saved = localStorage.getItem('jbb_last_branch');
+            if (saved && bs.some(b => b.id === saved)) setCurrentBranchId(saved);
+          } catch (e) {}
         }
       } catch (err) {
         console.error('Branch load error:', err);
@@ -50,6 +64,7 @@ function App() {
         setProfile(null);
         setBranches([]);
         setCurrentBranchId(null);
+        try { localStorage.removeItem('jbb_last_page'); localStorage.removeItem('jbb_last_branch'); } catch (e) {}
       }
       if (event === 'SIGNED_IN' && s) {
         bootstrap();
@@ -57,6 +72,35 @@ function App() {
     });
     return () => subscription.unsubscribe();
   }, []);
+
+  // Save scroll position continuously (throttled) so a Safari reload can restore it
+  useEffectA(() => {
+    let timer = null;
+    const onScroll = () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        try { sessionStorage.setItem('jbb_scroll_' + page, String(window.scrollY)); } catch (e) {}
+        timer = null;
+      }, 200);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => { window.removeEventListener('scroll', onScroll); if (timer) clearTimeout(timer); };
+  }, [page]);
+
+  // Restore scroll position when a page mounts (after load completes)
+  useEffectA(() => {
+    if (loading || !profile) return;
+    try {
+      const saved = sessionStorage.getItem('jbb_scroll_' + page);
+      if (saved) {
+        const y = parseInt(saved, 10);
+        if (y > 0) {
+          // Wait for content to render before scrolling
+          setTimeout(() => window.scrollTo(0, y), 100);
+        }
+      }
+    } catch (e) {}
+  }, [page, loading, profile]);
 
   const envMissing = !window.__ENV.SUPABASE_URL || window.__ENV.SUPABASE_URL.includes('GANTI');
   if (envMissing) {
@@ -191,7 +235,10 @@ function App() {
         setPage={setPage}
         tabs={tabs}
         currentBranchId={currentBranchId}
-        setCurrentBranchId={setCurrentBranchId}
+        setCurrentBranchId={(id) => {
+          setCurrentBranchId(id);
+          try { if (id) localStorage.setItem('jbb_last_branch', id); else localStorage.removeItem('jbb_last_branch'); } catch (e) {}
+        }}
         branches={branches}
       />
       {pageContent}

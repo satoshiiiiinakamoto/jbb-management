@@ -4206,6 +4206,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
     if (open && currentAdjustment) {
       setForm({
         standard_work_days: currentAdjustment.standard_work_days || 26,
+        actual_work_days: currentAdjustment.actual_work_days || '',
         annual_leave_days: currentAdjustment.annual_leave_days || 0,
         sick_leave_certified_days: currentAdjustment.sick_leave_certified_days || 0,
         unpaid_leave_days: currentAdjustment.unpaid_leave_days || 0,
@@ -4217,6 +4218,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
     } else if (open) {
       setForm({
         standard_work_days: 26,
+        actual_work_days: '',
         annual_leave_days: 0,
         sick_leave_certified_days: 0,
         unpaid_leave_days: 0,
@@ -4241,11 +4243,22 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
     const effectiveAbsent = unpaid + (unpaidWeekend * 2);
     const standardDays = Number(form.standard_work_days) || 26;
     const dailyWage = Math.round(baseSalary / standardDays);
-    const actualSalary = effectiveAbsent > 0
-      ? Math.round(baseSalary * (1 - effectiveAbsent / standardDays))
-      : baseSalary;
+    const actualWorkDays = Number(form.actual_work_days) || 0;
+    const isProrated = actualWorkDays > 0 && actualWorkDays < standardDays;
+    let actualSalary;
+    if (isProrated) {
+      const proratedBase = baseSalary * (actualWorkDays / standardDays);
+      actualSalary = effectiveAbsent > 0
+        ? Math.round(proratedBase * (1 - effectiveAbsent / actualWorkDays))
+        : Math.round(proratedBase);
+      if (actualSalary < 0) actualSalary = 0;
+    } else {
+      actualSalary = effectiveAbsent > 0
+        ? Math.round(baseSalary * (1 - effectiveAbsent / standardDays))
+        : baseSalary;
+    }
     const deduction = baseSalary - actualSalary;
-    return { actualSalary, deduction, effectiveAbsent, dailyWage };
+    return { actualSalary, deduction, effectiveAbsent, dailyWage, isProrated, actualWorkDays };
   }, [form, employee]);
 
   // Annual leave check
@@ -4279,6 +4292,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
         period_start: period.period_start,
         period_end: period.period_end,
         standard_work_days: Number(form.standard_work_days) || 26,
+        actual_work_days: form.actual_work_days ? Number(form.actual_work_days) : null,
         annual_leave_days: annualLeave,
         sick_leave_certified_days: sickCertified,
         unpaid_leave_days: unpaid,
@@ -4334,11 +4348,26 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
             • Standar hari kerja: 26 hari/bulan
           </div>
 
-          <Field label="Standar Hari Kerja" hint="Default 26 hari (libur 1x/minggu)">
+          <Field label="Standar Hari Kerja" hint="Default 26 hari (libur 1x/minggu). Ini pembagi gaji harian.">
             <input type="number" className="form-input" value={form.standard_work_days}
               onChange={e => update({ standard_work_days: e.target.value })}
-              min="20" max="31"/>
+              min="1" max="31"/>
           </Field>
+
+          <Field label="Hari Kerja Aktual (opsional — karyawan baru)" hint="Isi HANYA jika karyawan baru masuk pertengahan periode. Contoh: baru kerja 7 hari → gaji proporsional 7/standar. Kosongkan untuk karyawan normal.">
+            <input type="number" className="form-input" value={form.actual_work_days}
+              onChange={e => update({ actual_work_days: e.target.value })}
+              min="1" max="31" placeholder="Kosongkan jika kerja penuh"/>
+          </Field>
+          {preview?.isProrated && (
+            <div style={{padding:'8px 12px',background:'var(--cream)',borderRadius:8,fontSize:12,color:'var(--plum)',marginTop:-6,marginBottom:14}}>
+              💡 Gaji proporsional: {preview.actualWorkDays} dari {Number(form.standard_work_days) || 26} hari
+              = {fmtRp(preview.actualSalary)} (dari {fmtRp(Number(employee.base_salary) || 0)})
+              <div style={{fontSize:11,color:'var(--muted)',marginTop:4}}>
+                Uang makan juga ikut pro-rata. Komisi, home service & tips tetap penuh (sesuai transaksi nyata).
+              </div>
+            </div>
+          )}
 
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:14}}>
             <Field

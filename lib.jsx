@@ -1012,20 +1012,43 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
   // Daily wage = base salary / standard work days
   // Weekend absence counts as 2 days (double deduction)
   const effectiveAbsentDays = unpaidLeave + (unpaidLeaveWeekend * 2);
-  const baseSalaryActual = effectiveAbsentDays > 0
-    ? Math.round(baseSalary * (1 - effectiveAbsentDays / standardDays))
-    : baseSalary;
+
+  // Actual work days (for new employees who started mid-period).
+  // If set (>0), salary is prorated by actualWorkDays / standardDays,
+  // THEN any absence deduction is applied on top of the prorated amount.
+  const actualWorkDays = Number(adjustment?.actual_work_days) || 0;
+  const isProrated = actualWorkDays > 0 && actualWorkDays < standardDays;
+
+  let baseSalaryActual;
+  if (isProrated) {
+    // Prorate to days actually worked, then subtract any absences within those days
+    const proratedBase = baseSalary * (actualWorkDays / standardDays);
+    baseSalaryActual = effectiveAbsentDays > 0
+      ? Math.round(proratedBase * (1 - effectiveAbsentDays / actualWorkDays))
+      : Math.round(proratedBase);
+    if (baseSalaryActual < 0) baseSalaryActual = 0;
+  } else {
+    baseSalaryActual = effectiveAbsentDays > 0
+      ? Math.round(baseSalary * (1 - effectiveAbsentDays / standardDays))
+      : baseSalary;
+  }
 
   const salaryDeduction = baseSalary - baseSalaryActual;
 
+  // Meal allowance is also prorated for new employees (paid per day present)
+  const mealAllowanceActual = isProrated
+    ? Math.round(mealAllowance * (actualWorkDays / standardDays))
+    : mealAllowance;
+
   // Total take-home (tips added — they belong to the beautician)
-  const total = baseSalaryActual + mealAllowance + treatmentCommission + hsCommission + tips + bonus - extraDeduction;
+  const total = baseSalaryActual + mealAllowanceActual + treatmentCommission + hsCommission + tips + bonus - extraDeduction;
 
   return {
     base_salary: baseSalary,
     base_salary_actual: baseSalaryActual,
     salary_deduction: salaryDeduction,
-    meal_allowance: mealAllowance,
+    meal_allowance: mealAllowanceActual,
+    meal_allowance_full: mealAllowance,
     treatment_commission: treatmentCommission,
     hs_commission: hsCommission,
     tips: tips,
@@ -1035,6 +1058,8 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
     unpaid_leave_weekend_days: unpaidLeaveWeekend,
     effective_absent_days: effectiveAbsentDays,
     standard_work_days: standardDays,
+    actual_work_days: actualWorkDays,
+    is_prorated: isProrated,
     bonus,
     extra_deduction: extraDeduction,
     notes: adjustment?.notes || null,
@@ -2356,7 +2381,9 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       ${payroll.salary_deduction > 0 ? `
       <tr>
         <td style="padding-left: 20px; font-size: 11px; color: #6b5b6e;">
-          Potongan absen (${payroll.unpaid_leave_days} hari biasa${payroll.unpaid_leave_weekend_days > 0 ? ` + ${payroll.unpaid_leave_weekend_days} hari weekend × 2` : ''} = ${payroll.effective_absent_days} hari × ${fmtRp(Math.round(payroll.base_salary / payroll.standard_work_days))})
+          ${payroll.is_prorated
+            ? `Pro-rata: kerja ${payroll.actual_work_days} dari ${payroll.standard_work_days} hari${payroll.effective_absent_days > 0 ? ` (− ${payroll.effective_absent_days} hari absen)` : ''}`
+            : `Potongan absen (${payroll.unpaid_leave_days} hari biasa${payroll.unpaid_leave_weekend_days > 0 ? ` + ${payroll.unpaid_leave_weekend_days} hari weekend × 2` : ''} = ${payroll.effective_absent_days} hari × ${fmtRp(Math.round(payroll.base_salary / payroll.standard_work_days))})`}
         </td>
         <td class="cell-num neg">−${fmtRp(payroll.salary_deduction)}</td>
       </tr>
@@ -2366,7 +2393,7 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       </tr>
       ` : ''}
       <tr>
-        <td>Uang Makan</td>
+        <td>Uang Makan${(payroll.is_prorated && payroll.meal_allowance_full > payroll.meal_allowance) ? ` <span style="font-size: 10px; color: #6b5b6e;">(pro-rata ${payroll.actual_work_days}/${payroll.standard_work_days} dari ${fmtRp(payroll.meal_allowance_full)})</span>` : ''}</td>
         <td class="cell-num">${fmtRp(payroll.meal_allowance)}</td>
       </tr>
       <tr>
