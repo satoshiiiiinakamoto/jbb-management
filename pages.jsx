@@ -1342,6 +1342,11 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
 
   const treatmentOptions = useMemoP(() => {
     const set = new Set();
+    // Always include all master treatments (so e.g. Sulam Alis shows even if none yet this period)
+    if (typeof SERVICES !== 'undefined' && Array.isArray(SERVICES)) {
+      for (const s of SERVICES) if (s.name) set.add(s.name);
+    }
+    // Also include any service names found in transactions (covers old/custom names)
     for (const t of trxs) {
       for (const it of (t.items || [])) {
         if (it.service_name) set.add(it.service_name);
