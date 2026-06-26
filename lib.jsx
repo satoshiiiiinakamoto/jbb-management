@@ -1037,6 +1037,7 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
     standard_work_days: standardDays,
     bonus,
     extra_deduction: extraDeduction,
+    notes: adjustment?.notes || null,
     total,
   };
 }
@@ -2337,13 +2338,13 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       ` : ''}
       ${payroll.bonus > 0 ? `
       <tr>
-        <td>Bonus${notesForBonus(payroll) ? ` (${escapeHtml(notesForBonus(payroll))})` : ''}</td>
+        <td>Bonus${(payroll.notes && !(payroll.extra_deduction > 0)) ? ` (${escapeHtml(payroll.notes)})` : ''}</td>
         <td class="cell-num pos">+${fmtRp(payroll.bonus)}</td>
       </tr>
       ` : ''}
       ${payroll.extra_deduction > 0 ? `
       <tr>
-        <td>Potongan Tambahan</td>
+        <td>Potongan Tambahan${payroll.notes ? ` (${escapeHtml(payroll.notes)})` : ''}</td>
         <td class="cell-num neg">−${fmtRp(payroll.extra_deduction)}</td>
       </tr>
       ` : ''}
