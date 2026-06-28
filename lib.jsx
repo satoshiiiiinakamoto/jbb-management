@@ -1481,7 +1481,10 @@ function generateInvoiceHTML(trx) {
   const items = trx.items || [];
   const payments = (trx.payments || []).slice().sort((a, b) => (b.is_dp ? 1 : 0) - (a.is_dp ? 1 : 0));
 
+  // Subtotal = sum of final (discounted) prices. Also compute original subtotal & total discount.
   const subtotal = items.reduce((s, it) => s + Number(it.price || 0), 0);
+  const originalSubtotal = items.reduce((s, it) => s + Number(it.original_price != null ? it.original_price : it.price || 0), 0);
+  const totalDiscount = items.reduce((s, it) => s + Number(it.discount_amount || 0), 0);
   const hsFee = trx.is_home_service ? Number(trx.home_service_fee || 0) : 0;
   const grandTotal = subtotal + hsFee;
 
@@ -1493,10 +1496,32 @@ function generateInvoiceHTML(trx) {
   const now = new Date();
   const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
-  // Build items rows (no "lembur" badge — this is for the client)
+  // Build items rows. Show original price (struck) + discount + final when discounted.
   const itemRows = items.map(it => {
     const empName = it.employee?.full_name || '—';
     const sharePct = (it.share_percent != null && it.share_percent < 100) ? ` (${it.share_percent}%)` : '';
+    const hasDiscount = Number(it.discount_amount || 0) > 0 && it.original_price != null && Number(it.original_price) > Number(it.price);
+    const discLabel = it.discount_type === 'percent' && it.discount_value
+      ? `Diskon ${it.discount_value}%`
+      : 'Diskon';
+    if (hasDiscount) {
+      return `
+      <div class="item">
+        <div class="item-name">${escapeHtml(it.service_name)}${sharePct}</div>
+        <div class="item-row">
+          <span class="item-emp">oleh ${escapeHtml(empName)}</span>
+          <span class="item-strike">${fmtRp(it.original_price)}</span>
+        </div>
+        <div class="item-row">
+          <span class="item-disc">${discLabel}</span>
+          <span class="item-disc">−${fmtRp(it.discount_amount)}</span>
+        </div>
+        <div class="item-row">
+          <span></span>
+          <span class="item-price">${fmtRp(it.price)}</span>
+        </div>
+      </div>`;
+    }
     return `
       <div class="item">
         <div class="item-name">${escapeHtml(it.service_name)}${sharePct}</div>
@@ -1507,17 +1532,25 @@ function generateInvoiceHTML(trx) {
       </div>`;
   }).join('');
 
-  const paymentRows = payments.length > 0
-    ? payments.map(p => `
-        <div class="pay-row">
-          <span>${p.is_dp ? 'DP' : 'Bayar'} (${getPaymentMethodLabel(p.payment_method)})</span>
-          <span>${fmtRp(p.amount)}</span>
-        </div>`).join('')
-    : `<div class="pay-row"><span>Pembayaran (${getPaymentMethodLabel(trx.payment_method || 'cash')})</span><span>${fmtRp(grandTotal)}</span></div>`;
-
+  // Payments: DP rows come first (shown near top of payment block), pelunasan after.
+  const dpPayments = payments.filter(p => p.is_dp);
   const totalPaid = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
-  const showSisa = payments.length > 0 && totalPaid < grandTotal;
+  const totalDp = dpPayments.reduce((s, p) => s + Number(p.amount || 0), 0);
+  const hasDp = dpPayments.length > 0;
   const sisa = grandTotal - totalPaid;
+  const showSisa = payments.length > 0 && totalPaid < grandTotal;
+
+  // DP rows shown at TOP (after meta), so the bottom total is the final amount due/paid.
+  const dpTopRows = hasDp
+    ? dpPayments.map(p => `
+        <div class="meta-row dp-row"><span>DP (${getPaymentMethodLabel(p.payment_method)})</span><span>−${fmtRp(p.amount)}</span></div>`).join('')
+    : '';
+
+  // Final payment method (for the bottom). If DP exists, bottom shows the remaining payment method.
+  const finalPayment = payments.find(p => !p.is_dp);
+  const finalMethodLabel = finalPayment
+    ? getPaymentMethodLabel(finalPayment.payment_method)
+    : getPaymentMethodLabel(trx.payment_method || 'cash');
 
   const officialName = isViali ? 'VIALI' : 'JBB';
 
@@ -1565,10 +1598,16 @@ function generateInvoiceHTML(trx) {
   .item-row { display: flex; justify-content: space-between; font-size: 10px; }
   .item-emp { color: #333; font-style: italic; }
   .item-price { white-space: nowrap; }
+  .item-strike { white-space: nowrap; text-decoration: line-through; color: #999; font-size: 9px; }
+  .item-disc { white-space: nowrap; color: #a00; font-size: 9px; }
   .totals { font-size: 11px; }
   .total-row { display: flex; justify-content: space-between; }
+  .disc-line { color: #a00; }
   .grand { font-weight: bold; font-size: 13px; }
+  .dp-row { font-size: 10px; color: #b8893d; margin-top: 2px; }
   .pay-row { display: flex; justify-content: space-between; font-size: 10px; }
+  .pay-final { display: flex; justify-content: space-between; font-weight: bold; font-size: 15px; margin-top: 2px; }
+  .pay-note { text-align: right; font-size: 9px; color: #4a7c59; margin-top: 2px; }
   .sisa { display: flex; justify-content: space-between; font-weight: bold; color: #a00; }
   .footer { text-align: center; font-size: 9px; margin-top: 8px; color: #333; }
   .footer-thanks { font-family: 'Cormorant Garamond', serif; font-size: 13px; font-weight: 600; margin-bottom: 2px; }
@@ -1612,15 +1651,21 @@ function generateInvoiceHTML(trx) {
     <div class="divider"></div>
 
     <div class="totals">
+      ${totalDiscount > 0 ? `<div class="total-row"><span>Subtotal (sebelum diskon)</span><span>${fmtRp(originalSubtotal)}</span></div>` : ''}
+      ${totalDiscount > 0 ? `<div class="total-row disc-line"><span>Total Diskon</span><span>−${fmtRp(totalDiscount)}</span></div>` : ''}
       <div class="total-row"><span>Subtotal</span><span>${fmtRp(subtotal)}</span></div>
       ${hsFee > 0 ? `<div class="total-row"><span>Biaya Home Service</span><span>${fmtRp(hsFee)}</span></div>` : ''}
       <div class="total-row grand"><span>TOTAL</span><span>${fmtRp(grandTotal)}</span></div>
+      ${hasDp ? dpTopRows : ''}
     </div>
 
     <div class="divider"></div>
 
-    ${paymentRows}
-    ${showSisa ? `<div class="sisa"><span>SISA</span><span>${fmtRp(sisa)}</span></div>` : ''}
+    <div class="pay-final">
+      <span>${hasDp ? `SISA BAYAR (${finalMethodLabel})` : `TOTAL BAYAR (${finalMethodLabel})`}</span>
+      <span>${fmtRp(hasDp ? sisa : grandTotal)}</span>
+    </div>
+    ${(hasDp && sisa <= 0) ? `<div class="pay-note">✓ Lunas (DP menutupi total)</div>` : ''}
 
     <div class="footer">
       <div class="footer-thanks">Terima Kasih</div>
@@ -1664,6 +1709,8 @@ function drawInvoiceToCanvas(trx) {
   const items = trx.items || [];
   const payments = (trx.payments || []).slice().sort((a, b) => (b.is_dp ? 1 : 0) - (a.is_dp ? 1 : 0));
   const subtotal = items.reduce((s, it) => s + Number(it.price || 0), 0);
+  const originalSubtotal = items.reduce((s, it) => s + Number(it.original_price != null ? it.original_price : it.price || 0), 0);
+  const totalDiscount = items.reduce((s, it) => s + Number(it.discount_amount || 0), 0);
   const hsFee = trx.is_home_service ? Number(trx.home_service_fee || 0) : 0;
   const grandTotal = subtotal + hsFee;
   const trxNo = (trx.id || '').replace(/-/g, '').slice(-6).toUpperCase();
@@ -1671,8 +1718,11 @@ function drawInvoiceToCanvas(trx) {
   const now = new Date();
   const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   const totalPaid = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
-  const showSisa = payments.length > 0 && totalPaid < grandTotal;
+  const dpPayments = payments.filter(p => p.is_dp);
+  const hasDp = dpPayments.length > 0;
   const sisa = grandTotal - totalPaid;
+  const finalPayment = payments.find(p => !p.is_dp);
+  const finalMethodLabel = finalPayment ? getPaymentMethodLabel(finalPayment.payment_method) : getPaymentMethodLabel(trx.payment_method || 'cash');
   const officialName = isViali ? 'VIALI' : 'JBB';
 
   const SCALE = 3;
@@ -1732,25 +1782,41 @@ function drawInvoiceToCanvas(trx) {
   for (const it of items) {
     const empName = it.employee?.full_name || '—';
     const sharePct = (it.share_percent != null && it.share_percent < 100) ? ` (${it.share_percent}%)` : '';
+    const hasDiscount = Number(it.discount_amount || 0) > 0 && it.original_price != null && Number(it.original_price) > Number(it.price);
     addWrapped(it.service_name + sharePct, F(13, 'bold'), '#000', 'left', 16);
-    addRow('oleh ' + empName, fmtRp(it.price), F(11), '#333');
+    if (hasDiscount) {
+      const discLabel = it.discount_type === 'percent' && it.discount_value ? `Diskon ${it.discount_value}%` : 'Diskon';
+      addRow('oleh ' + empName, fmtRp(it.original_price), F(11), '#999');
+      addRow(discLabel, '-' + fmtRp(it.discount_amount), F(10), '#a00');
+      addRow('', fmtRp(it.price), F(12, 'bold'), '#000');
+    } else {
+      addRow('oleh ' + empName, fmtRp(it.price), F(11), '#333');
+    }
     addGap(3);
   }
   addDivider();
 
   // TOTALS
+  if (totalDiscount > 0) {
+    addRow('Subtotal (asli)', fmtRp(originalSubtotal), F(11), '#666');
+    addRow('Total Diskon', '-' + fmtRp(totalDiscount), F(11), '#a00');
+  }
   addRow('Subtotal', fmtRp(subtotal), F(12), '#000');
   if (hsFee > 0) addRow('Biaya Home Service', fmtRp(hsFee), F(11), '#000');
   addRow('TOTAL', fmtRp(grandTotal), F(15, 'bold'), '#000');
+  // DP shown here (top), so bottom = final amount
+  if (hasDp) {
+    for (const p of dpPayments) addRow(`DP (${getPaymentMethodLabel(p.payment_method)})`, '-' + fmtRp(p.amount), F(11), '#b8893d');
+  }
   addDivider();
 
-  // PAYMENTS
-  if (payments.length > 0) {
-    for (const p of payments) addRow(`${p.is_dp ? 'DP' : 'Bayar'} (${getPaymentMethodLabel(p.payment_method)})`, fmtRp(p.amount), F(11), '#000');
+  // FINAL PAYMENT (bold, bottom)
+  if (hasDp) {
+    addRow(`SISA BAYAR (${finalMethodLabel})`, fmtRp(sisa > 0 ? sisa : 0), F(15, 'bold'), '#000');
+    if (sisa <= 0) addRow('', 'Lunas (DP menutupi total)', F(10), '#4a7c59');
   } else {
-    addRow(`Pembayaran (${getPaymentMethodLabel(trx.payment_method || 'cash')})`, fmtRp(grandTotal), F(11), '#000');
+    addRow(`TOTAL BAYAR (${finalMethodLabel})`, fmtRp(grandTotal), F(15, 'bold'), '#000');
   }
-  if (showSisa) addRow('SISA', fmtRp(sisa), F(12, 'bold'), '#a00');
 
   // FOOTER
   addGap(8);
@@ -2832,6 +2898,7 @@ async function getTransactionDetail(transactionId) {
         id, employee_id, service_name, service_category,
         price, commission_type, commission_rate, commission_amount, notes,
         share_group_id, share_percent,
+        original_price, discount_type, discount_value, discount_amount,
         employee:employees(id, full_name, job_title)
       ),
       payments:transaction_payments(*),
