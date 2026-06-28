@@ -400,7 +400,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
   const [tips, setTips] = useStateP([{ employee_id: '', amount: '', payment_method: 'qris' }]);
   // shareWith: array of additional employee_ids (multi-employee support)
   // share_percents: parallel array of percentages [main, ...sharedWith]
-  const [items, setItems] = useStateP([{ employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '', share_with: [], share_percents: [100] }]);
+  const [items, setItems] = useStateP([{ employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '', share_with: [], share_percents: [100], discount_type: 'none', discount_value: '' }]);
   const [employees, setEmployees] = useStateP([]);
   const [loadingEmployees, setLoadingEmployees] = useStateP(true);
   const [submitting, setSubmitting] = useStateP(false);
@@ -440,16 +440,36 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
     setItems(prev => prev.map((it, i) => i === idx ? { ...it, ...patch } : it));
   }
   function addItem() {
-    setItems(prev => [...prev, { employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '', share_with: [], share_percents: [100] }]);
+    setItems(prev => [...prev, { employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '', share_with: [], share_percents: [100], discount_type: 'none', discount_value: '' }]);
   }
   function removeItem(idx) {
     setItems(prev => prev.length === 1 ? prev : prev.filter((_, i) => i !== idx));
+  }
+
+  // Compute discount amount for an item based on type (percent/nominal) and original price
+  function getItemDiscount(item) {
+    const orig = Number(item.price) || 0;
+    if (!item.discount_type || item.discount_type === 'none' || !item.discount_value) return 0;
+    const val = Number(item.discount_value) || 0;
+    if (val <= 0) return 0;
+    if (item.discount_type === 'percent') {
+      return Math.round(orig * Math.min(val, 100) / 100);
+    }
+    // nominal
+    return Math.min(Math.round(val), orig);  // can't discount more than price
+  }
+
+  // Effective (discounted) price — this is what commission & omset use
+  function getItemEffectivePrice(item) {
+    const orig = Number(item.price) || 0;
+    return Math.max(0, orig - getItemDiscount(item));
   }
 
   function getItemCommission(item) {
     if (!item.service_name) return { rate: 0, amount: 0, type: 'percent' };
 
     const svc = getServiceDef(item.service_name);
+    const effectivePrice = getItemEffectivePrice(item);
 
     // If commission_override has value (HS mode), use it directly (for percent type only)
     // For fixed_amount (Sulam Alis), always use fixed_commission as before
@@ -463,14 +483,15 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
 
     return calcCommission({
       serviceName: item.service_name,
-      price: Number(item.price) || 0,
+      price: effectivePrice,
       fixedAmount: Number(item.fixed_commission) || 0,
       isOT,
       branchId: effectiveBranchId,
     });
   }
 
-  const totalAmount = items.reduce((sum, it) => sum + (Number(it.price) || 0), 0);
+  const totalAmount = items.reduce((sum, it) => sum + getItemEffectivePrice(it), 0);
+  const totalDiscount = items.reduce((sum, it) => sum + getItemDiscount(it), 0);
   const totalCommission = items.reduce((sum, it) => sum + getItemCommission(it).amount, 0);
   const totalForEmployee = totalCommission + (isHomeService ? (Number(homeServiceFee) || 0) : 0);
 
@@ -513,9 +534,13 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
       for (const it of items) {
         const allEmps = [it.employee_id, ...(it.share_with || [])];
         const isShared = allEmps.length > 1;
-        const totalPrice = Number(it.price);
+        const originalPrice = Number(it.price) || 0;
+        const itemDiscount = getItemDiscount(it);
+        const effectivePrice = getItemEffectivePrice(it);  // price after discount
+        const totalPrice = effectivePrice;  // commission & omset use discounted price
         const com = getItemCommission(it);
         const dbCommissionType = com.type === 'percent_manual' ? 'percent' : com.type;
+        const hasDiscount = it.discount_type && it.discount_type !== 'none' && itemDiscount > 0;
 
         // Generate share_group_id once per treatment (only used if shared)
         const shareGroupId = isShared ? (crypto.randomUUID ? crypto.randomUUID() : ('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c==='x' ? r : (r&0x3|0x8)).toString(16); }))) : null;
@@ -523,15 +548,16 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
         allEmps.forEach((empId, idx) => {
           const sharePercent = isShared ? Number(it.share_percents[idx] || 0) : 100;
           const splitPrice = Math.round(totalPrice * sharePercent / 100);
+          // Split original price & discount proportionally too (for invoice display)
+          const splitOriginal = Math.round(originalPrice * sharePercent / 100);
+          const splitDiscount = Math.round(itemDiscount * sharePercent / 100);
 
           // For shared: recalculate commission based on split price
           let splitCommissionAmount;
           if (isShared) {
             if (com.type === 'fixed_amount') {
-              // Fixed commission is also split by share percent
               splitCommissionAmount = Math.round(com.amount * sharePercent / 100);
             } else {
-              // Percentage-based: rate × split_price
               splitCommissionAmount = Math.round(splitPrice * com.rate / 100);
             }
           } else {
@@ -548,12 +574,16 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
             notes: it.notes || null,
             share_group_id: shareGroupId,
             share_percent: sharePercent,
+            original_price: hasDiscount ? splitOriginal : splitPrice,
+            discount_type: hasDiscount ? it.discount_type : null,
+            discount_value: hasDiscount ? (Number(it.discount_value) || 0) : null,
+            discount_amount: hasDiscount ? splitDiscount : 0,
           });
         });
       }
 
-      // Build payments array based on hasDp
-      const grandTotal = items.reduce((sum, it) => sum + (Number(it.price) || 0), 0)
+      // Build payments array based on hasDp (use discounted prices)
+      const grandTotal = items.reduce((sum, it) => sum + getItemEffectivePrice(it), 0)
         + (isHomeService ? (Number(homeServiceFee) || 0) : 0);
 
       let paymentsArr = null;
@@ -741,6 +771,55 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
                           </Field>
                         )}
                       </div>
+
+                      {/* Diskon per treatment */}
+                      {Number(item.price) > 0 && (
+                        <div style={{marginTop:10,padding:'10px 12px',background:'var(--cream)',borderRadius:8}}>
+                          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:(item.discount_type && item.discount_type !== 'none')?10:0,flexWrap:'wrap'}}>
+                            <span style={{fontSize:12,fontWeight:500,color:'var(--plum)'}}>🏷️ Diskon:</span>
+                            <div style={{display:'flex',gap:4}}>
+                              <button type="button"
+                                className={'btn btn-sm ' + ((!item.discount_type || item.discount_type === 'none') ? 'btn-primary' : 'btn-ghost')}
+                                onClick={() => updateItem(idx, { discount_type: 'none', discount_value: '' })}>
+                                Tanpa Diskon
+                              </button>
+                              <button type="button"
+                                className={'btn btn-sm ' + (item.discount_type === 'percent' ? 'btn-primary' : 'btn-ghost')}
+                                onClick={() => updateItem(idx, { discount_type: 'percent' })}>
+                                Persen (%)
+                              </button>
+                              <button type="button"
+                                className={'btn btn-sm ' + (item.discount_type === 'nominal' ? 'btn-primary' : 'btn-ghost')}
+                                onClick={() => updateItem(idx, { discount_type: 'nominal' })}>
+                                Nominal (Rp)
+                              </button>
+                            </div>
+                          </div>
+                          {item.discount_type && item.discount_type !== 'none' && (
+                            <div>
+                              <div className="form-row">
+                                <Field label={item.discount_type === 'percent' ? 'Diskon (%)' : 'Diskon (Rp)'}>
+                                  <input type="number" className="form-input" value={item.discount_value}
+                                    onChange={e => updateItem(idx, { discount_value: e.target.value })}
+                                    placeholder={item.discount_type === 'percent' ? '10' : '50000'}
+                                    min="0" step="any" max={item.discount_type === 'percent' ? '100' : undefined}/>
+                                </Field>
+                                <Field label="Harga Setelah Diskon">
+                                  <input type="text" className="form-input" disabled
+                                    value={fmtRp(getItemEffectivePrice(item))}
+                                    style={{background:'var(--mauve-tint)',color:'var(--plum)',fontWeight:600}}/>
+                                </Field>
+                              </div>
+                              {getItemDiscount(item) > 0 && (
+                                <div style={{fontSize:12,color:'var(--hijau)',marginTop:-4}}>
+                                  Hemat {fmtRp(getItemDiscount(item))} · Komisi & omset dihitung dari harga setelah diskon
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       {svc && (
                         <div style={{marginTop:8,padding:'8px 12px',background:'var(--paper)',borderRadius:6,fontSize:12,color:'var(--muted)',display:'flex',justifyContent:'space-between'}}>
                           <span>
@@ -1171,7 +1250,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
 
           <Card>
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:12,marginBottom:18}}>
-              <Metric label="Total Omset" value={fmtRp(totalAmount)} sub={`${items.length} treatment`}/>
+              <Metric label="Total Omset" value={fmtRp(totalAmount)} sub={totalDiscount > 0 ? `setelah diskon ${fmtRp(totalDiscount)}` : `${items.length} treatment`}/>
               <Metric label="Komisi Treatment" value={fmtRp(totalCommission)} sub={isOT ? '⚠️ termasuk lembur' : ''}/>
               {isHomeService && <Metric label="Komisi Home Service" value={fmtRp(Number(homeServiceFee) || 0)} sub="100% untuk karyawan"/>}
               <Metric label="Total ke Karyawan" value={fmtRp(totalForEmployee)} sub="komisi total"/>

@@ -409,6 +409,10 @@ async function createTransaction({
       notes: it.notes || null,
       share_group_id: it.share_group_id || null,
       share_percent: it.share_percent != null ? Number(it.share_percent) : 100,
+      original_price: it.original_price != null ? Number(it.original_price) : (Number(it.price) || 0),
+      discount_type: it.discount_type || null,
+      discount_value: it.discount_value != null ? Number(it.discount_value) : null,
+      discount_amount: it.discount_amount != null ? Number(it.discount_amount) : 0,
     };
   });
 
