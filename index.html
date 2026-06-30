@@ -368,18 +368,28 @@
     /* Show ALL tabs inline (wrap to multiple lines), no hamburger */
     .topnav-tabs{
       display:flex !important;
-      flex-wrap:wrap;
-      gap:4px;
+      flex-direction:row !important;
+      flex-wrap:wrap !important;
+      justify-content:flex-start;
+      align-items:center;
+      gap:5px;
+      flex:1 0 100%;
       width:100%;
+      max-width:100%;
       order:3;
       overflow:visible;
-      margin-top:4px;
+      margin-top:6px;
     }
     .topnav-tab{
-      padding:5px 10px;
+      display:inline-flex;
+      align-items:center;
+      width:auto !important;
+      padding:5px 11px;
       font-size:11px;
+      line-height:1.2;
       border-radius:100px;
-      flex:0 0 auto;
+      flex:0 0 auto !important;
+      white-space:nowrap;
     }
     /* Hamburger hidden — all tabs visible */
     .topnav-hamburger{
