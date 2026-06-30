@@ -360,46 +360,31 @@
     /* Top nav */
     .topnav-inner{
       padding:10px 14px;
-      gap:10px;
-      flex-wrap:nowrap;
+      gap:8px;
+      flex-wrap:wrap;
     }
     .topnav-brand{font-size:18px}
     .topnav-brand .ko{display:none}
+    /* Show ALL tabs inline (wrap to multiple lines), no hamburger */
     .topnav-tabs{
-      display:none !important;  /* Hide tabs, show hamburger instead */
-    }
-    .topnav-tabs.mobile-open{
       display:flex !important;
-      flex-direction:column;
-      position:fixed;
-      top:60px;left:0;right:0;
-      background:var(--paper);
-      box-shadow:0 4px 20px rgba(0,0,0,0.15);
-      padding:16px;
-      gap:6px;
-      z-index:50;
-      max-height:calc(100vh - 60px);
-      overflow-y:auto;
-    }
-    .topnav-tabs.mobile-open .topnav-tab{
+      flex-wrap:wrap;
+      gap:4px;
       width:100%;
-      padding:14px 18px;
-      font-size:14px;
-      text-align:left;
-      border-radius:10px;
+      order:3;
+      overflow:visible;
+      margin-top:4px;
     }
+    .topnav-tab{
+      padding:5px 10px;
+      font-size:11px;
+      border-radius:100px;
+      flex:0 0 auto;
+    }
+    /* Hamburger hidden — all tabs visible */
     .topnav-hamburger{
-      display:flex !important;
-      align-items:center;
-      justify-content:center;
-      width:42px;height:42px;
-      border-radius:10px;
-      background:var(--mauve-tint);
-      cursor:pointer;
-      flex-shrink:0;
-      border:none;
+      display:none !important;
     }
-    .topnav-hamburger:active{background:var(--mauve);color:#fff}
     .topnav-user{
       gap:8px;
       font-size:11px;
