@@ -1226,11 +1226,22 @@ function formatAuditValue(field, value) {
 // =====================================================
 
 // Generic: export array of objects to .xlsx
-function exportToExcel(filename, sheets) {
+async function exportToExcel(filename, sheets) {
   // sheets: [{ name: 'Sheet1', rows: [{col1: val, col2: val}, ...] }, ...]
+  // Lazy-load the Excel library on first use (kept out of initial page load for speed)
   if (typeof XLSX === 'undefined') {
-    toast('Library Excel belum ter-load. Refresh halaman.', 'error');
-    return;
+    if (typeof window.__loadXLSX === 'function') {
+      try {
+        toast('Menyiapkan file Excel…', 'success');
+        await window.__loadXLSX();
+      } catch (e) {
+        toast('Gagal memuat library Excel. Cek koneksi internet.', 'error');
+        return;
+      }
+    } else {
+      toast('Library Excel belum ter-load. Refresh halaman.', 'error');
+      return;
+    }
   }
 
   const wb = XLSX.utils.book_new();
@@ -1662,10 +1673,10 @@ function generateInvoiceHTML(trx) {
     <div class="divider"></div>
 
     <div class="pay-final">
-      <span>${hasDp ? `SISA BAYAR (${finalMethodLabel})` : `TOTAL BAYAR (${finalMethodLabel})`}</span>
-      <span>${fmtRp(hasDp ? sisa : grandTotal)}</span>
+      <span>${(hasDp && sisa > 0) ? `SISA BAYAR (${finalMethodLabel})` : `TOTAL BAYAR (${finalMethodLabel})`}</span>
+      <span>${fmtRp((hasDp && sisa > 0) ? sisa : grandTotal)}</span>
     </div>
-    ${(hasDp && sisa <= 0) ? `<div class="pay-note">✓ Lunas (DP menutupi total)</div>` : ''}
+    ${(sisa <= 0) ? `<div class="pay-note">✓ LUNAS</div>` : ''}
 
     <div class="footer">
       <div class="footer-thanks">Terima Kasih</div>
@@ -1811,11 +1822,11 @@ function drawInvoiceToCanvas(trx) {
   addDivider();
 
   // FINAL PAYMENT (bold, bottom)
-  if (hasDp) {
-    addRow(`SISA BAYAR (${finalMethodLabel})`, fmtRp(sisa > 0 ? sisa : 0), F(15, 'bold'), '#000');
-    if (sisa <= 0) addRow('', 'Lunas (DP menutupi total)', F(10), '#4a7c59');
+  if (hasDp && sisa > 0) {
+    addRow(`SISA BAYAR (${finalMethodLabel})`, fmtRp(sisa), F(15, 'bold'), '#000');
   } else {
     addRow(`TOTAL BAYAR (${finalMethodLabel})`, fmtRp(grandTotal), F(15, 'bold'), '#000');
+    if (sisa <= 0 && hasDp) addRow('', '✓ LUNAS', F(10), '#4a7c59');
   }
 
   // FOOTER
