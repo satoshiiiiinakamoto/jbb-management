@@ -1485,6 +1485,53 @@ function getBranchInfo(branchId, fallbackName = '') {
 
 // Generate thermal-receipt HTML (58mm) for a transaction.
 // trx = result of getTransactionDetail (has branch, items[].employee, payments[])
+// Group items done together (same share_group_id) into one logical line for invoices.
+// A treatment done by 2+ beauticians is stored as multiple rows (split price);
+// for the client-facing invoice we merge them: combined names + full price.
+function groupSharedInvoiceItems(rawItems) {
+  const groups = [];
+  const byGroup = {};
+  for (const it of (rawItems || [])) {
+    const gid = it.share_group_id;
+    if (gid) {
+      if (!byGroup[gid]) {
+        byGroup[gid] = {
+          service_name: it.service_name,
+          discount_type: it.discount_type,
+          discount_value: it.discount_value,
+          price: 0, original_price: 0, discount_amount: 0,
+          names: [],
+        };
+        groups.push(byGroup[gid]);
+      }
+      const g = byGroup[gid];
+      g.price += Number(it.price || 0);
+      g.original_price += Number(it.original_price != null ? it.original_price : it.price || 0);
+      g.discount_amount += Number(it.discount_amount || 0);
+      if (it.employee?.full_name) g.names.push(it.employee.full_name);
+    } else {
+      groups.push({
+        service_name: it.service_name,
+        discount_type: it.discount_type,
+        discount_value: it.discount_value,
+        price: Number(it.price || 0),
+        original_price: Number(it.original_price != null ? it.original_price : it.price || 0),
+        discount_amount: Number(it.discount_amount || 0),
+        names: it.employee?.full_name ? [it.employee.full_name] : [],
+      });
+    }
+  }
+  return groups;
+}
+
+// Format names naturally: "A", "A dan B", "A, B dan C"
+function formatBeauticianNames(names) {
+  if (!names || names.length === 0) return '—';
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} dan ${names[1]}`;
+  return names.slice(0, -1).join(', ') + ' dan ' + names[names.length - 1];
+}
+
 function generateInvoiceHTML(trx) {
   const brand = getBrandForBranch(trx.branch_id);
   const isViali = trx.branch_id === 'vli';
@@ -1507,18 +1554,20 @@ function generateInvoiceHTML(trx) {
   const now = new Date();
   const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
+  // Group items done together (same share_group_id) into ONE line for the invoice.
+  const groupedItems = groupSharedInvoiceItems(items);
+
   // Build items rows. Show original price (struck) + discount + final when discounted.
-  const itemRows = items.map(it => {
-    const empName = it.employee?.full_name || '—';
-    const sharePct = (it.share_percent != null && it.share_percent < 100) ? ` (${it.share_percent}%)` : '';
-    const hasDiscount = Number(it.discount_amount || 0) > 0 && it.original_price != null && Number(it.original_price) > Number(it.price);
+  const itemRows = groupedItems.map(it => {
+    const empName = formatBeauticianNames(it.names);
+    const hasDiscount = Number(it.discount_amount || 0) > 0 && Number(it.original_price) > Number(it.price);
     const discLabel = it.discount_type === 'percent' && it.discount_value
       ? `Diskon ${it.discount_value}%`
       : 'Diskon';
     if (hasDiscount) {
       return `
       <div class="item">
-        <div class="item-name">${escapeHtml(it.service_name)}${sharePct}</div>
+        <div class="item-name">${escapeHtml(it.service_name)}</div>
         <div class="item-row">
           <span class="item-emp">oleh ${escapeHtml(empName)}</span>
           <span class="item-strike">${fmtRp(it.original_price)}</span>
@@ -1535,7 +1584,7 @@ function generateInvoiceHTML(trx) {
     }
     return `
       <div class="item">
-        <div class="item-name">${escapeHtml(it.service_name)}${sharePct}</div>
+        <div class="item-name">${escapeHtml(it.service_name)}</div>
         <div class="item-row">
           <span class="item-emp">oleh ${escapeHtml(empName)}</span>
           <span class="item-price">${fmtRp(it.price)}</span>
@@ -1551,17 +1600,14 @@ function generateInvoiceHTML(trx) {
   const sisa = grandTotal - totalPaid;
   const showSisa = payments.length > 0 && totalPaid < grandTotal;
 
-  // DP rows shown at TOP (after meta), so the bottom total is the final amount due/paid.
-  const dpTopRows = hasDp
-    ? dpPayments.map(p => `
-        <div class="meta-row dp-row"><span>DP (${getPaymentMethodLabel(p.payment_method)})</span><span>−${fmtRp(p.amount)}</span></div>`).join('')
-    : '';
-
-  // Final payment method (for the bottom). If DP exists, bottom shows the remaining payment method.
-  const finalPayment = payments.find(p => !p.is_dp);
-  const finalMethodLabel = finalPayment
-    ? getPaymentMethodLabel(finalPayment.payment_method)
-    : getPaymentMethodLabel(trx.payment_method || 'cash');
+  // Payment breakdown: show each payment (DP + pelunasan) with method & amount.
+  // Example: "DP (QRIS) Rp 150.000" + "Pelunasan (QRIS) Rp 249.000"
+  const paymentBreakdownRows = payments.length > 0
+    ? payments.map(p => {
+        const label = p.is_dp ? `DP (${getPaymentMethodLabel(p.payment_method)})` : `Pelunasan (${getPaymentMethodLabel(p.payment_method)})`;
+        return `<div class="total-row"><span>${label}</span><span>${fmtRp(p.amount)}</span></div>`;
+      }).join('')
+    : `<div class="total-row"><span>Pembayaran (${getPaymentMethodLabel(trx.payment_method || 'cash')})</span><span>${fmtRp(grandTotal)}</span></div>`;
 
   const officialName = isViali ? 'VIALI' : 'JBB';
 
@@ -1667,16 +1713,22 @@ function generateInvoiceHTML(trx) {
       <div class="total-row"><span>Subtotal</span><span>${fmtRp(subtotal)}</span></div>
       ${hsFee > 0 ? `<div class="total-row"><span>Biaya Home Service</span><span>${fmtRp(hsFee)}</span></div>` : ''}
       <div class="total-row grand"><span>TOTAL</span><span>${fmtRp(grandTotal)}</span></div>
-      ${hasDp ? dpTopRows : ''}
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="totals">
+      ${paymentBreakdownRows}
+      ${sisa > 0 ? `<div class="total-row" style="color:#a00;font-weight:bold;"><span>SISA BELUM DIBAYAR</span><span>${fmtRp(sisa)}</span></div>` : ''}
     </div>
 
     <div class="divider"></div>
 
     <div class="pay-final">
-      <span>${(hasDp && sisa > 0) ? `SISA BAYAR (${finalMethodLabel})` : `TOTAL BAYAR (${finalMethodLabel})`}</span>
-      <span>${fmtRp((hasDp && sisa > 0) ? sisa : grandTotal)}</span>
+      <span>${sisa > 0 ? 'SUDAH DIBAYAR' : 'TOTAL DIBAYAR'}</span>
+      <span>${fmtRp(totalPaid)}</span>
     </div>
-    ${(sisa <= 0) ? `<div class="pay-note">✓ LUNAS</div>` : ''}
+    ${(sisa <= 0 && payments.length > 0) ? `<div class="pay-note">✓ LUNAS</div>` : ''}
 
     <div class="footer">
       <div class="footer-thanks">Terima Kasih</div>
@@ -1789,12 +1841,12 @@ function drawInvoiceToCanvas(trx) {
   if (trx.is_home_service) addRow('', '(Home Service)', F(12), '#000');
   addDivider();
 
-  // ITEMS
-  for (const it of items) {
-    const empName = it.employee?.full_name || '—';
-    const sharePct = (it.share_percent != null && it.share_percent < 100) ? ` (${it.share_percent}%)` : '';
-    const hasDiscount = Number(it.discount_amount || 0) > 0 && it.original_price != null && Number(it.original_price) > Number(it.price);
-    addWrapped(it.service_name + sharePct, F(13, 'bold'), '#000', 'left', 16);
+  // ITEMS (grouped: treatment done together shows as one line with combined names)
+  const groupedItems = groupSharedInvoiceItems(items);
+  for (const it of groupedItems) {
+    const empName = formatBeauticianNames(it.names);
+    const hasDiscount = Number(it.discount_amount || 0) > 0 && Number(it.original_price) > Number(it.price);
+    addWrapped(it.service_name, F(13, 'bold'), '#000', 'left', 16);
     if (hasDiscount) {
       const discLabel = it.discount_type === 'percent' && it.discount_value ? `Diskon ${it.discount_value}%` : 'Diskon';
       addRow('oleh ' + empName, fmtRp(it.original_price), F(11), '#999');
@@ -1815,19 +1867,23 @@ function drawInvoiceToCanvas(trx) {
   addRow('Subtotal', fmtRp(subtotal), F(12), '#000');
   if (hsFee > 0) addRow('Biaya Home Service', fmtRp(hsFee), F(11), '#000');
   addRow('TOTAL', fmtRp(grandTotal), F(15, 'bold'), '#000');
-  // DP shown here (top), so bottom = final amount
-  if (hasDp) {
-    for (const p of dpPayments) addRow(`DP (${getPaymentMethodLabel(p.payment_method)})`, '-' + fmtRp(p.amount), F(11), '#b8893d');
-  }
   addDivider();
 
-  // FINAL PAYMENT (bold, bottom)
-  if (hasDp && sisa > 0) {
-    addRow(`SISA BAYAR (${finalMethodLabel})`, fmtRp(sisa), F(15, 'bold'), '#000');
+  // PAYMENT BREAKDOWN — DP + pelunasan, each with method
+  if (payments.length > 0) {
+    for (const p of payments) {
+      const label = p.is_dp ? `DP (${getPaymentMethodLabel(p.payment_method)})` : `Pelunasan (${getPaymentMethodLabel(p.payment_method)})`;
+      addRow(label, fmtRp(p.amount), F(11), '#000');
+    }
   } else {
-    addRow(`TOTAL BAYAR (${finalMethodLabel})`, fmtRp(grandTotal), F(15, 'bold'), '#000');
-    if (sisa <= 0 && hasDp) addRow('', '✓ LUNAS', F(10), '#4a7c59');
+    addRow(`Pembayaran (${getPaymentMethodLabel(trx.payment_method || 'cash')})`, fmtRp(grandTotal), F(11), '#000');
   }
+  if (sisa > 0) addRow('SISA BELUM DIBAYAR', fmtRp(sisa), F(12, 'bold'), '#a00');
+  addDivider();
+
+  // TOTAL DIBAYAR (bold, bottom)
+  addRow(sisa > 0 ? 'SUDAH DIBAYAR' : 'TOTAL DIBAYAR', fmtRp(totalPaid), F(15, 'bold'), '#000');
+  if (sisa <= 0 && payments.length > 0) addRow('', '✓ LUNAS', F(10), '#4a7c59');
 
   // FOOTER
   addGap(8);

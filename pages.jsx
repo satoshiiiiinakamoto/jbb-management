@@ -3471,6 +3471,7 @@ function ReportsPage({ profile, currentBranchId, branches }) {
   const [paymentFlow, setPaymentFlow] = useStateP([]);
   const [loading, setLoading] = useStateP(true);
   const [flowDetailMethod, setFlowDetailMethod] = useStateP(null);  // payment method clicked for detail
+  const [showOmsetDetail, setShowOmsetDetail] = useStateP(false);   // Total Omset clicked → show all transactions
 
   // Effective date range
   const range = useMemoP(() => {
@@ -3612,11 +3613,17 @@ function ReportsPage({ profile, currentBranchId, branches }) {
         <>
           {/* SUMMARY METRICS */}
           <div className="metrics-grid" style={{marginBottom:20}}>
-            <Metric
-              label={employeeFilter ? 'Total Revenue (Treatment-nya)' : 'Total Omset'}
-              value={fmtRp(stats.totalRevenue)}
-              sub={`${stats.trxCount} transaksi · ${stats.itemCount} treatment`}
-            />
+            <div onClick={() => setShowOmsetDetail(true)}
+              title="Klik untuk lihat semua transaksi di periode ini"
+              style={{cursor:'pointer',transition:'all 0.15s',borderRadius:12}}
+              onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 2px 8px rgba(122,102,126,0.15)'; }}
+              onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none'; }}>
+              <Metric
+                label={(employeeFilter ? 'Total Revenue (Treatment-nya)' : 'Total Omset') + ' 🔍'}
+                value={fmtRp(stats.totalRevenue)}
+                sub={`${stats.trxCount} transaksi · ${stats.itemCount} treatment`}
+              />
+            </div>
             <Metric
               label="Total Komisi"
               value={fmtRp(stats.totalCommission)}
@@ -3777,6 +3784,68 @@ function ReportsPage({ profile, currentBranchId, branches }) {
                                 <div style={{textAlign:'right',whiteSpace:'nowrap'}}>
                                   <div style={{fontWeight:600,color:'var(--plum-deep)'}}>{fmtRp(methodAmt)}</div>
                                   {isDpPartial && <div style={{fontSize:10,color:'var(--amber)',marginTop:2}}>termasuk DP</div>}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* TOTAL OMSET DETAIL MODAL */}
+          {showOmsetDetail && (() => {
+            const sorted = [...transactions].sort((a, b) => {
+              const dA = a.date || '', dB = b.date || '';
+              if (dA !== dB) return dA < dB ? 1 : -1;  // newest first
+              return (b.start_time || '').localeCompare(a.start_time || '');
+            });
+            return (
+              <div style={{position:'fixed',inset:0,background:'rgba(36,26,44,0.6)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+                onClick={() => setShowOmsetDetail(false)}>
+                <div style={{background:'var(--paper)',borderRadius:16,padding:0,maxWidth:600,width:'100%',maxHeight:'85vh',display:'flex',flexDirection:'column',overflow:'hidden'}}
+                  onClick={e => e.stopPropagation()}>
+                  {/* Header */}
+                  <div style={{padding:'18px 20px',borderBottom:'1px solid var(--line)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <div>
+                      <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:22,fontWeight:600,color:'var(--plum-deep)'}}>
+                        {employeeFilter ? 'Detail Revenue' : 'Detail Total Omset'}
+                      </div>
+                      <div style={{fontSize:12,color:'var(--muted)',marginTop:3}}>
+                        {sorted.length} transaksi · Total {fmtRp(stats.totalRevenue)}
+                      </div>
+                    </div>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setShowOmsetDetail(false)}>✕ Tutup</button>
+                  </div>
+                  {/* List */}
+                  <div style={{overflowY:'auto',padding:'12px 16px'}}>
+                    {sorted.length === 0 ? (
+                      <Empty title="Tidak ada transaksi" sub="Belum ada transaksi di periode ini."/>
+                    ) : (
+                      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                        {sorted.map(t => {
+                          const empNames = [...new Set((t.items || []).map(i => i.employee?.full_name).filter(Boolean))].join(', ');
+                          const omset = Number(t.total_amount || 0) + (t.is_home_service ? Number(t.home_service_fee || 0) : 0);
+                          return (
+                            <div key={t.id} style={{padding:'10px 12px',background:'var(--paper)',border:'1px solid var(--line)',borderRadius:10}}>
+                              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10}}>
+                                <div style={{flex:1,minWidth:0}}>
+                                  <div style={{fontWeight:500,fontSize:14}}>{t.client_name_snapshot || '-'}</div>
+                                  <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>
+                                    {fmtDate(t.date)}{t.start_time ? ` · ${t.start_time.slice(0,5)}` : ''}
+                                    {empNames ? ` · ${empNames}` : ''}
+                                  </div>
+                                  <div style={{fontSize:11,color:'var(--mauve)',marginTop:2}}>
+                                    {(t.items || []).map(i => i.service_name).join(', ')}
+                                  </div>
+                                </div>
+                                <div style={{textAlign:'right',whiteSpace:'nowrap'}}>
+                                  <div style={{fontWeight:600,color:'var(--plum-deep)'}}>{fmtRp(omset)}</div>
+                                  {t.is_home_service && <div style={{fontSize:10,color:'var(--amber)',marginTop:2}}>+ home service</div>}
                                 </div>
                               </div>
                             </div>
