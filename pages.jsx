@@ -4580,7 +4580,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
             </div>
           )}
 
-          <Field label="BPJS Kesehatan (Rp)" hint="Subsidi BPJS dari perusahaan, ditambahkan ke gaji. Biasanya 35.000. Kosongkan/0 jika tidak ada.">
+          <Field label="BPJS Kesehatan (Rp)" hint="Tunjangan BPJS dari perusahaan, ditambahkan ke gaji. Biasanya 35.000. Kosongkan/0 jika tidak ada.">
             <input type="number" className="form-input" value={form.bpjs_kesehatan}
               onChange={e => update({ bpjs_kesehatan: e.target.value })}
               min="0" step="any" placeholder="35000"/>

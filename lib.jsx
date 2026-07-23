@@ -2554,7 +2554,7 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       </tr>
       ${(payroll.bpjs_kesehatan || 0) > 0 ? `
       <tr>
-        <td>BPJS Kesehatan <span style="font-size: 10px; color: #6b5b6e;">(subsidi perusahaan)</span></td>
+        <td>BPJS Kesehatan <span style="font-size: 10px; color: #6b5b6e;">(tunjangan dari perusahaan)</span></td>
         <td class="cell-num">${fmtRp(payroll.bpjs_kesehatan)}</td>
       </tr>
       ` : ''}
