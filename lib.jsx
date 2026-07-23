@@ -1048,8 +1048,17 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
     ? Math.round(mealAllowance * (actualWorkDays / standardDays))
     : mealAllowance;
 
-  // Total take-home (tips added — they belong to the beautician)
-  const total = baseSalaryActual + mealAllowanceActual + treatmentCommission + hsCommission + tips + bonus - extraDeduction;
+  // BPJS Kesehatan subsidy from company (fixed monthly amount, not prorated —
+  // the premium is due monthly regardless of days worked)
+  const bpjsKesehatan = Number(adjustment?.bpjs_kesehatan) || 0;
+
+  // Gross take-home BEFORE any extra deduction (kasbon etc).
+  // Shown on the slip so the employee sees their salary without deductions.
+  const totalBeforeDeduction = baseSalaryActual + mealAllowanceActual + bpjsKesehatan
+    + treatmentCommission + hsCommission + tips + bonus;
+
+  // Final take-home after extra deduction (kasbon)
+  const total = totalBeforeDeduction - extraDeduction;
 
   return {
     base_salary: baseSalary,
@@ -1057,6 +1066,7 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
     salary_deduction: salaryDeduction,
     meal_allowance: mealAllowanceActual,
     meal_allowance_full: mealAllowance,
+    bpjs_kesehatan: bpjsKesehatan,
     treatment_commission: treatmentCommission,
     hs_commission: hsCommission,
     tips: tips,
@@ -1071,6 +1081,7 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
     bonus,
     extra_deduction: extraDeduction,
     notes: adjustment?.notes || null,
+    total_before_deduction: totalBeforeDeduction,
     total,
   };
 }
@@ -1185,6 +1196,7 @@ const AUDIT_FIELD_LABELS = {
   role: 'Role',
   base_salary: 'Gaji Pokok',
   meal_allowance: 'Uang Makan',
+  bpjs_kesehatan: 'BPJS Kesehatan',
   branch_id: 'Cabang',
   is_active: 'Status Aktif',
   // payroll
@@ -1373,10 +1385,11 @@ function exportPayrollToExcel({ rows, periodLabel, branchLabel, totals }) {
       { Metric: 'Jumlah Karyawan', Nilai: rows.length },
       { Metric: 'Total Gaji Pokok (setelah potong)', Nilai: totals.base },
       { Metric: 'Total Uang Makan', Nilai: totals.meal },
+      { Metric: 'Total BPJS Kesehatan', Nilai: totals.bpjs || 0 },
       { Metric: 'Total Komisi', Nilai: totals.commission },
       { Metric: 'Total Tips', Nilai: totals.tips || 0 },
       { Metric: 'Total Bonus', Nilai: totals.bonus },
-      { Metric: 'Total Potongan Tambahan', Nilai: totals.deduction },
+      { Metric: 'Total Potongan / Kasbon', Nilai: totals.deduction },
       { Metric: 'TOTAL PAYROLL', Nilai: totals.total },
     ],
   });
@@ -1390,6 +1403,7 @@ function exportPayrollToExcel({ rows, periodLabel, branchLabel, totals }) {
     'Gaji Pokok (Aktual)': r.payroll.base_salary_actual,
     Potongan: r.payroll.salary_deduction,
     'Uang Makan': r.payroll.meal_allowance,
+    'BPJS Kesehatan': r.payroll.bpjs_kesehatan || 0,
     'Komisi Treatment': r.payroll.treatment_commission,
     'Komisi HS': r.payroll.hs_commission,
     'Tips': r.payroll.tips || 0,
@@ -1399,7 +1413,8 @@ function exportPayrollToExcel({ rows, periodLabel, branchLabel, totals }) {
     'Absen Weekend (hari)': r.payroll.unpaid_leave_weekend_days || 0,
     'Standar Hari Kerja': r.payroll.standard_work_days,
     Bonus: r.payroll.bonus,
-    'Potongan Tambahan': r.payroll.extra_deduction,
+    'Gaji Diterima (sblm potongan)': r.payroll.total_before_deduction != null ? r.payroll.total_before_deduction : (r.payroll.total + r.payroll.extra_deduction),
+    'Potongan / Kasbon': r.payroll.extra_deduction,
     'TOTAL GAJI': r.payroll.total,
   }));
   sheets.push({ name: 'Detail Gaji', rows: payrollRows });
@@ -2537,6 +2552,12 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
         <td>Uang Makan${(payroll.is_prorated && payroll.meal_allowance_full > payroll.meal_allowance) ? ` <span style="font-size: 10px; color: #6b5b6e;">(pro-rata ${payroll.actual_work_days}/${payroll.standard_work_days} dari ${fmtRp(payroll.meal_allowance_full)})</span>` : ''}</td>
         <td class="cell-num">${fmtRp(payroll.meal_allowance)}</td>
       </tr>
+      ${(payroll.bpjs_kesehatan || 0) > 0 ? `
+      <tr>
+        <td>BPJS Kesehatan <span style="font-size: 10px; color: #6b5b6e;">(subsidi perusahaan)</span></td>
+        <td class="cell-num">${fmtRp(payroll.bpjs_kesehatan)}</td>
+      </tr>
+      ` : ''}
       <tr>
         <td>Komisi Treatment</td>
         <td class="cell-num">${fmtRp(payroll.treatment_commission)}</td>
@@ -2560,15 +2581,24 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       </tr>
       ` : ''}
       ${payroll.extra_deduction > 0 ? `
+      <tr class="breakdown-row-bold">
+        <td>GAJI DITERIMA</td>
+        <td class="cell-num">${fmtRp(payroll.total_before_deduction != null ? payroll.total_before_deduction : (payroll.total + payroll.extra_deduction))}</td>
+      </tr>
       <tr>
-        <td>Potongan Tambahan${payroll.notes ? ` (${escapeHtml(payroll.notes)})` : ''}</td>
+        <td>Potongan / Kasbon${payroll.notes ? ` (${escapeHtml(payroll.notes)})` : ''}</td>
         <td class="cell-num neg">−${fmtRp(payroll.extra_deduction)}</td>
       </tr>
-      ` : ''}
       <tr class="breakdown-row-final">
-        <td>TOTAL GAJI BERSIH</td>
+        <td>GAJI DITERIMA SETELAH POTONGAN</td>
         <td class="cell-num">${fmtRp(payroll.total)}</td>
       </tr>
+      ` : `
+      <tr class="breakdown-row-final">
+        <td>GAJI DITERIMA</td>
+        <td class="cell-num">${fmtRp(payroll.total)}</td>
+      </tr>
+      `}
     </tbody>
   </table>
 

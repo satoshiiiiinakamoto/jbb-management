@@ -4364,6 +4364,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
         sick_leave_certified_days: currentAdjustment.sick_leave_certified_days || 0,
         unpaid_leave_days: currentAdjustment.unpaid_leave_days || 0,
         unpaid_leave_weekend_days: currentAdjustment.unpaid_leave_weekend_days || 0,
+        bpjs_kesehatan: currentAdjustment.bpjs_kesehatan || 0,
         bonus: currentAdjustment.bonus || 0,
         extra_deduction: currentAdjustment.extra_deduction || 0,
         notes: currentAdjustment.notes || '',
@@ -4376,6 +4377,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
         sick_leave_certified_days: 0,
         unpaid_leave_days: 0,
         unpaid_leave_weekend_days: 0,
+        bpjs_kesehatan: 0,
         bonus: 0,
         extra_deduction: 0,
         notes: '',
@@ -4450,6 +4452,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
         sick_leave_certified_days: sickCertified,
         unpaid_leave_days: unpaid,
         unpaid_leave_weekend_days: Number(form.unpaid_leave_weekend_days) || 0,
+        bpjs_kesehatan: Number(form.bpjs_kesehatan) || 0,
         bonus: Number(form.bonus) || 0,
         extra_deduction: Number(form.extra_deduction) || 0,
         notes: form.notes || null,
@@ -4577,13 +4580,19 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
             </div>
           )}
 
+          <Field label="BPJS Kesehatan (Rp)" hint="Subsidi BPJS dari perusahaan, ditambahkan ke gaji. Biasanya 35.000. Kosongkan/0 jika tidak ada.">
+            <input type="number" className="form-input" value={form.bpjs_kesehatan}
+              onChange={e => update({ bpjs_kesehatan: e.target.value })}
+              min="0" step="any" placeholder="35000"/>
+          </Field>
+
           <div className="form-row">
             <Field label="Bonus (Rp)" hint="THR, insentif, dll. Opsional">
               <input type="number" className="form-input" value={form.bonus}
                 onChange={e => update({ bonus: e.target.value })}
                 min="0" step="any" placeholder="0"/>
             </Field>
-            <Field label="Potongan Tambahan (Rp)" hint="Denda telat, kasbon, dll. Opsional">
+            <Field label="Potongan / Kasbon (Rp)" hint="Kasbon, denda telat, dll. Dipotong dari gaji. Opsional">
               <input type="number" className="form-input" value={form.extra_deduction}
                 onChange={e => update({ extra_deduction: e.target.value })}
                 min="0" step="any" placeholder="0"/>
@@ -4671,12 +4680,13 @@ function PayrollPage({ profile, currentBranchId, branches }) {
     return rows.reduce((acc, r) => ({
       base: acc.base + r.payroll.base_salary_actual,
       meal: acc.meal + r.payroll.meal_allowance,
+      bpjs: acc.bpjs + (r.payroll.bpjs_kesehatan || 0),
       commission: acc.commission + r.payroll.treatment_commission + r.payroll.hs_commission,
       tips: acc.tips + (r.payroll.tips || 0),
       bonus: acc.bonus + r.payroll.bonus,
       deduction: acc.deduction + r.payroll.extra_deduction,
       total: acc.total + r.payroll.total,
-    }), { base: 0, meal: 0, commission: 0, tips: 0, bonus: 0, deduction: 0, total: 0 });
+    }), { base: 0, meal: 0, bpjs: 0, commission: 0, tips: 0, bonus: 0, deduction: 0, total: 0 });
   }, [rows]);
 
   const scopeLabel = effectiveBranchId
@@ -5444,6 +5454,7 @@ function EmployeeDashboardView({
           base_salary_actual: Number(employee.base_salary) || 0,
           salary_deduction: 0,
           meal_allowance: Number(employee.meal_allowance) || 0,
+          bpjs_kesehatan: 0,
           treatment_commission: stats?.period_commission || 0,
           hs_commission: 0,
           tips: totalTips,
@@ -5453,6 +5464,7 @@ function EmployeeDashboardView({
           standard_work_days: 26,
           bonus: 0,
           extra_deduction: 0,
+          total_before_deduction: (Number(employee.base_salary) || 0) + (Number(employee.meal_allowance) || 0) + (stats?.period_commission || 0) + totalTips,
           total: (Number(employee.base_salary) || 0) + (Number(employee.meal_allowance) || 0) + (stats?.period_commission || 0) + totalTips,
         },
         items,
