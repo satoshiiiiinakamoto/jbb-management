@@ -493,6 +493,17 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
   const totalAmount = items.reduce((sum, it) => sum + getItemEffectivePrice(it), 0);
   const totalDiscount = items.reduce((sum, it) => sum + getItemDiscount(it), 0);
   const totalCommission = items.reduce((sum, it) => sum + getItemCommission(it).amount, 0);
+  // Distinct beauticians on this transaction (main + join partners).
+  // The home service fee is shared equally between them.
+  const distinctWorkers = (() => {
+    const ids = new Set();
+    for (const it of items) {
+      if (it.employee_id) ids.add(it.employee_id);
+      for (const sid of (it.share_with || [])) if (sid) ids.add(sid);
+    }
+    return Math.max(1, ids.size);
+  })();
+  const hsPerWorker = isHomeService ? Math.round((Number(homeServiceFee) || 0) / distinctWorkers) : 0;
   const totalForEmployee = totalCommission + (isHomeService ? (Number(homeServiceFee) || 0) : 0);
 
   async function handleSubmit(e) {
@@ -1252,7 +1263,15 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:12,marginBottom:18}}>
               <Metric label="Total Omset" value={fmtRp(totalAmount)} sub={totalDiscount > 0 ? `setelah diskon ${fmtRp(totalDiscount)}` : `${items.length} treatment`}/>
               <Metric label="Komisi Treatment" value={fmtRp(totalCommission)} sub={isOT ? '⚠️ termasuk lembur' : ''}/>
-              {isHomeService && <Metric label="Komisi Home Service" value={fmtRp(Number(homeServiceFee) || 0)} sub="100% untuk karyawan"/>}
+              {isHomeService && (
+                <Metric
+                  label="Komisi Home Service"
+                  value={fmtRp(Number(homeServiceFee) || 0)}
+                  sub={distinctWorkers > 1
+                    ? `dibagi ${distinctWorkers} karyawan · ${fmtRp(hsPerWorker)} per orang`
+                    : '100% untuk karyawan'}
+                />
+              )}
               <Metric label="Total ke Karyawan" value={fmtRp(totalForEmployee)} sub="komisi total"/>
             </div>
             <div style={{display:'flex',gap:10,justifyContent:'flex-end',flexWrap:'wrap'}}>

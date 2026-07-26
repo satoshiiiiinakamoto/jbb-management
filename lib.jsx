@@ -2010,7 +2010,8 @@ async function getEmployeePeriodTransactions(employeeId, periodStart, periodEnd)
       share_group_id, share_percent,
       transaction:transactions(
         id, date, start_time, is_overtime, is_home_service, home_service_fee,
-        client_name_snapshot, client_phone_snapshot
+        client_name_snapshot, client_phone_snapshot,
+        all_items:transaction_items(employee_id)
       )
     `)
     .eq('employee_id', employeeId)
@@ -2073,6 +2074,11 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
         home_service_fee: Number(it.transaction.home_service_fee || 0),
         client_name: it.transaction.client_name_snapshot || '—',
         client_phone: it.transaction.client_phone_snapshot || '',
+        // How many distinct beauticians worked this transaction — the home service
+        // fee is shared equally between them (not given in full to each).
+        worker_count: Math.max(1, new Set(
+          (it.transaction.all_items || []).map(x => x.employee_id).filter(Boolean)
+        ).size),
         items: [],
       };
     }
@@ -2085,13 +2091,16 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
   const trxList = Object.values(byTrx).sort((a, b) => a.date.localeCompare(b.date));
 
   for (const trx of trxList) {
-    // For HS transactions: distribute the home_service_fee across items equally
-    // So each item's "komisi" cell shows its portion of the HS fee in gold
+    // Home service fee is shared equally between all beauticians who worked the
+    // transaction. This slip belongs to ONE employee, so take their share first,
+    // then spread that share across their own items in the transaction.
     const isHS = trx.is_home_service;
     const hsFee = Number(trx.home_service_fee || 0);
-    const hsPortionPerItem = isHS && trx.items.length > 0 ? Math.round(hsFee / trx.items.length) : 0;
-    // Handle remainder so total still equals hsFee (last item gets the remainder)
-    const hsRemainder = isHS ? hsFee - (hsPortionPerItem * trx.items.length) : 0;
+    const workerCount = Math.max(1, Number(trx.worker_count) || 1);
+    const hsShareForThisEmployee = isHS ? Math.round(hsFee / workerCount) : 0;
+    const hsPortionPerItem = isHS && trx.items.length > 0 ? Math.round(hsShareForThisEmployee / trx.items.length) : 0;
+    // Handle remainder so the employee's items still total their full share
+    const hsRemainder = isHS ? hsShareForThisEmployee - (hsPortionPerItem * trx.items.length) : 0;
 
     for (let i = 0; i < trx.items.length; i++) {
       const it = trx.items[i];
