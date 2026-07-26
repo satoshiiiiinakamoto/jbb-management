@@ -1333,7 +1333,9 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
   const isSuper = profile.role === 'super_admin';
   const isBranchAdmin = profile.role === 'branch_admin';
   const canEdit = isSuper || isBranchAdmin;
-  const canDelete = isSuper;
+  // Branch admin may delete transactions in their own branch (data is already
+  // scoped to their branch); super admin may delete anywhere.
+  const canDelete = isSuper || isBranchAdmin;
 
   // Compute date range based on filter preset
   function getDateRange() {
@@ -4413,7 +4415,29 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
         : baseSalary;
     }
     const deduction = baseSalary - actualSalary;
-    return { actualSalary, deduction, effectiveAbsent, dailyWage, isProrated, actualWorkDays };
+
+    // Meal allowance: reduced by unpaid absence (weekend counted once, not doubled).
+    // Paid leave (annual/certified sick) does not reduce it.
+    const mealFull = Number(employee.meal_allowance) || 0;
+    const mealAbsent = unpaid + unpaidWeekend;
+    const mealDaysBase = isProrated ? actualWorkDays : standardDays;
+    let actualMeal;
+    if (isProrated) {
+      const proratedMeal = mealFull * (actualWorkDays / standardDays);
+      actualMeal = mealAbsent > 0
+        ? Math.round(proratedMeal * (1 - mealAbsent / actualWorkDays))
+        : Math.round(proratedMeal);
+    } else {
+      actualMeal = mealAbsent > 0
+        ? Math.round(mealFull * (1 - mealAbsent / standardDays))
+        : mealFull;
+    }
+    if (actualMeal < 0) actualMeal = 0;
+    const mealDeduction = mealFull - actualMeal;
+    const mealDaysPaid = Math.max(0, mealDaysBase - mealAbsent);
+
+    return { actualSalary, deduction, effectiveAbsent, dailyWage, isProrated, actualWorkDays,
+             mealFull, actualMeal, mealDeduction, mealAbsent, mealDaysPaid, mealDaysBase };
   }, [form, employee]);
 
   // Annual leave check
@@ -4577,6 +4601,17 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
                 )}
                 Total potongan: <strong style={{color:'var(--red)'}}>{fmtRp(preview.deduction)}</strong> ({preview.effectiveAbsent} hari efektif)
               </span>
+              {preview.mealDeduction > 0 && (
+                <>
+                  <div style={{borderTop:'1px solid var(--amber)',margin:'8px 0',opacity:0.5}}/>
+                  Uang makan {fmtRp(preview.mealFull)} → <strong style={{color:'var(--red)'}}>{fmtRp(preview.actualMeal)}</strong><br/>
+                  <span style={{fontSize:11,color:'var(--muted)'}}>
+                    Dibayar {preview.mealDaysPaid} dari {preview.mealDaysBase} hari
+                    (absen {preview.mealAbsent} hari, weekend dihitung 1 hari)<br/>
+                    Potongan uang makan: <strong style={{color:'var(--red)'}}>{fmtRp(preview.mealDeduction)}</strong>
+                  </span>
+                </>
+              )}
             </div>
           )}
 

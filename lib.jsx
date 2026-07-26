@@ -1043,10 +1043,29 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
 
   const salaryDeduction = baseSalary - baseSalaryActual;
 
-  // Meal allowance is also prorated for new employees (paid per day present)
-  const mealAllowanceActual = isProrated
-    ? Math.round(mealAllowance * (actualWorkDays / standardDays))
-    : mealAllowance;
+  // Meal allowance is paid per day actually present.
+  // Rules: unpaid absence reduces it (weekend counted ONCE, not doubled like base
+  // salary), while paid leave (annual leave / certified sick) does NOT reduce it.
+  const mealAbsentDays = unpaidLeave + unpaidLeaveWeekend;
+
+  let mealAllowanceActual;
+  let mealDaysBase;   // days the meal allowance is counted against
+  if (isProrated) {
+    mealDaysBase = actualWorkDays;
+    const proratedMeal = mealAllowance * (actualWorkDays / standardDays);
+    mealAllowanceActual = mealAbsentDays > 0
+      ? Math.round(proratedMeal * (1 - mealAbsentDays / actualWorkDays))
+      : Math.round(proratedMeal);
+  } else {
+    mealDaysBase = standardDays;
+    mealAllowanceActual = mealAbsentDays > 0
+      ? Math.round(mealAllowance * (1 - mealAbsentDays / standardDays))
+      : mealAllowance;
+  }
+  if (mealAllowanceActual < 0) mealAllowanceActual = 0;
+
+  const mealDeduction = mealAllowance - mealAllowanceActual;
+  const mealDaysPaid = Math.max(0, mealDaysBase - mealAbsentDays);
 
   // BPJS Kesehatan subsidy from company (fixed monthly amount, not prorated —
   // the premium is due monthly regardless of days worked)
@@ -1066,6 +1085,10 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
     salary_deduction: salaryDeduction,
     meal_allowance: mealAllowanceActual,
     meal_allowance_full: mealAllowance,
+    meal_deduction: mealDeduction,
+    meal_absent_days: mealAbsentDays,
+    meal_days_paid: mealDaysPaid,
+    meal_days_base: mealDaysBase,
     bpjs_kesehatan: bpjsKesehatan,
     treatment_commission: treatmentCommission,
     hs_commission: hsCommission,
@@ -2548,10 +2571,29 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
         <td class="cell-num" style="font-weight: 500;">${fmtRp(payroll.base_salary_actual)}</td>
       </tr>
       ` : ''}
+      ${(payroll.meal_deduction || 0) > 0 ? `
       <tr>
-        <td>Uang Makan${(payroll.is_prorated && payroll.meal_allowance_full > payroll.meal_allowance) ? ` <span style="font-size: 10px; color: #6b5b6e;">(pro-rata ${payroll.actual_work_days}/${payroll.standard_work_days} dari ${fmtRp(payroll.meal_allowance_full)})</span>` : ''}</td>
+        <td>Uang Makan</td>
+        <td class="cell-num">${fmtRp(payroll.meal_allowance_full)}</td>
+      </tr>
+      <tr>
+        <td style="padding-left: 20px; font-size: 11px; color: #6b5b6e;">
+          ${payroll.is_prorated
+            ? `Pro-rata + absen: dibayar ${payroll.meal_days_paid} dari ${payroll.standard_work_days} hari`
+            : `Potongan absen ${payroll.meal_absent_days} hari (dibayar ${payroll.meal_days_paid} dari ${payroll.meal_days_base} hari)`}
+        </td>
+        <td class="cell-num neg">−${fmtRp(payroll.meal_deduction)}</td>
+      </tr>
+      <tr>
+        <td style="padding-left: 20px; font-style: italic; color: #6b5b6e;">Uang Makan Aktual</td>
+        <td class="cell-num" style="font-weight: 500;">${fmtRp(payroll.meal_allowance)}</td>
+      </tr>
+      ` : `
+      <tr>
+        <td>Uang Makan</td>
         <td class="cell-num">${fmtRp(payroll.meal_allowance)}</td>
       </tr>
+      `}
       ${(payroll.bpjs_kesehatan || 0) > 0 ? `
       <tr>
         <td>BPJS Kesehatan <span style="font-size: 10px; color: #6b5b6e;">(tunjangan dari perusahaan)</span></td>
