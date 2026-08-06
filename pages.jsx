@@ -6863,7 +6863,13 @@ function FaceScanCamera({ employeeName, kind, onCancel, onCaptured }) {
           position:absolute; left:6%; right:6%; height:3px;
           background:linear-gradient(90deg, transparent, #c9a961, #fff, #c9a961, transparent);
           box-shadow:0 0 14px 3px rgba(201,169,97,0.65);
-          animation: jbbScanLine 1.6s ease-in-out infinite;
+          animation: jbbScanLine 2.6s ease-in-out infinite;
+        }
+        /* Saat memindai, garis bergerak lebih cepat dan lebih terang */
+        .jbb-scan-line.fast {
+          animation-duration: 1.2s;
+          height:4px;
+          box-shadow:0 0 18px 5px rgba(201,169,97,0.85);
         }
         .jbb-corner {
           position:absolute; width:34px; height:34px;
@@ -6905,8 +6911,10 @@ function FaceScanCamera({ employeeName, kind, onCancel, onCaptured }) {
                 }}/>
               )}
 
-              {/* Garis pemindai */}
-              {phase === 'scanning' && <div className="jbb-scan-line"/>}
+              {/* Garis pemindai — sudah berjalan sejak kamera siap */}
+              {(phase === 'ready' || phase === 'scanning') && (
+                <div className={'jbb-scan-line' + (phase === 'scanning' ? ' fast' : '')}/>
+              )}
 
               {/* Hasil */}
               {phase === 'done' && (
@@ -6918,9 +6926,9 @@ function FaceScanCamera({ employeeName, kind, onCancel, onCaptured }) {
               )}
 
               {/* Status pemindaian */}
-              {phase === 'scanning' && (
+              {(phase === 'ready' || phase === 'scanning') && (
                 <div style={{position:'absolute',bottom:14,left:0,right:0,color:'#c9a961',fontSize:12,fontWeight:600,letterSpacing:'0.06em'}}>
-                  MEMINDAI WAJAH...
+                  {phase === 'scanning' ? 'MEMINDAI WAJAH...' : 'POSISIKAN WAJAH DI DALAM OVAL'}
                 </div>
               )}
             </div>
@@ -7118,6 +7126,22 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                     )}
                   </div>
                 </div>
+                {(r.clock_in_lat != null || r.clock_out_lat != null) && (
+                  <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid var(--line)',display:'flex',gap:14,flexWrap:'wrap',fontSize:11,color:'var(--muted)'}}>
+                    {r.clock_in_lat != null && (
+                      <a href={mapsLinkFor(r.clock_in_lat, r.clock_in_lng)} target="_blank" rel="noopener noreferrer"
+                        style={{color:'var(--mauve)',textDecoration:'none'}}>
+                        📍 Lokasi masuk{r.clock_in_accuracy != null ? ` (±${r.clock_in_accuracy}m)` : ''}
+                      </a>
+                    )}
+                    {r.clock_out_lat != null && (
+                      <a href={mapsLinkFor(r.clock_out_lat, r.clock_out_lng)} target="_blank" rel="noopener noreferrer"
+                        style={{color:'var(--mauve)',textDecoration:'none'}}>
+                        📍 Lokasi pulang{r.clock_out_accuracy != null ? ` (±${r.clock_out_accuracy}m)` : ''}
+                      </a>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>

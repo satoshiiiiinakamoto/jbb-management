@@ -3945,6 +3945,35 @@ function calcEarlyLeaveMinutes(at = new Date()) {
   return diff > 0 ? diff : 0;
 }
 
+// Ambil lokasi perangkat. TIDAK PERNAH menggagalkan absensi:
+// kalau izin ditolak, sinyal lemah, atau kelamaan, hasilnya null.
+function getDeviceLocation(timeoutMs = 8000) {
+  return new Promise(resolve => {
+    if (!navigator.geolocation) return resolve(null);
+    let settled = false;
+    const finish = val => { if (!settled) { settled = true; resolve(val); } };
+    const timer = setTimeout(() => finish(null), timeoutMs + 500);
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        clearTimeout(timer);
+        finish({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy != null ? Math.round(pos.coords.accuracy) : null,
+        });
+      },
+      () => { clearTimeout(timer); finish(null); },
+      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 30000 }
+    );
+  });
+}
+
+// Link Google Maps dari koordinat (untuk laporan)
+function mapsLinkFor(lat, lng) {
+  if (lat == null || lng == null) return null;
+  return `https://www.google.com/maps?q=${lat},${lng}`;
+}
+
 // Upload selfie absensi (blob dari kamera), kembalikan storage path
 async function uploadAttendancePhoto(blob, branchId, employeeId, kind) {
   const now = new Date();
@@ -4000,6 +4029,7 @@ async function clockIn({ employeeId, branchId, photoBlob }) {
 
   const photoPath = photoBlob ? await uploadAttendancePhoto(photoBlob, branchId, employeeId, 'in') : null;
   const createdBy = (await sb.auth.getUser()).data?.user?.id || null;
+  const loc = await getDeviceLocation();
 
   const payload = {
     branch_id: branchId,
@@ -4009,6 +4039,9 @@ async function clockIn({ employeeId, branchId, photoBlob }) {
     clock_in_photo: photoPath,
     late_minutes: calcLateMinutes(now),
     created_by: createdBy,
+    clock_in_lat: loc?.lat ?? null,
+    clock_in_lng: loc?.lng ?? null,
+    clock_in_accuracy: loc?.accuracy ?? null,
   };
 
   if (existing?.id) {
@@ -4037,6 +4070,7 @@ async function clockOut({ employeeId, branchId, photoBlob }) {
   if (existing.clock_out_at) throw new Error('Sudah absen pulang hari ini');
 
   const photoPath = photoBlob ? await uploadAttendancePhoto(photoBlob, branchId, employeeId, 'out') : null;
+  const loc = await getDeviceLocation();
 
   const { data, error } = await sb
     .from('attendance')
@@ -4044,6 +4078,9 @@ async function clockOut({ employeeId, branchId, photoBlob }) {
       clock_out_at: now.toISOString(),
       clock_out_photo: photoPath,
       early_leave_minutes: calcEarlyLeaveMinutes(now),
+      clock_out_lat: loc?.lat ?? null,
+      clock_out_lng: loc?.lng ?? null,
+      clock_out_accuracy: loc?.accuracy ?? null,
     })
     .eq('id', existing.id)
     .select()
@@ -4124,6 +4161,7 @@ Object.assign(window, {
   clockIn, clockOut, getTodayAttendance, listAttendance, getAttendancePhotoUrl,
   getAttendanceSummary, calcLateMinutes, calcEarlyLeaveMinutes, todayDateStr,
   isAttendanceExempt, attendanceExemptReason, NO_ATTENDANCE_TITLES,
+  getDeviceLocation, mapsLinkFor,
   WORK_START, WORK_END,
   markPhotoMarketing, refreshPhotoSignedUrl, updatePhotoSkipReason,
   listMarketingPhotos, listAllPhotos,
