@@ -3872,6 +3872,179 @@ async function getCashBalance({ from, to, branchId = null }) {
 }
 
 // Expose
+// =====================================================
+// ABSENSI (Attendance)
+// =====================================================
+const ATTENDANCE_BUCKET = 'attendance-photos';
+// Jam kerja standar
+const WORK_START = { hour: 9, minute: 30 };   // masuk 09:30
+const WORK_END = { hour: 19, minute: 30 };    // pulang 19:30
+// Toleransi telat (menit) sebelum dihitung terlambat
+const LATE_TOLERANCE_MINUTES = 0;
+
+function todayDateStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Hitung menit keterlambatan dibanding jam masuk standar
+function calcLateMinutes(at = new Date()) {
+  const sched = new Date(at);
+  sched.setHours(WORK_START.hour, WORK_START.minute, 0, 0);
+  const diff = Math.floor((at - sched) / 60000);
+  const late = diff - LATE_TOLERANCE_MINUTES;
+  return late > 0 ? late : 0;
+}
+
+// Hitung menit pulang lebih awal dibanding jam pulang standar
+function calcEarlyLeaveMinutes(at = new Date()) {
+  const sched = new Date(at);
+  sched.setHours(WORK_END.hour, WORK_END.minute, 0, 0);
+  const diff = Math.floor((sched - at) / 60000);
+  return diff > 0 ? diff : 0;
+}
+
+// Upload selfie absensi (blob dari kamera), kembalikan storage path
+async function uploadAttendancePhoto(blob, branchId, employeeId, kind) {
+  const now = new Date();
+  const yyyymm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const storagePath = `${branchId}/${yyyymm}/${employeeId}_${kind}_${Date.now()}.jpg`;
+  const { error } = await sb.storage
+    .from(ATTENDANCE_BUCKET)
+    .upload(storagePath, blob, { contentType: 'image/jpeg', cacheControl: '3600', upsert: false });
+  if (error) throw error;
+  return storagePath;
+}
+
+// Ambil absensi hari ini untuk satu cabang
+async function getTodayAttendance(branchId) {
+  const { data, error } = await sb
+    .from('attendance')
+    .select('*, employee:employees(id, full_name, job_title)')
+    .eq('branch_id', branchId)
+    .eq('date', todayDateStr());
+  if (error) throw error;
+  return data || [];
+}
+
+// Ambil absensi satu rentang tanggal (untuk laporan & gaji)
+async function listAttendance(branchId, from, to) {
+  let query = sb
+    .from('attendance')
+    .select('*, employee:employees(id, full_name, job_title)')
+    .gte('date', from)
+    .lte('date', to)
+    .order('date', { ascending: false });
+  if (branchId) query = query.eq('branch_id', branchId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+// Catat jam masuk (buat baris baru)
+async function clockIn({ employeeId, branchId, photoBlob }) {
+  const now = new Date();
+  const date = todayDateStr();
+
+  // Cegah dobel absen masuk
+  const { data: existing } = await sb
+    .from('attendance')
+    .select('id, clock_in_at')
+    .eq('employee_id', employeeId)
+    .eq('date', date)
+    .maybeSingle();
+  if (existing?.clock_in_at) {
+    throw new Error('Sudah absen masuk hari ini');
+  }
+
+  const photoPath = photoBlob ? await uploadAttendancePhoto(photoBlob, branchId, employeeId, 'in') : null;
+  const createdBy = (await sb.auth.getUser()).data?.user?.id || null;
+
+  const payload = {
+    branch_id: branchId,
+    employee_id: employeeId,
+    date,
+    clock_in_at: now.toISOString(),
+    clock_in_photo: photoPath,
+    late_minutes: calcLateMinutes(now),
+    created_by: createdBy,
+  };
+
+  if (existing?.id) {
+    const { data, error } = await sb.from('attendance').update(payload).eq('id', existing.id).select().single();
+    if (error) throw error;
+    return data;
+  }
+  const { data, error } = await sb.from('attendance').insert(payload).select().single();
+  if (error) throw error;
+  return data;
+}
+
+// Catat jam pulang (update baris hari ini)
+async function clockOut({ employeeId, branchId, photoBlob }) {
+  const now = new Date();
+  const date = todayDateStr();
+
+  const { data: existing, error: findErr } = await sb
+    .from('attendance')
+    .select('id, clock_in_at, clock_out_at')
+    .eq('employee_id', employeeId)
+    .eq('date', date)
+    .maybeSingle();
+  if (findErr) throw findErr;
+  if (!existing || !existing.clock_in_at) throw new Error('Belum absen masuk hari ini');
+  if (existing.clock_out_at) throw new Error('Sudah absen pulang hari ini');
+
+  const photoPath = photoBlob ? await uploadAttendancePhoto(photoBlob, branchId, employeeId, 'out') : null;
+
+  const { data, error } = await sb
+    .from('attendance')
+    .update({
+      clock_out_at: now.toISOString(),
+      clock_out_photo: photoPath,
+      early_leave_minutes: calcEarlyLeaveMinutes(now),
+    })
+    .eq('id', existing.id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// Link foto absensi (signed URL, berlaku 1 jam)
+async function getAttendancePhotoUrl(storagePath, expiresIn = 3600) {
+  if (!storagePath) return null;
+  const { data, error } = await sb.storage
+    .from(ATTENDANCE_BUCKET)
+    .createSignedUrl(storagePath, expiresIn);
+  if (error) return null;
+  return data?.signedUrl || null;
+}
+
+// Ringkasan absensi per karyawan dalam satu periode (untuk gaji)
+async function getAttendanceSummary(branchId, periodStart, periodEnd) {
+  const rows = await listAttendance(branchId, periodStart, periodEnd);
+  const byEmployee = {};
+  for (const r of rows) {
+    const id = r.employee_id;
+    if (!byEmployee[id]) {
+      byEmployee[id] = {
+        employee_id: id,
+        employee_name: r.employee?.full_name || '',
+        days_present: 0,
+        total_late_minutes: 0,
+        days_late: 0,
+        days_no_clockout: 0,
+      };
+    }
+    const s = byEmployee[id];
+    if (r.clock_in_at) s.days_present += 1;
+    if (r.late_minutes > 0) { s.days_late += 1; s.total_late_minutes += r.late_minutes; }
+    if (r.clock_in_at && !r.clock_out_at) s.days_no_clockout += 1;
+  }
+  return Object.values(byEmployee);
+}
+
 Object.assign(window, {
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
   CATEGORY_LABELS, getDashboardRange, getDashboardData,
@@ -3907,6 +4080,9 @@ Object.assign(window, {
   // Tahap E - Photos
   PHOTO_BUCKET, compressImage,
   uploadTreatmentPhoto, getTransactionPhotos, deleteTreatmentPhoto,
+  clockIn, clockOut, getTodayAttendance, listAttendance, getAttendancePhotoUrl,
+  getAttendanceSummary, calcLateMinutes, calcEarlyLeaveMinutes, todayDateStr,
+  WORK_START, WORK_END,
   markPhotoMarketing, refreshPhotoSignedUrl, updatePhotoSkipReason,
   listMarketingPhotos, listAllPhotos,
   // Tahap F - Payment + Multi-employee

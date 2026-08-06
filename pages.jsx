@@ -6484,6 +6484,351 @@ function PhotoGalleryModal({ open, transactionId, profile, onClose }) {
   );
 }
 
+// =====================================================
+// ABSENSI — Halaman kiosk (perangkat menetap di salon)
+// Karyawan tap nama, selfie, sistem catat jam otomatis
+// =====================================================
+function AbsensiPage({ profile, currentBranchId, branches }) {
+  const [employees, setEmployees] = useStateP([]);
+  const [todayRows, setTodayRows] = useStateP([]);
+  const [loading, setLoading] = useStateP(true);
+  const [camTarget, setCamTarget] = useStateP(null);  // { employee, kind: 'in'|'out' }
+  const [clock, setClock] = useStateP(new Date());
+
+  const effectiveBranchId = profile.role === 'super_admin'
+    ? (currentBranchId || profile.branch_id)
+    : profile.branch_id;
+  const branch = branches.find(b => b.id === effectiveBranchId);
+
+  // Jam berjalan
+  useEffectP(() => {
+    const t = setInterval(() => setClock(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  async function loadData() {
+    if (!effectiveBranchId) return;
+    setLoading(true);
+    try {
+      const [emps, att] = await Promise.all([
+        listEmployees(effectiveBranchId, true),
+        getTodayAttendance(effectiveBranchId),
+      ]);
+      setEmployees(emps);
+      setTodayRows(att);
+    } catch (err) {
+      toast('Gagal memuat: ' + (err.message || err), 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffectP(() => { loadData(); }, [effectiveBranchId]);
+
+  function rowFor(empId) {
+    return todayRows.find(r => r.employee_id === empId) || null;
+  }
+
+  // Status: 'belum' | 'masuk' | 'selesai'
+  function statusOf(empId) {
+    const r = rowFor(empId);
+    if (!r || !r.clock_in_at) return 'belum';
+    if (!r.clock_out_at) return 'masuk';
+    return 'selesai';
+  }
+
+  async function handleCaptured(blob) {
+    if (!camTarget) return;
+    const { employee, kind } = camTarget;
+    setCamTarget(null);
+    try {
+      if (kind === 'in') {
+        const rec = await clockIn({ employeeId: employee.id, branchId: effectiveBranchId, photoBlob: blob });
+        const late = rec.late_minutes || 0;
+        toast(late > 0
+          ? `${employee.full_name}: absen masuk tercatat, terlambat ${late} menit`
+          : `${employee.full_name}: absen masuk tercatat, tepat waktu`,
+          late > 0 ? 'error' : 'success');
+      } else {
+        await clockOut({ employeeId: employee.id, branchId: effectiveBranchId, photoBlob: blob });
+        toast(`${employee.full_name}: absen pulang tercatat`, 'success');
+      }
+      loadData();
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    }
+  }
+
+  const jam = `${String(clock.getHours()).padStart(2,'0')}:${String(clock.getMinutes()).padStart(2,'0')}`;
+  const detik = String(clock.getSeconds()).padStart(2,'0');
+  const tanggalPanjang = clock.toLocaleDateString('id-ID', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
+
+  const sudahMasuk = employees.filter(e => statusOf(e.id) !== 'belum').length;
+
+  return (
+    <div className="page">
+      {/* Jam besar */}
+      <div style={{textAlign:'center',padding:'24px 16px 20px',background:'var(--mauve)',borderRadius:16,marginBottom:20,color:'#fff'}}>
+        <div style={{fontSize:13,opacity:0.85,marginBottom:6}}>{tanggalPanjang}</div>
+        <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:56,fontWeight:600,lineHeight:1}}>
+          {jam}<span style={{fontSize:24,opacity:0.7}}>:{detik}</span>
+        </div>
+        <div style={{fontSize:12,opacity:0.85,marginTop:8}}>
+          {branch?.name || '—'} · masuk 09:30 · pulang 19:30
+        </div>
+      </div>
+
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}}>
+        <div className="eyebrow">Tap nama untuk absen</div>
+        <div style={{fontSize:12,color:'var(--muted)'}}>{sudahMasuk} dari {employees.length} sudah absen</div>
+      </div>
+
+      {loading ? <Loader text="Memuat karyawan..."/> :
+       !employees.length ? <Empty title="Belum ada karyawan" sub="Tambahkan karyawan di menu Karyawan."/> : (
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:12}}>
+          {employees.map(emp => {
+            const st = statusOf(emp.id);
+            const r = rowFor(emp.id);
+            const kind = st === 'belum' ? 'in' : 'out';
+            const disabled = st === 'selesai';
+            const bg = st === 'belum' ? 'var(--paper)' : st === 'masuk' ? '#f0f7f2' : 'var(--cream)';
+            const border = st === 'belum' ? 'var(--line)' : st === 'masuk' ? 'var(--hijau)' : 'var(--line)';
+            const fmtJam = ts => ts ? new Date(ts).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}) : '';
+            return (
+              <button key={emp.id} type="button" disabled={disabled}
+                onClick={() => setCamTarget({ employee: emp, kind })}
+                style={{
+                  textAlign:'left',padding:14,borderRadius:14,
+                  background:bg,border:`1.5px solid ${border}`,
+                  cursor:disabled?'default':'pointer',opacity:disabled?0.75:1,
+                  transition:'all .15s',
+                }}>
+                <div style={{fontWeight:600,fontSize:14,color:'var(--plum-deep)',marginBottom:2}}>{emp.full_name}</div>
+                <div style={{fontSize:11,color:'var(--muted)',marginBottom:8}}>{emp.job_title || '—'}</div>
+
+                {st === 'belum' && (
+                  <div style={{fontSize:12,color:'var(--mauve)',fontWeight:500}}>Tap untuk absen masuk</div>
+                )}
+                {st === 'masuk' && (
+                  <>
+                    <div style={{fontSize:12,color:'var(--hijau)',fontWeight:500}}>
+                      Masuk {fmtJam(r.clock_in_at)}
+                      {r.late_minutes > 0 && <span style={{color:'var(--red)'}}> · telat {r.late_minutes}m</span>}
+                    </div>
+                    <div style={{fontSize:12,color:'var(--mauve)',fontWeight:500,marginTop:4}}>Tap untuk absen pulang</div>
+                  </>
+                )}
+                {st === 'selesai' && (
+                  <div style={{fontSize:12,color:'var(--muted)'}}>
+                    {fmtJam(r.clock_in_at)} sampai {fmtJam(r.clock_out_at)}
+                    {r.late_minutes > 0 && <div style={{color:'var(--red)'}}>telat {r.late_minutes} menit</div>}
+                    <div style={{color:'var(--hijau)',fontWeight:500,marginTop:2}}>Selesai</div>
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {camTarget && (
+        <FaceScanCamera
+          employeeName={camTarget.employee.full_name}
+          kind={camTarget.kind}
+          onCancel={() => setCamTarget(null)}
+          onCaptured={handleCaptured}
+        />
+      )}
+    </div>
+  );
+}
+
+// =====================================================
+// Kamera selfie dengan animasi pemindaian wajah
+// Catatan: animasi ini efek visual, bukan pengenalan wajah sungguhan
+// =====================================================
+function FaceScanCamera({ employeeName, kind, onCancel, onCaptured }) {
+  const videoRef = useRefP(null);
+  const streamRef = useRefP(null);
+  const [phase, setPhase] = useStateP('starting');  // starting | ready | scanning | done | error
+  const [errMsg, setErrMsg] = useStateP('');
+
+  useEffectP(() => {
+    let cancelled = false;
+    async function start() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 640 } },
+          audio: false,
+        });
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play().catch(() => {});
+        }
+        setPhase('ready');
+      } catch (e) {
+        setErrMsg('Kamera tidak bisa diakses. Pastikan izin kamera diaktifkan di browser.');
+        setPhase('error');
+      }
+    }
+    start();
+    return () => {
+      cancelled = true;
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    };
+  }, []);
+
+  function stopCamera() {
+    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+  }
+
+  function captureBlob() {
+    return new Promise(resolve => {
+      const v = videoRef.current;
+      if (!v) return resolve(null);
+      const size = 640;
+      const canvas = document.createElement('canvas');
+      canvas.width = size; canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      // Crop tengah jadi persegi
+      const vw = v.videoWidth || size, vh = v.videoHeight || size;
+      const side = Math.min(vw, vh);
+      const sx = (vw - side) / 2, sy = (vh - side) / 2;
+      // Mirror supaya terasa natural seperti cermin
+      ctx.translate(size, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(v, sx, sy, side, side, 0, 0, size, size);
+      canvas.toBlob(b => resolve(b), 'image/jpeg', 0.75);
+    });
+  }
+
+  async function handleShoot() {
+    setPhase('scanning');
+    const blob = await captureBlob();
+    // Beri jeda supaya animasi pemindaian terlihat
+    setTimeout(() => {
+      setPhase('done');
+      setTimeout(() => {
+        stopCamera();
+        onCaptured(blob);
+      }, 900);
+    }, 1600);
+  }
+
+  const judul = kind === 'in' ? 'Absen Masuk' : 'Absen Pulang';
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(20,14,24,0.92)',zIndex:9500,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <style>{`
+        @keyframes jbbScanLine {
+          0%   { top: 4%;  opacity: 0; }
+          10%  { opacity: 1; }
+          50%  { top: 94%; opacity: 1; }
+          90%  { opacity: 1; }
+          100% { top: 4%;  opacity: 0; }
+        }
+        @keyframes jbbPulseRing {
+          0%,100% { opacity: 0.35; transform: scale(1); }
+          50%     { opacity: 0.9;  transform: scale(1.02); }
+        }
+        @keyframes jbbPopIn {
+          0%   { opacity: 0; transform: scale(0.8); }
+          60%  { opacity: 1; transform: scale(1.06); }
+          100% { opacity: 1; transform: scale(1); }
+        }
+        .jbb-scan-line {
+          position:absolute; left:6%; right:6%; height:3px;
+          background:linear-gradient(90deg, transparent, #c9a961, #fff, #c9a961, transparent);
+          box-shadow:0 0 14px 3px rgba(201,169,97,0.65);
+          animation: jbbScanLine 1.6s ease-in-out infinite;
+        }
+        .jbb-corner {
+          position:absolute; width:34px; height:34px;
+          border-color:#c9a961; border-style:solid; border-width:0;
+        }
+      `}</style>
+
+      <div style={{width:'100%',maxWidth:400,textAlign:'center'}}>
+        <div style={{color:'#fff',marginBottom:4,fontSize:13,opacity:0.8}}>{judul}</div>
+        <div style={{color:'#fff',marginBottom:16,fontFamily:"'Cormorant Garamond', serif",fontSize:26,fontWeight:600}}>
+          {employeeName}
+        </div>
+
+        {phase === 'error' ? (
+          <div style={{background:'var(--paper)',borderRadius:16,padding:24}}>
+            <div style={{fontSize:40,marginBottom:10}}>📷</div>
+            <div style={{color:'var(--red)',fontSize:14,marginBottom:16}}>{errMsg}</div>
+            <button className="btn btn-ghost" onClick={onCancel}>Tutup</button>
+          </div>
+        ) : (
+          <>
+            {/* Bingkai kamera */}
+            <div style={{position:'relative',width:'100%',aspectRatio:'1 / 1',borderRadius:20,overflow:'hidden',background:'#000',marginBottom:18}}>
+              <video ref={videoRef} playsInline muted
+                style={{width:'100%',height:'100%',objectFit:'cover',transform:'scaleX(-1)'}}/>
+
+              {/* Sudut bingkai */}
+              <div className="jbb-corner" style={{top:12,left:12,borderTopWidth:3,borderLeftWidth:3,borderTopLeftRadius:10}}/>
+              <div className="jbb-corner" style={{top:12,right:12,borderTopWidth:3,borderRightWidth:3,borderTopRightRadius:10}}/>
+              <div className="jbb-corner" style={{bottom:12,left:12,borderBottomWidth:3,borderLeftWidth:3,borderBottomLeftRadius:10}}/>
+              <div className="jbb-corner" style={{bottom:12,right:12,borderBottomWidth:3,borderRightWidth:3,borderBottomRightRadius:10}}/>
+
+              {/* Oval panduan wajah */}
+              {phase !== 'done' && (
+                <div style={{
+                  position:'absolute',top:'12%',left:'22%',width:'56%',height:'70%',
+                  border:'2px dashed rgba(255,255,255,0.55)',borderRadius:'50% / 42%',
+                  animation:'jbbPulseRing 2s ease-in-out infinite',pointerEvents:'none',
+                }}/>
+              )}
+
+              {/* Garis pemindai */}
+              {phase === 'scanning' && <div className="jbb-scan-line"/>}
+
+              {/* Hasil */}
+              {phase === 'done' && (
+                <div style={{position:'absolute',inset:0,background:'rgba(74,124,89,0.88)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',animation:'jbbPopIn .45s ease-out'}}>
+                  <div style={{fontSize:52,marginBottom:10}}>✓</div>
+                  <div style={{color:'#fff',fontSize:16,fontWeight:600}}>Wajah terekam</div>
+                  <div style={{color:'rgba(255,255,255,0.85)',fontSize:12,marginTop:4}}>Absensi sedang disimpan</div>
+                </div>
+              )}
+
+              {/* Status pemindaian */}
+              {phase === 'scanning' && (
+                <div style={{position:'absolute',bottom:14,left:0,right:0,color:'#c9a961',fontSize:12,fontWeight:600,letterSpacing:'0.06em'}}>
+                  MEMINDAI WAJAH...
+                </div>
+              )}
+            </div>
+
+            {/* Tombol */}
+            {phase === 'ready' && (
+              <div style={{display:'flex',gap:10,justifyContent:'center'}}>
+                <button className="btn btn-ghost" onClick={() => { stopCamera(); onCancel(); }}
+                  style={{color:'#fff',borderColor:'rgba(255,255,255,0.4)'}}>
+                  Batal
+                </button>
+                <button className="btn btn-primary" onClick={handleShoot} style={{minWidth:150}}>
+                  Ambil Foto & Absen
+                </button>
+              </div>
+            )}
+            {phase === 'starting' && (
+              <div style={{color:'#fff',fontSize:13,opacity:0.8}}>Menyalakan kamera...</div>
+            )}
+            {(phase === 'scanning' || phase === 'done') && (
+              <div style={{color:'rgba(255,255,255,0.6)',fontSize:12}}>Mohon tunggu sebentar</div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 Object.assign(window, {
   LoginPage, AdminDashboard, BranchesPage,
   NewTransactionPage, TransactionsPage,
@@ -6496,4 +6841,5 @@ Object.assign(window, {
   EditTransactionModal,
   // Tahap E
   PhotoUploadField, PhotoGalleryModal,
+  AbsensiPage, FaceScanCamera,
 });

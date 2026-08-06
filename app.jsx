@@ -139,6 +139,7 @@ function App() {
     { id: 'transactions', label: 'Transaksi' },
     { id: 'reports', label: 'Laporan' },
     { id: 'kas', label: 'Kas' },
+    { id: 'absensi', label: 'Absensi' },
     { id: 'payroll', label: 'Gaji' },
     { id: 'employees', label: 'Karyawan' },
     { id: 'branches', label: 'Cabang' },
@@ -150,6 +151,7 @@ function App() {
     { id: 'transactions', label: 'Transaksi' },
     { id: 'reports', label: 'Laporan' },
     { id: 'kas', label: 'Kas' },
+    { id: 'absensi', label: 'Absensi' },
     { id: 'payroll', label: 'Gaji' },
     { id: 'employees', label: 'Karyawan' },
   ];
@@ -158,6 +160,7 @@ function App() {
     { id: 'newTransaction', label: 'Input Transaksi' },
     { id: 'transactions', label: 'Transaksi Cabang' },
     { id: 'kas', label: 'Kas' },
+    { id: 'absensi', label: 'Absensi' },
     { id: 'myTransactions', label: 'Transaksi Saya' },
   ];
 
@@ -183,6 +186,9 @@ function App() {
         break;
       case 'kas':
         pageContent = <KasPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
+        break;
+      case 'absensi':
+        pageContent = <AbsensiPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
         break;
       case 'payroll':
         pageContent = <PayrollPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
@@ -221,6 +227,9 @@ function App() {
         break;
       case 'kas':
         pageContent = <KasPage profile={profile} currentBranchId={profile.branch_id} branches={branches}/>;
+        break;
+      case 'absensi':
+        pageContent = <AbsensiPage profile={profile} currentBranchId={profile.branch_id} branches={branches}/>;
         break;
       default:
         pageContent = <EmployeeDashboard profile={profile} branches={branches} setPage={setPage}/>;
