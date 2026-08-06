@@ -6680,8 +6680,20 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
   const tanggalPanjang = clock.toLocaleDateString('id-ID', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
 
   // Pisahkan yang ikut absensi dan yang dikecualikan (Owner, Manager, akun kiosk)
-  const absenEmployees = employees.filter(e => !isAttendanceExempt(e));
+  const semuaAbsen = employees.filter(e => !isAttendanceExempt(e));
   const exemptEmployees = employees.filter(e => isAttendanceExempt(e));
+
+  // MODE KIOSK vs MODE PRIBADI
+  // Kiosk (boleh absen atas nama siapa saja): admin, atau akun yang memang
+  // dikecualikan dari absensi (akun kiosk salon).
+  // Pribadi (hanya boleh absen untuk diri sendiri): karyawan biasa yang absen
+  // dari HP-nya sendiri. Ini mencegah titip absen atas nama rekan.
+  const myRecord = employees.find(e => e.id === profile.id) || null;
+  const isKioskMode = profile.role !== 'employee' || (myRecord ? isAttendanceExempt(myRecord) : false);
+
+  const absenEmployees = isKioskMode
+    ? semuaAbsen
+    : semuaAbsen.filter(e => e.id === profile.id);
   const sudahMasuk = absenEmployees.filter(e => statusOf(e.id) !== 'belum').length;
 
   return (
@@ -6698,12 +6710,20 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
       </div>
 
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}}>
-        <div className="eyebrow">Tap nama untuk absen</div>
-        <div style={{fontSize:12,color:'var(--muted)'}}>{sudahMasuk} dari {absenEmployees.length} sudah absen</div>
+        <div className="eyebrow">{isKioskMode ? 'Tap nama untuk absen' : 'Tap kartu kamu untuk absen'}</div>
+        <div style={{fontSize:12,color:'var(--muted)'}}>
+          {isKioskMode
+            ? `${sudahMasuk} dari ${absenEmployees.length} sudah absen`
+            : 'Absensi pribadi'}
+        </div>
       </div>
 
       {loading ? <Loader text="Memuat karyawan..."/> :
-       !absenEmployees.length ? <Empty title="Belum ada karyawan" sub="Tambahkan karyawan di menu Karyawan."/> : (
+       !absenEmployees.length ? (
+        isKioskMode
+          ? <Empty title="Belum ada karyawan" sub="Tambahkan karyawan di menu Karyawan."/>
+          : <Empty title="Kamu tidak terdaftar absensi" sub="Akun ini dikecualikan dari absensi harian. Hubungi manager kalau ini keliru."/>
+       ) : (
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:12}}>
           {absenEmployees.map(emp => {
             const st = statusOf(emp.id);
@@ -6750,7 +6770,7 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
         </div>
       )}
 
-      {!loading && exemptEmployees.length > 0 && (
+      {!loading && isKioskMode && exemptEmployees.length > 0 && (
         <div style={{marginTop:22}}>
           <div className="eyebrow" style={{marginBottom:10}}>Tidak ikut absensi</div>
           <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
