@@ -2991,7 +2991,7 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
     branch_id: defaultBranchId,
   });
 
-  const salaryOptional = isSalaryOptional(form.job_title);
+  const salaryOptional = isSalaryOptionalFor(form.job_title, form.skip_attendance);
 
   useEffectP(() => {
     if (open) {
@@ -3185,13 +3185,18 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
 
           <label style={{display:'flex',alignItems:'flex-start',gap:9,cursor:'pointer',padding:'10px 12px',background:'var(--cream)',borderRadius:8,marginTop:4}}>
             <input type="checkbox" checked={!!form.skip_attendance}
-              onChange={e => update({ skip_attendance: e.target.checked })}
+              onChange={e => {
+                const checked = e.target.checked;
+                // Akun kiosk bukan orang sungguhan, jadi gaji ikut dibebaskan
+                if (checked) update({ skip_attendance: true, base_salary: '', meal_allowance: '' });
+                else update({ skip_attendance: false, base_salary: form.base_salary || 1500000 });
+              }}
               style={{accentColor:'var(--mauve)',width:17,height:17,marginTop:1}}/>
             <div>
               <div style={{fontSize:13,fontWeight:500}}>Tidak ikut absensi harian</div>
               <div style={{fontSize:11,color:'var(--muted)'}}>
                 Untuk akun kiosk absensi atau staf yang tidak perlu absen.
-                Owner dan Manager sudah otomatis dikecualikan.
+                Gaji pokok jadi tidak wajib (boleh 0). Owner dan Manager sudah otomatis dikecualikan.
               </div>
             </div>
           </label>
@@ -3328,7 +3333,7 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
     if (!editForm.full_name?.trim()) { toast('Nama wajib diisi', 'error'); return; }
     if (!editForm.username?.trim()) { toast('Username wajib diisi', 'error'); return; }
 
-    const salaryOptional = isSalaryOptional(editForm.job_title);
+    const salaryOptional = isSalaryOptionalFor(editForm.job_title, editForm.skip_attendance);
     let salary = 0;
     let meal = 0;
 
@@ -3448,7 +3453,7 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
                 {visibleEmployees.map(emp => {
                   const isEditing = editingId === emp.id;
                   const totalFixed = (emp.base_salary || 0) + (emp.meal_allowance || 0);
-                  const editSalaryOptional = isEditing && isSalaryOptional(editForm.job_title);
+                  const editSalaryOptional = isEditing && isSalaryOptionalFor(editForm.job_title, editForm.skip_attendance);
                   return (
                     <tr key={emp.id}>
                       <td>

@@ -112,6 +112,12 @@ function attendanceExemptReason(employee) {
   return '';
 }
 
+// Gaji pokok tidak wajib untuk Owner/Manager, DAN untuk akun yang ditandai
+// tidak ikut absensi (misalnya akun kiosk absensi yang bukan orang sungguhan)
+function isSalaryOptionalFor(jobTitle, skipAttendance) {
+  return SALARY_OPTIONAL_TITLES.includes(jobTitle) || !!skipAttendance;
+}
+
 function isSalaryOptional(jobTitle) {
   return SALARY_OPTIONAL_TITLES.includes(jobTitle);
 }
@@ -4128,7 +4134,7 @@ Object.assign(window, {
   CATEGORY_LABELS, getDashboardRange, getDashboardData,
   fmtRp, fmtRpOrDash, fmtNumber, fmtDate, fmtTime, todayStr, nowTimeStr, currentMonth,
   dateToYMD, startOfWeekMonday, endOfWeekSunday, DATE_PRESETS,
-  isOvertime, isSalaryOptional, getServiceDef, calcCommission, getRoleLabel,
+  isOvertime, isSalaryOptional, isSalaryOptionalFor, getServiceDef, calcCommission, getRoleLabel,
   toast, useToasts,
   loginWithEmail, logout, getCurrentSession, getMyProfile,
   listBranches, canAccessAllBranches, canManageBranch,
