@@ -2063,7 +2063,7 @@ async function getEmployeePeriodTips(employeeId, periodStart, periodEnd) {
 }
 
 // Generate slip HTML for one employee
-function generateSlipHTML({ employee, payroll, items, period, branch, generatedBy, isApproved = false, tipsDetail = [] }) {
+function generateSlipHTML({ employee, payroll, items, period, branch, generatedBy, isApproved = false, tipsDetail = [], attendance = null }) {
   const brand = getBrandForBranch(employee.branch_id);
   const periodStartFmt = fmtDate(period.period_start);
   const periodEndFmt = fmtDate(period.period_end);
@@ -2577,6 +2577,28 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
         <td class="cell-num" style="font-weight: 600; padding-top: 12px; border-top: 1px solid #d4c8d8; color: #7a667e;">${fmtRp(tipsDetail.reduce((s, t) => s + Number(t.amount || 0), 0))}</td>
       </tr>
     </tfoot>
+  </table>
+  ` : ''}
+
+  ${attendance ? `
+  <div class="section-title">Ringkasan Absensi</div>
+  <table class="detail-table">
+    <thead>
+      <tr>
+        <th>Hari Hadir</th>
+        <th>Hari Telat</th>
+        <th>Total Telat</th>
+        <th>Lupa Absen Pulang</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>${attendance.days_present} hari</td>
+        <td${attendance.days_late > 0 ? ' style="color: #a85555;"' : ''}>${attendance.days_late} hari</td>
+        <td${attendance.total_late_minutes > 0 ? ' style="color: #a85555;"' : ''}>${attendance.total_late_minutes} menit</td>
+        <td${attendance.days_no_clockout > 0 ? ' style="color: #b8893d;"' : ''}>${attendance.days_no_clockout} hari</td>
+      </tr>
+    </tbody>
   </table>
   ` : ''}
 

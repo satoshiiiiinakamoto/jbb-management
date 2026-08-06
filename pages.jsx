@@ -4484,7 +4484,7 @@ function KasPage({ profile, currentBranchId, branches }) {
 // =====================================================
 // ADJUST ATTENDANCE MODAL — input absensi & penyesuaian per karyawan
 // =====================================================
-function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, currentAdjustment, branchId, adjustedBy, leaveBalance }) {
+function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, currentAdjustment, branchId, adjustedBy, leaveBalance, attendance }) {
   const [form, setForm] = useStateP({
     standard_work_days: 26,
     annual_leave_days: 0,
@@ -4688,6 +4688,61 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
             </div>
           )}
 
+          {/* Data dari sistem absensi */}
+          {attendance && attendance.days_present > 0 && (() => {
+            const std = Number(form.standard_work_days) || 26;
+            const cuti = Number(form.annual_leave_days) || 0;
+            const sakit = Number(form.sick_leave_certified_days) || 0;
+            // Absen tanpa keterangan = hari kerja standar dikurangi hari hadir,
+            // dikurangi lagi cuti & sakit bersurat (yang sudah punya keterangan)
+            const saranAbsen = Math.max(0, std - attendance.days_present - cuti - sakit);
+            const sudahSama = Number(form.unpaid_leave_days) === saranAbsen;
+            return (
+              <div style={{padding:'12px 14px',background:'var(--mauve-tint)',borderRadius:10,marginBottom:14}}>
+                <div className="eyebrow" style={{marginBottom:8}}>Dari sistem absensi</div>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))',gap:10,fontSize:12,marginBottom:10}}>
+                  <div>
+                    <div style={{color:'var(--muted)',fontSize:11}}>Hari hadir</div>
+                    <div style={{fontWeight:600,fontSize:15,color:'var(--plum-deep)'}}>{attendance.days_present} hari</div>
+                  </div>
+                  <div>
+                    <div style={{color:'var(--muted)',fontSize:11}}>Hari telat</div>
+                    <div style={{fontWeight:600,fontSize:15,color: attendance.days_late > 0 ? 'var(--red)' : 'var(--plum-deep)'}}>
+                      {attendance.days_late} hari
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{color:'var(--muted)',fontSize:11}}>Total telat</div>
+                    <div style={{fontWeight:600,fontSize:15,color: attendance.total_late_minutes > 0 ? 'var(--red)' : 'var(--plum-deep)'}}>
+                      {attendance.total_late_minutes} menit
+                    </div>
+                  </div>
+                  {attendance.days_no_clockout > 0 && (
+                    <div>
+                      <div style={{color:'var(--muted)',fontSize:11}}>Lupa absen pulang</div>
+                      <div style={{fontWeight:600,fontSize:15,color:'var(--amber)'}}>{attendance.days_no_clockout} hari</div>
+                    </div>
+                  )}
+                </div>
+                <div style={{borderTop:'1px solid rgba(122,102,126,0.2)',paddingTop:10,fontSize:12}}>
+                  <div style={{marginBottom:8,color:'var(--plum)'}}>
+                    Perhitungan absen: {std} hari kerja − {attendance.days_present} hadir
+                    {cuti > 0 ? ` − ${cuti} cuti` : ''}{sakit > 0 ? ` − ${sakit} sakit` : ''}
+                    {' = '}<strong>{saranAbsen} hari absen tanpa keterangan</strong>
+                  </div>
+                  <button type="button" className={'btn btn-sm ' + (sudahSama ? 'btn-ghost' : 'btn-primary')}
+                    disabled={sudahSama}
+                    onClick={() => update({ unpaid_leave_days: saranAbsen })}>
+                    {sudahSama ? 'Sudah sesuai absensi' : `Isi otomatis: ${saranAbsen} hari absen`}
+                  </button>
+                  <div style={{fontSize:11,color:'var(--muted)',marginTop:8}}>
+                    Isi dulu cuti dan sakit bersurat di bawah, baru tekan tombol ini supaya hasilnya tepat.
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:14}}>
             <Field
               label="Cuti Tahunan (hari)"
@@ -4810,6 +4865,7 @@ function PayrollPage({ profile, currentBranchId, branches }) {
   const [commissions, setCommissions] = useStateP({});
   const [adjustments, setAdjustments] = useStateP([]);
   const [leaveBalances, setLeaveBalances] = useStateP([]);
+  const [attendanceSummary, setAttendanceSummary] = useStateP([]);
   const [loading, setLoading] = useStateP(true);
   const [adjustTarget, setAdjustTarget] = useStateP(null);
   const [viewingEmployee, setViewingEmployee] = useStateP(null);
@@ -4829,6 +4885,13 @@ function PayrollPage({ profile, currentBranchId, branches }) {
       setCommissions(comms);
       setAdjustments(adjs);
       setLeaveBalances(balances);
+      // Absensi dimuat terpisah supaya kegagalannya tidak membatalkan data gaji
+      try {
+        const att = await getAttendanceSummary(branchFilter, selectedPeriod.period_start, selectedPeriod.period_end);
+        setAttendanceSummary(att);
+      } catch (e) {
+        setAttendanceSummary([]);
+      }
     } catch (err) {
       toast('Gagal memuat: ' + err.message, 'error');
     } finally {
@@ -4890,6 +4953,7 @@ function PayrollPage({ profile, currentBranchId, branches }) {
         generatedBy: profile,
         isApproved: row.adjustment?.is_approved === true,
         tipsDetail,
+        attendance: attendanceSummary.find(a => a.employee_id === row.employee.id) || null,
       });
       printSlip(slipHtml);
     } catch (err) {
@@ -4927,6 +4991,7 @@ function PayrollPage({ profile, currentBranchId, branches }) {
           generatedBy: profile,
           isApproved: row.adjustment?.is_approved === true,
           tipsDetail,
+          attendance: attendanceSummary.find(a => a.employee_id === row.employee.id) || null,
         }));
       }
       printMultipleSlips(slips);
@@ -5205,6 +5270,7 @@ function PayrollPage({ profile, currentBranchId, branches }) {
         period={selectedPeriod}
         currentAdjustment={adjustTarget?.adjustment}
         leaveBalance={adjustTarget?.leaveBalance}
+        attendance={attendanceSummary.find(a => a.employee_id === adjustTarget?.employee?.id) || null}
         branchId={adjustTarget?.employee?.branch_id}
         adjustedBy={profile.id}
       />
