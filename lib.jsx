@@ -2006,7 +2006,7 @@ async function getEmployeePeriodTransactions(employeeId, periodStart, periodEnd)
   const { data, error } = await sb
     .from('transaction_items')
     .select(`
-      id, service_name, price, commission_amount, commission_rate, commission_type,
+      id, service_name, price, commission_amount, commission_rate, commission_type, has_complaint, complaint_note,
       share_group_id, share_percent,
       transaction:transactions(
         id, date, start_time, is_overtime, is_home_service, home_service_fee,
@@ -2136,6 +2136,7 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
             ${trx.is_overtime && isFirst ? '<span class="tag tag-amber">lembur</span>' : ''}
             ${trx.is_home_service && isFirst ? '<span class="tag tag-gold">HS</span>' : ''}
             ${sharedTag}
+            ${it.has_complaint ? '<span class="tag tag-red">komplain</span>' : ''}
           </td>
           <td class="cell-num">${fmtRp(it.price)}</td>
           <td class="cell-num cell-commission" style="${commissionColor ? `color: ${commissionColor}; font-weight: 600;` : ''}">${fmtRp(displayCommission)}</td>
@@ -2290,6 +2291,7 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
   .tag-amber { background: #fdf6e3; color: #b8893d; }
   .tag-gold { background: #f7efe0; color: #a8884a; }
   .tag-mauve { background: #f3eef5; color: #7a667e; }
+  .tag-red { background: #fdf2f2; color: #a85555; }
 
   .breakdown-table { margin-top: 10px; }
   .breakdown-table th { font-size: 10px; }
@@ -3047,6 +3049,7 @@ async function getTransactionDetail(transactionId) {
         price, commission_type, commission_rate, commission_amount, notes,
         share_group_id, share_percent,
         original_price, discount_type, discount_value, discount_amount,
+        has_complaint, complaint_note,
         employee:employees(id, full_name, job_title)
       ),
       payments:transaction_payments(*),

@@ -400,7 +400,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
   const [tips, setTips] = useStateP([{ employee_id: '', amount: '', payment_method: 'qris' }]);
   // shareWith: array of additional employee_ids (multi-employee support)
   // share_percents: parallel array of percentages [main, ...sharedWith]
-  const [items, setItems] = useStateP([{ employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '', share_with: [], share_percents: [100], discount_type: 'none', discount_value: '' }]);
+  const [items, setItems] = useStateP([{ employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '', share_with: [], share_percents: [100], discount_type: 'none', discount_value: '', has_complaint: false, complaint_note: '' }]);
   const [employees, setEmployees] = useStateP([]);
   const [loadingEmployees, setLoadingEmployees] = useStateP(true);
   const [submitting, setSubmitting] = useStateP(false);
@@ -440,7 +440,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
     setItems(prev => prev.map((it, i) => i === idx ? { ...it, ...patch } : it));
   }
   function addItem() {
-    setItems(prev => [...prev, { employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '', share_with: [], share_percents: [100], discount_type: 'none', discount_value: '' }]);
+    setItems(prev => [...prev, { employee_id: '', service_name: '', price: '', fixed_commission: '', notes: '', share_with: [], share_percents: [100], discount_type: 'none', discount_value: '', has_complaint: false, complaint_note: '' }]);
   }
   function removeItem(idx) {
     setItems(prev => prev.length === 1 ? prev : prev.filter((_, i) => i !== idx));
@@ -467,6 +467,12 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
 
   function getItemCommission(item) {
     if (!item.service_name) return { rate: 0, amount: 0, type: 'percent' };
+
+    // Client complaint: commission is forfeited for this treatment.
+    // Revenue (omset) is unaffected — the client still paid.
+    if (item.has_complaint) {
+      return { rate: 0, amount: 0, type: 'percent' };
+    }
 
     const svc = getServiceDef(item.service_name);
     const effectivePrice = getItemEffectivePrice(item);
@@ -589,6 +595,8 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
             discount_type: hasDiscount ? it.discount_type : null,
             discount_value: hasDiscount ? (Number(it.discount_value) || 0) : null,
             discount_amount: hasDiscount ? splitDiscount : 0,
+            has_complaint: !!it.has_complaint,
+            complaint_note: it.has_complaint ? (it.complaint_note || null) : null,
           });
         });
       }
@@ -826,6 +834,34 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
                                   Hemat {fmtRp(getItemDiscount(item))} · Komisi & omset dihitung dari harga setelah diskon
                                 </div>
                               )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Komplain client — komisi tidak dihitung */}
+                      {item.service_name && (
+                        <div style={{marginTop:10,padding:'10px 12px',background:item.has_complaint?'#fdf2f2':'var(--cream)',borderRadius:8,border:item.has_complaint?'1px solid var(--red)':'1px solid transparent'}}>
+                          <label style={{display:'flex',alignItems:'flex-start',gap:9,cursor:'pointer'}}>
+                            <input type="checkbox" checked={!!item.has_complaint}
+                              onChange={e => updateItem(idx, { has_complaint: e.target.checked, complaint_note: e.target.checked ? (item.complaint_note || '') : '' })}
+                              style={{accentColor:'var(--red)',width:17,height:17,marginTop:1}}/>
+                            <div>
+                              <div style={{fontSize:13,fontWeight:500,color:item.has_complaint?'var(--red)':'var(--plum)'}}>
+                                Client mengajukan komplain (komisi tidak dihitung)
+                              </div>
+                              <div style={{fontSize:11,color:'var(--muted)'}}>
+                                Omset tetap penuh. Hanya komisi beautician untuk treatment ini yang jadi Rp 0.
+                              </div>
+                            </div>
+                          </label>
+                          {item.has_complaint && (
+                            <div style={{marginTop:10}}>
+                              <Field label="Catatan komplain (opsional, internal)">
+                                <textarea className="form-textarea" rows="2" value={item.complaint_note || ''}
+                                  onChange={e => updateItem(idx, { complaint_note: e.target.value })}
+                                  placeholder="Contoh: bentuk alis tidak simetris, client minta perbaikan"/>
+                              </Field>
                             </div>
                           )}
                         </div>
@@ -1694,6 +1730,14 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                       </div>
                     );
                   })()}
+                  {(t.items || []).some(i => i.has_complaint) && (
+                    <div className="row-detail">
+                      <span className="row-detail-label">Komplain</span>
+                      <span style={{color:'var(--red)',fontWeight:500,fontSize:12}}>
+                        ⚠️ {(t.items || []).filter(i => i.has_complaint).length} treatment, komisi Rp 0
+                      </span>
+                    </div>
+                  )}
 
                   <div className="row-actions">
                     <button
@@ -1813,6 +1857,11 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                       {(t.tips || []).length > 0 && (
                         <div style={{fontSize:11,color:'var(--plum)',fontWeight:500,marginTop:2}}>
                           +{fmtRp((t.tips || []).reduce((s, tp) => s + Number(tp.amount || 0), 0))} tips 💝
+                        </div>
+                      )}
+                      {(t.items || []).some(i => i.has_complaint) && (
+                        <div style={{fontSize:11,color:'var(--red)',fontWeight:500,marginTop:2}}>
+                          ⚠️ komplain ({(t.items || []).filter(i => i.has_complaint).length})
                         </div>
                       )}
                     </td>
@@ -2022,6 +2071,8 @@ function EditTransactionModal({ open, transactionId, profile, branches, onClose,
             share_with: sharedItems.map(s => s.employee_id),
             share_percents: siblings.map(s => Number(s.share_percent || 0)),
             _existing_share_group_id: it.share_group_id, // preserve for re-save
+            has_complaint: !!mainItem.has_complaint,
+            complaint_note: mainItem.complaint_note || '',
           });
         } else {
           // Solo item (no sharing)
@@ -2034,6 +2085,8 @@ function EditTransactionModal({ open, transactionId, profile, branches, onClose,
             notes: it.notes || '',
             share_with: [],
             share_percents: [100],
+            has_complaint: !!it.has_complaint,
+            complaint_note: it.complaint_note || '',
           });
         }
       }
@@ -2108,6 +2161,10 @@ function EditTransactionModal({ open, transactionId, profile, branches, onClose,
 
   function getItemCommission(item) {
     if (!item.service_name) return { rate: 0, amount: 0, type: 'percent' };
+    // Client complaint: commission forfeited for this treatment (omset unaffected)
+    if (item.has_complaint) {
+      return { rate: 0, amount: 0, type: 'percent' };
+    }
     const svc = getServiceDef(item.service_name);
     if (svc?.commission_type === 'percent' && item.commission_override !== undefined && item.commission_override !== null && item.commission_override !== '') {
       return {
@@ -2210,6 +2267,8 @@ function EditTransactionModal({ open, transactionId, profile, branches, onClose,
             notes: it.notes || null,
             share_group_id: shareGroupId,
             share_percent: sharePercent,
+            has_complaint: !!it.has_complaint,
+            complaint_note: it.has_complaint ? (it.complaint_note || null) : null,
           });
         });
       }
@@ -2419,6 +2478,34 @@ function EditTransactionModal({ open, transactionId, profile, branches, onClose,
                       </Field>
                     )}
                   </div>
+
+                  {/* Komplain client — komisi tidak dihitung */}
+                  {item.service_name && (
+                    <div style={{marginTop:10,padding:'10px 12px',background:item.has_complaint?'#fdf2f2':'var(--cream)',borderRadius:8,border:item.has_complaint?'1px solid var(--red)':'1px solid transparent'}}>
+                      <label style={{display:'flex',alignItems:'flex-start',gap:9,cursor:'pointer'}}>
+                        <input type="checkbox" checked={!!item.has_complaint}
+                          onChange={e => updateItem(idx, { has_complaint: e.target.checked, complaint_note: e.target.checked ? (item.complaint_note || '') : '' })}
+                          style={{accentColor:'var(--red)',width:17,height:17,marginTop:1}}/>
+                        <div>
+                          <div style={{fontSize:13,fontWeight:500,color:item.has_complaint?'var(--red)':'var(--plum)'}}>
+                            Client mengajukan komplain (komisi tidak dihitung)
+                          </div>
+                          <div style={{fontSize:11,color:'var(--muted)'}}>
+                            Omset tetap penuh. Hanya komisi beautician untuk treatment ini yang jadi Rp 0.
+                          </div>
+                        </div>
+                      </label>
+                      {item.has_complaint && (
+                        <div style={{marginTop:10}}>
+                          <Field label="Catatan komplain (opsional, internal)">
+                            <textarea className="form-textarea" rows="2" value={item.complaint_note || ''}
+                              onChange={e => updateItem(idx, { complaint_note: e.target.value })}
+                              placeholder="Contoh: bentuk alis tidak simetris, client minta perbaikan"/>
+                          </Field>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {svc && (
                     <div style={{marginTop:8,padding:'8px 12px',background:'var(--paper)',borderRadius:6,fontSize:12,color:'var(--muted)',display:'flex',justifyContent:'space-between',flexWrap:'wrap',gap:6}}>
