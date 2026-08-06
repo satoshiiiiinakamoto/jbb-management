@@ -3974,6 +3974,30 @@ function getDeviceLocation(timeoutMs = 8000) {
   });
 }
 
+// Jarak antara dua titik koordinat dalam meter (rumus haversine)
+function distanceMeters(lat1, lng1, lat2, lng2) {
+  if (lat1 == null || lng1 == null || lat2 == null || lng2 == null) return null;
+  const R = 6371000;  // radius bumi (meter)
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(a)));
+}
+
+// Ambil titik & radius cabang (untuk cek jarak absensi)
+async function getBranchGeo(branchId) {
+  if (!branchId) return null;
+  const { data, error } = await sb
+    .from('branches')
+    .select('id, name, lat, lng, geofence_radius_m')
+    .eq('id', branchId)
+    .maybeSingle();
+  if (error || !data || data.lat == null) return null;
+  return data;
+}
+
 // Link Google Maps dari koordinat (untuk laporan)
 function mapsLinkFor(lat, lng) {
   if (lat == null || lng == null) return null;
@@ -4017,6 +4041,18 @@ async function listAttendance(branchId, from, to) {
   return data || [];
 }
 
+// Jarak absensi dari titik cabang (null kalau lokasi/koordinat cabang tidak ada)
+async function distanceFromBranch(branchId, loc) {
+  if (!loc) return null;
+  try {
+    const geo = await getBranchGeo(branchId);
+    if (!geo) return null;
+    return distanceMeters(loc.lat, loc.lng, Number(geo.lat), Number(geo.lng));
+  } catch (e) {
+    return null;
+  }
+}
+
 // Catat jam masuk (buat baris baru)
 async function clockIn({ employeeId, branchId, photoBlob }) {
   const now = new Date();
@@ -4048,6 +4084,7 @@ async function clockIn({ employeeId, branchId, photoBlob }) {
     clock_in_lat: loc?.lat ?? null,
     clock_in_lng: loc?.lng ?? null,
     clock_in_accuracy: loc?.accuracy ?? null,
+    clock_in_distance_m: await distanceFromBranch(branchId, loc),
   };
 
   if (existing?.id) {
@@ -4087,6 +4124,7 @@ async function clockOut({ employeeId, branchId, photoBlob }) {
       clock_out_lat: loc?.lat ?? null,
       clock_out_lng: loc?.lng ?? null,
       clock_out_accuracy: loc?.accuracy ?? null,
+      clock_out_distance_m: await distanceFromBranch(branchId, loc),
     })
     .eq('id', existing.id)
     .select()
@@ -4167,7 +4205,7 @@ Object.assign(window, {
   clockIn, clockOut, getTodayAttendance, listAttendance, getAttendancePhotoUrl,
   getAttendanceSummary, calcLateMinutes, calcEarlyLeaveMinutes, todayDateStr,
   isAttendanceExempt, attendanceExemptReason, NO_ATTENDANCE_TITLES,
-  getDeviceLocation, mapsLinkFor,
+  getDeviceLocation, mapsLinkFor, distanceMeters, getBranchGeo, distanceFromBranch,
   WORK_START, WORK_END,
   markPhotoMarketing, refreshPhotoSignedUrl, updatePhotoSkipReason,
   listMarketingPhotos, listAllPhotos,

@@ -2991,7 +2991,7 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
     branch_id: defaultBranchId,
   });
 
-  const salaryOptional = isSalaryOptionalFor(form.job_title, form.skip_attendance);
+  const salaryOptional = isSalaryOptional(form.job_title);
 
   useEffectP(() => {
     if (open) {
@@ -3041,8 +3041,8 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
     } else {
       salary = Number(form.base_salary);
       meal = Number(form.meal_allowance) || 0;
-      if (isNaN(salary) || salary < 1000000) {
-        toast('Gaji pokok minimal Rp 1.000.000 untuk jabatan ini', 'error'); return;
+      if (isNaN(salary) || salary < 0) {
+        toast('Gaji pokok tidak boleh negatif', 'error'); return;
       }
     }
 
@@ -3168,12 +3168,11 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
           ) : null}
 
           <div className="form-row">
-            <Field label={`Gaji Pokok (Rp) ${salaryOptional ? '' : '*'}`} hint={salaryOptional ? 'Opsional untuk Owner/Manager' : 'Minimal Rp 1.000.000'}>
+            <Field label="Gaji Pokok (Rp)" hint="Isi bebas sesuai kebijakan. Boleh 0 (misal akun kiosk).">
               <input type="number" className="form-input" value={form.base_salary}
                 onChange={e => update({ base_salary: e.target.value })}
-                min={salaryOptional ? "0" : "1000000"} step="100000"
-                required={!salaryOptional}
-                placeholder={salaryOptional ? '0 (opsional)' : '1500000'}/>
+                min="0" step="any"
+                placeholder="1500000"/>
             </Field>
             <Field label="Uang Makan (Rp)" hint={salaryOptional ? 'Opsional' : 'Opsional, max Rp 500.000'}>
               <input type="number" className="form-input" value={form.meal_allowance}
@@ -3185,18 +3184,13 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
 
           <label style={{display:'flex',alignItems:'flex-start',gap:9,cursor:'pointer',padding:'10px 12px',background:'var(--cream)',borderRadius:8,marginTop:4}}>
             <input type="checkbox" checked={!!form.skip_attendance}
-              onChange={e => {
-                const checked = e.target.checked;
-                // Akun kiosk bukan orang sungguhan, jadi gaji ikut dibebaskan
-                if (checked) update({ skip_attendance: true, base_salary: '', meal_allowance: '' });
-                else update({ skip_attendance: false, base_salary: form.base_salary || 1500000 });
-              }}
+              onChange={e => update({ skip_attendance: e.target.checked })}
               style={{accentColor:'var(--mauve)',width:17,height:17,marginTop:1}}/>
             <div>
               <div style={{fontSize:13,fontWeight:500}}>Tidak ikut absensi harian</div>
               <div style={{fontSize:11,color:'var(--muted)'}}>
                 Untuk akun kiosk absensi atau staf yang tidak perlu absen.
-                Gaji pokok jadi tidak wajib (boleh 0). Owner dan Manager sudah otomatis dikecualikan.
+                Owner dan Manager sudah otomatis dikecualikan.
               </div>
             </div>
           </label>
@@ -3333,7 +3327,7 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
     if (!editForm.full_name?.trim()) { toast('Nama wajib diisi', 'error'); return; }
     if (!editForm.username?.trim()) { toast('Username wajib diisi', 'error'); return; }
 
-    const salaryOptional = isSalaryOptionalFor(editForm.job_title, editForm.skip_attendance);
+    const salaryOptional = isSalaryOptional(editForm.job_title);
     let salary = 0;
     let meal = 0;
 
@@ -3343,8 +3337,8 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
     } else {
       salary = Number(editForm.base_salary);
       meal = Number(editForm.meal_allowance) || 0;
-      if (isNaN(salary) || salary < 1000000) {
-        toast('Gaji pokok minimal Rp 1.000.000 untuk jabatan ini', 'error'); return;
+      if (isNaN(salary) || salary < 0) {
+        toast('Gaji pokok tidak boleh negatif', 'error'); return;
       }
       if (meal < 0 || meal > 500000) {
         toast('Uang makan: Rp 0 – Rp 500.000', 'error'); return;
@@ -3453,7 +3447,7 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
                 {visibleEmployees.map(emp => {
                   const isEditing = editingId === emp.id;
                   const totalFixed = (emp.base_salary || 0) + (emp.meal_allowance || 0);
-                  const editSalaryOptional = isEditing && isSalaryOptionalFor(editForm.job_title, editForm.skip_attendance);
+                  const editSalaryOptional = isEditing && isSalaryOptional(editForm.job_title);
                   return (
                     <tr key={emp.id}>
                       <td>
@@ -7042,6 +7036,8 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
   }, [rows]);
 
   const fmtJam = ts => ts ? new Date(ts).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '—';
+  const fmtJarak = m => m == null ? '' : (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`);
+  const radiusFor = bid => Number(branches.find(b => b.id === bid)?.geofence_radius_m) || 200;
 
   return (
     <div className="page">
@@ -7133,18 +7129,28 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                 </div>
                 {(r.clock_in_lat != null || r.clock_out_lat != null) && (
                   <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid var(--line)',display:'flex',gap:14,flexWrap:'wrap',fontSize:11,color:'var(--muted)'}}>
-                    {r.clock_in_lat != null && (
-                      <a href={mapsLinkFor(r.clock_in_lat, r.clock_in_lng)} target="_blank" rel="noopener noreferrer"
-                        style={{color:'var(--mauve)',textDecoration:'none'}}>
-                        📍 Lokasi masuk{r.clock_in_accuracy != null ? ` (±${r.clock_in_accuracy}m)` : ''}
-                      </a>
-                    )}
-                    {r.clock_out_lat != null && (
-                      <a href={mapsLinkFor(r.clock_out_lat, r.clock_out_lng)} target="_blank" rel="noopener noreferrer"
-                        style={{color:'var(--mauve)',textDecoration:'none'}}>
-                        📍 Lokasi pulang{r.clock_out_accuracy != null ? ` (±${r.clock_out_accuracy}m)` : ''}
-                      </a>
-                    )}
+                    {r.clock_in_lat != null && (() => {
+                      const jauh = r.clock_in_distance_m != null && r.clock_in_distance_m > radiusFor(r.branch_id);
+                      return (
+                        <a href={mapsLinkFor(r.clock_in_lat, r.clock_in_lng)} target="_blank" rel="noopener noreferrer"
+                          style={{color: jauh ? 'var(--red)' : 'var(--mauve)',textDecoration:'none',fontWeight: jauh ? 600 : 400}}>
+                          {jauh ? '⚠️' : '📍'} Masuk
+                          {r.clock_in_distance_m != null ? ` · ${fmtJarak(r.clock_in_distance_m)} dari salon` : ''}
+                          {r.clock_in_accuracy != null ? ` (±${r.clock_in_accuracy}m)` : ''}
+                        </a>
+                      );
+                    })()}
+                    {r.clock_out_lat != null && (() => {
+                      const jauh = r.clock_out_distance_m != null && r.clock_out_distance_m > radiusFor(r.branch_id);
+                      return (
+                        <a href={mapsLinkFor(r.clock_out_lat, r.clock_out_lng)} target="_blank" rel="noopener noreferrer"
+                          style={{color: jauh ? 'var(--red)' : 'var(--mauve)',textDecoration:'none',fontWeight: jauh ? 600 : 400}}>
+                          {jauh ? '⚠️' : '📍'} Pulang
+                          {r.clock_out_distance_m != null ? ` · ${fmtJarak(r.clock_out_distance_m)} dari salon` : ''}
+                          {r.clock_out_accuracy != null ? ` (±${r.clock_out_accuracy}m)` : ''}
+                        </a>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
