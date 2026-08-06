@@ -96,19 +96,28 @@ const SALARY_OPTIONAL_TITLES = ['Owner', 'Manager'];
 // Jabatan yang otomatis tidak ikut absensi harian
 const NO_ATTENDANCE_TITLES = ['Owner', 'Manager'];
 
-// Karyawan dikecualikan dari absensi kalau jabatannya Owner/Manager,
-// atau ditandai manual (misalnya akun kiosk absensi)
+// Aturan bawaan berdasarkan jabatan: Owner & Manager tidak ikut absensi
+function isAttendanceExemptByTitle(jobTitle) {
+  return NO_ATTENDANCE_TITLES.includes(jobTitle);
+}
+
+// Apakah karyawan ini dikecualikan dari absensi harian.
+// skip_attendance punya tiga keadaan:
+//   null  = ikuti aturan jabatan
+//   true  = dikecualikan walau jabatannya biasanya absen (misal akun kiosk)
+//   false = tetap ikut absensi walau jabatannya biasanya tidak (misal owner ikut coba)
 function isAttendanceExempt(employee) {
   if (!employee) return false;
-  if (employee.skip_attendance) return true;
-  return NO_ATTENDANCE_TITLES.includes(employee.job_title);
+  if (employee.skip_attendance === true) return true;
+  if (employee.skip_attendance === false) return false;
+  return isAttendanceExemptByTitle(employee.job_title);
 }
 
 // Alasan pengecualian, untuk ditampilkan di kiosk
 function attendanceExemptReason(employee) {
   if (!employee) return '';
-  if (NO_ATTENDANCE_TITLES.includes(employee.job_title)) return employee.job_title;
-  if (employee.skip_attendance) return 'Dikecualikan';
+  if (employee.skip_attendance === true) return 'Dikecualikan manual';
+  if (isAttendanceExemptByTitle(employee.job_title)) return employee.job_title;
   return '';
 }
 
@@ -4204,7 +4213,7 @@ Object.assign(window, {
   uploadTreatmentPhoto, getTransactionPhotos, deleteTreatmentPhoto,
   clockIn, clockOut, getTodayAttendance, listAttendance, getAttendancePhotoUrl,
   getAttendanceSummary, calcLateMinutes, calcEarlyLeaveMinutes, todayDateStr,
-  isAttendanceExempt, attendanceExemptReason, NO_ATTENDANCE_TITLES,
+  isAttendanceExempt, attendanceExemptReason, NO_ATTENDANCE_TITLES, isAttendanceExemptByTitle,
   getDeviceLocation, mapsLinkFor, distanceMeters, getBranchGeo, distanceFromBranch,
   WORK_START, WORK_END,
   markPhotoMarketing, refreshPhotoSignedUrl, updatePhotoSkipReason,

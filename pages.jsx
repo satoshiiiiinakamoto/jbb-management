@@ -2987,7 +2987,7 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
     role: 'employee',
     base_salary: 1500000,
     meal_allowance: 0,
-    skip_attendance: false,
+    skip_attendance: null,
     branch_id: defaultBranchId,
   });
 
@@ -3069,7 +3069,7 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
       setForm({
         email: '', password: '', full_name: '', username: '',
         job_title: 'Lash Technician', role: 'employee',
-        base_salary: 1500000, meal_allowance: 0, skip_attendance: false,
+        base_salary: 1500000, meal_allowance: 0, skip_attendance: null,
         branch_id: defaultBranchId,
       });
     } catch (err) {
@@ -3182,18 +3182,30 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
             </Field>
           </div>
 
-          <label style={{display:'flex',alignItems:'flex-start',gap:9,cursor:'pointer',padding:'10px 12px',background:'var(--cream)',borderRadius:8,marginTop:4}}>
-            <input type="checkbox" checked={!!form.skip_attendance}
-              onChange={e => update({ skip_attendance: e.target.checked })}
-              style={{accentColor:'var(--mauve)',width:17,height:17,marginTop:1}}/>
-            <div>
-              <div style={{fontSize:13,fontWeight:500}}>Tidak ikut absensi harian</div>
-              <div style={{fontSize:11,color:'var(--muted)'}}>
-                Untuk akun kiosk absensi atau staf yang tidak perlu absen.
-                Owner dan Manager sudah otomatis dikecualikan.
-              </div>
-            </div>
-          </label>
+          {(() => {
+            // Centang ini artinya "kebalikan dari aturan jabatan"
+            const defaultExempt = isAttendanceExemptByTitle(form.job_title);
+            const checked = defaultExempt
+              ? form.skip_attendance === false   // Owner/Manager: centang = ikut absensi
+              : form.skip_attendance === true;   // lainnya: centang = tidak ikut absensi
+            return (
+              <label style={{display:'flex',alignItems:'flex-start',gap:9,cursor:'pointer',padding:'10px 12px',background:'var(--cream)',borderRadius:8,marginTop:4}}>
+                <input type="checkbox" checked={checked}
+                  onChange={e => update({ skip_attendance: e.target.checked ? (defaultExempt ? false : true) : null })}
+                  style={{accentColor:'var(--mauve)',width:17,height:17,marginTop:1}}/>
+                <div>
+                  <div style={{fontSize:13,fontWeight:500}}>
+                    {defaultExempt ? 'Ikut absensi harian' : 'Tidak ikut absensi harian'}
+                  </div>
+                  <div style={{fontSize:11,color:'var(--muted)'}}>
+                    {defaultExempt
+                      ? `${form.job_title} secara bawaan tidak absen. Centang kalau tetap mau ikut absensi.`
+                      : 'Untuk akun kiosk absensi atau staf yang tidak perlu absen.'}
+                  </div>
+                </div>
+              </label>
+            );
+          })()}
 
           <div style={{display:'flex',gap:10,justifyContent:'flex-end',marginTop:20,flexWrap:'wrap'}}>
             <button type="button" className="btn btn-ghost" onClick={onClose} disabled={submitting}>Batal</button>
@@ -3316,7 +3328,7 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
       job_title: emp.job_title,
       base_salary: emp.base_salary,
       meal_allowance: emp.meal_allowance,
-      skip_attendance: !!emp.skip_attendance,
+      skip_attendance: emp.skip_attendance === null || emp.skip_attendance === undefined ? null : !!emp.skip_attendance,
       branch_id: emp.branch_id,
     });
   }
@@ -3353,7 +3365,7 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
         job_title: editForm.job_title,
         base_salary: salary,
         meal_allowance: meal,
-        skip_attendance: !!editForm.skip_attendance,
+        skip_attendance: editForm.skip_attendance === null || editForm.skip_attendance === undefined ? null : !!editForm.skip_attendance,
       };
       if (isSuper && editForm.branch_id) patch.branch_id = editForm.branch_id;
       await updateEmployee(id, patch);
@@ -3522,14 +3534,20 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
                         {emp.is_active === false
                           ? <span className="badge badge-red">nonaktif</span>
                           : <span className="badge badge-green">aktif</span>}
-                        {isEditing ? (
-                          <label style={{display:'flex',alignItems:'center',gap:5,marginTop:6,fontSize:11,color:'var(--muted)',cursor:'pointer',whiteSpace:'nowrap'}}>
-                            <input type="checkbox" checked={!!editForm.skip_attendance}
-                              onChange={e => setEditForm({...editForm, skip_attendance: e.target.checked})}
-                              style={{accentColor:'var(--mauve)'}}/>
-                            tidak ikut absensi
-                          </label>
-                        ) : (isAttendanceExempt(emp) && (
+                        {isEditing ? (() => {
+                          const defExempt = isAttendanceExemptByTitle(editForm.job_title);
+                          const checked = defExempt
+                            ? editForm.skip_attendance === false
+                            : editForm.skip_attendance === true;
+                          return (
+                            <label style={{display:'flex',alignItems:'center',gap:5,marginTop:6,fontSize:11,color:'var(--muted)',cursor:'pointer',whiteSpace:'nowrap'}}>
+                              <input type="checkbox" checked={checked}
+                                onChange={e => setEditForm({...editForm, skip_attendance: e.target.checked ? (defExempt ? false : true) : null})}
+                                style={{accentColor:'var(--mauve)'}}/>
+                              {defExempt ? 'ikut absensi' : 'tidak ikut absensi'}
+                            </label>
+                          );
+                        })() : (isAttendanceExempt(emp) && (
                           <div style={{fontSize:10,color:'var(--muted)',marginTop:4,whiteSpace:'nowrap'}}>
                             tidak ikut absensi
                           </div>
