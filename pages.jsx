@@ -2987,6 +2987,7 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
     role: 'employee',
     base_salary: 1500000,
     meal_allowance: 0,
+    skip_attendance: false,
     branch_id: defaultBranchId,
   });
 
@@ -3047,7 +3048,7 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
 
     setSubmitting(true);
     try {
-      await createEmployee({
+      const created = await createEmployee({
         email: form.email.trim().toLowerCase(),
         password: form.password,
         full_name: form.full_name.trim(),
@@ -3058,13 +3059,18 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
         meal_allowance: meal,
         branch_id: form.branch_id,
       });
+      // Penanda absensi di-set terpisah (Edge Function tidak menangani kolom ini)
+      if (form.skip_attendance && created?.id) {
+        try { await updateEmployee(created.id, { skip_attendance: true }); } catch (e) {}
+      }
       toast('Karyawan berhasil ditambahkan! 🎉', 'success');
       onSuccess();
       onClose();
       setForm({
         email: '', password: '', full_name: '', username: '',
         job_title: 'Lash Technician', role: 'employee',
-        base_salary: 1500000, meal_allowance: 0, branch_id: defaultBranchId,
+        base_salary: 1500000, meal_allowance: 0, skip_attendance: false,
+        branch_id: defaultBranchId,
       });
     } catch (err) {
       toast('Gagal: ' + (err.message || err), 'error');
@@ -3176,6 +3182,19 @@ function AddEmployeeModal({ open, onClose, onSuccess, profile, branches, current
                 placeholder="0"/>
             </Field>
           </div>
+
+          <label style={{display:'flex',alignItems:'flex-start',gap:9,cursor:'pointer',padding:'10px 12px',background:'var(--cream)',borderRadius:8,marginTop:4}}>
+            <input type="checkbox" checked={!!form.skip_attendance}
+              onChange={e => update({ skip_attendance: e.target.checked })}
+              style={{accentColor:'var(--mauve)',width:17,height:17,marginTop:1}}/>
+            <div>
+              <div style={{fontSize:13,fontWeight:500}}>Tidak ikut absensi harian</div>
+              <div style={{fontSize:11,color:'var(--muted)'}}>
+                Untuk akun kiosk absensi atau staf yang tidak perlu absen.
+                Owner dan Manager sudah otomatis dikecualikan.
+              </div>
+            </div>
+          </label>
 
           <div style={{display:'flex',gap:10,justifyContent:'flex-end',marginTop:20,flexWrap:'wrap'}}>
             <button type="button" className="btn btn-ghost" onClick={onClose} disabled={submitting}>Batal</button>
@@ -3298,6 +3317,7 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
       job_title: emp.job_title,
       base_salary: emp.base_salary,
       meal_allowance: emp.meal_allowance,
+      skip_attendance: !!emp.skip_attendance,
       branch_id: emp.branch_id,
     });
   }
@@ -3334,6 +3354,7 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
         job_title: editForm.job_title,
         base_salary: salary,
         meal_allowance: meal,
+        skip_attendance: !!editForm.skip_attendance,
       };
       if (isSuper && editForm.branch_id) patch.branch_id = editForm.branch_id;
       await updateEmployee(id, patch);
@@ -3502,6 +3523,18 @@ function EmployeesPage({ profile, currentBranchId, branches }) {
                         {emp.is_active === false
                           ? <span className="badge badge-red">nonaktif</span>
                           : <span className="badge badge-green">aktif</span>}
+                        {isEditing ? (
+                          <label style={{display:'flex',alignItems:'center',gap:5,marginTop:6,fontSize:11,color:'var(--muted)',cursor:'pointer',whiteSpace:'nowrap'}}>
+                            <input type="checkbox" checked={!!editForm.skip_attendance}
+                              onChange={e => setEditForm({...editForm, skip_attendance: e.target.checked})}
+                              style={{accentColor:'var(--mauve)'}}/>
+                            tidak ikut absensi
+                          </label>
+                        ) : (isAttendanceExempt(emp) && (
+                          <div style={{fontSize:10,color:'var(--muted)',marginTop:4,whiteSpace:'nowrap'}}>
+                            tidak ikut absensi
+                          </div>
+                        ))}
                       </td>
                       <td>
                         {isEditing ? (
@@ -6563,7 +6596,10 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
   const detik = String(clock.getSeconds()).padStart(2,'0');
   const tanggalPanjang = clock.toLocaleDateString('id-ID', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
 
-  const sudahMasuk = employees.filter(e => statusOf(e.id) !== 'belum').length;
+  // Pisahkan yang ikut absensi dan yang dikecualikan (Owner, Manager, akun kiosk)
+  const absenEmployees = employees.filter(e => !isAttendanceExempt(e));
+  const exemptEmployees = employees.filter(e => isAttendanceExempt(e));
+  const sudahMasuk = absenEmployees.filter(e => statusOf(e.id) !== 'belum').length;
 
   return (
     <div className="page">
@@ -6580,13 +6616,13 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
 
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}}>
         <div className="eyebrow">Tap nama untuk absen</div>
-        <div style={{fontSize:12,color:'var(--muted)'}}>{sudahMasuk} dari {employees.length} sudah absen</div>
+        <div style={{fontSize:12,color:'var(--muted)'}}>{sudahMasuk} dari {absenEmployees.length} sudah absen</div>
       </div>
 
       {loading ? <Loader text="Memuat karyawan..."/> :
-       !employees.length ? <Empty title="Belum ada karyawan" sub="Tambahkan karyawan di menu Karyawan."/> : (
+       !absenEmployees.length ? <Empty title="Belum ada karyawan" sub="Tambahkan karyawan di menu Karyawan."/> : (
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:12}}>
-          {employees.map(emp => {
+          {absenEmployees.map(emp => {
             const st = statusOf(emp.id);
             const r = rowFor(emp.id);
             const kind = st === 'belum' ? 'in' : 'out';
@@ -6628,6 +6664,25 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
               </button>
             );
           })}
+        </div>
+      )}
+
+      {!loading && exemptEmployees.length > 0 && (
+        <div style={{marginTop:22}}>
+          <div className="eyebrow" style={{marginBottom:10}}>Tidak ikut absensi</div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+            {exemptEmployees.map(emp => (
+              <div key={emp.id} style={{
+                padding:'8px 12px',borderRadius:100,background:'var(--cream)',
+                border:'1px dashed var(--line)',fontSize:12,color:'var(--muted)',
+              }}>
+                {emp.full_name}
+                <span style={{marginLeft:6,opacity:0.75}}>
+                  · {attendanceExemptReason(emp) || 'Dikecualikan'}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -6829,6 +6884,196 @@ function FaceScanCamera({ employeeName, kind, onCancel, onCaptured }) {
   );
 }
 
+// =====================================================
+// LAPORAN ABSENSI — rekap per periode untuk admin
+// =====================================================
+function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
+  const [rows, setRows] = useStateP([]);
+  const [loading, setLoading] = useStateP(true);
+  const [preset, setPreset] = useStateP('period');
+  const [customFrom, setCustomFrom] = useStateP('');
+  const [customTo, setCustomTo] = useStateP('');
+  const [photoUrl, setPhotoUrl] = useStateP(null);
+  const [photoLabel, setPhotoLabel] = useStateP('');
+
+  const isSuper = profile.role === 'super_admin';
+  const effectiveBranchId = isSuper ? currentBranchId : profile.branch_id;
+  const canDelete = isSuper || profile.role === 'branch_admin';
+
+  const range = useMemoP(() => {
+    const today = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const fmt = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    if (preset === 'today') return { from: fmt(today), to: fmt(today) };
+    if (preset === 'week') {
+      const s = new Date(today); s.setDate(s.getDate() - 6);
+      return { from: fmt(s), to: fmt(today) };
+    }
+    if (preset === 'custom' && customFrom && customTo) return { from: customFrom, to: customTo };
+    const p = getPayrollPeriod();
+    return { from: p.period_start, to: p.period_end };
+  }, [preset, customFrom, customTo]);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const data = await listAttendance(effectiveBranchId, range.from, range.to);
+      setRows(data);
+    } catch (err) {
+      toast('Gagal memuat: ' + (err.message || err), 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffectP(() => { load(); }, [effectiveBranchId, range.from, range.to]);
+
+  async function showPhoto(path, label) {
+    if (!path) { toast('Tidak ada foto', 'error'); return; }
+    const url = await getAttendancePhotoUrl(path);
+    if (!url) { toast('Foto tidak bisa dibuka', 'error'); return; }
+    setPhotoLabel(label);
+    setPhotoUrl(url);
+  }
+
+  async function handleDelete(row) {
+    if (!window.confirm(`Hapus absensi ${row.employee?.full_name} tanggal ${fmtDate(row.date)}?`)) return;
+    try {
+      const { error } = await sb.from('attendance').delete().eq('id', row.id);
+      if (error) throw error;
+      toast('Absensi dihapus', 'success');
+      load();
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    }
+  }
+
+  // Rekap per karyawan
+  const summary = useMemoP(() => {
+    const by = {};
+    for (const r of rows) {
+      const id = r.employee_id;
+      if (!by[id]) by[id] = { name: r.employee?.full_name || '—', hadir: 0, telat: 0, menitTelat: 0, lupaPulang: 0 };
+      const s = by[id];
+      if (r.clock_in_at) s.hadir += 1;
+      if (r.late_minutes > 0) { s.telat += 1; s.menitTelat += r.late_minutes; }
+      if (r.clock_in_at && !r.clock_out_at) s.lupaPulang += 1;
+    }
+    return Object.values(by).sort((a, b) => a.name.localeCompare(b.name));
+  }, [rows]);
+
+  const fmtJam = ts => ts ? new Date(ts).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '—';
+
+  return (
+    <div className="page">
+      <PageHeader title="Laporan Absensi" sub="Kehadiran">
+        <button className="btn btn-ghost btn-sm" onClick={load}>Muat ulang</button>
+      </PageHeader>
+
+      <Card>
+        <Field label="Periode">
+          <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+            {[['period','Periode (26–25)'],['today','Hari ini'],['week','7 hari'],['custom','Custom']].map(([v,l]) => (
+              <button key={v} type="button"
+                className={'btn btn-sm ' + (preset === v ? 'btn-primary' : 'btn-ghost')}
+                onClick={() => setPreset(v)}>{l}</button>
+            ))}
+          </div>
+        </Field>
+        {preset === 'custom' && (
+          <div className="form-row">
+            <Field label="Dari"><input type="date" className="form-input" value={customFrom} onChange={e => setCustomFrom(e.target.value)}/></Field>
+            <Field label="Sampai"><input type="date" className="form-input" value={customTo} onChange={e => setCustomTo(e.target.value)}/></Field>
+          </div>
+        )}
+        <div style={{fontSize:12,color:'var(--muted)'}}>
+          {fmtDate(range.from)} sampai {fmtDate(range.to)} · {rows.length} catatan
+        </div>
+      </Card>
+
+      {/* REKAP */}
+      <Card title="Rekap per Karyawan" sub="Jumlah hari hadir dan keterlambatan">
+        {loading ? <Loader text="Memuat..."/> :
+         !summary.length ? <Empty title="Belum ada data absensi" sub="Belum ada yang absen di periode ini."/> : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Karyawan</th>
+                  <th className="table-numeric">Hari Hadir</th>
+                  <th className="table-numeric">Hari Telat</th>
+                  <th className="table-numeric">Total Telat</th>
+                  <th className="table-numeric">Lupa Pulang</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.map(s => (
+                  <tr key={s.name}>
+                    <td style={{fontWeight:500}}>{s.name}</td>
+                    <td className="table-numeric">{s.hadir}</td>
+                    <td className="table-numeric" style={{color: s.telat > 0 ? 'var(--red)' : 'inherit'}}>{s.telat}</td>
+                    <td className="table-numeric" style={{color: s.menitTelat > 0 ? 'var(--red)' : 'inherit'}}>
+                      {s.menitTelat > 0 ? `${s.menitTelat} menit` : '—'}
+                    </td>
+                    <td className="table-numeric" style={{color: s.lupaPulang > 0 ? 'var(--amber)' : 'inherit'}}>
+                      {s.lupaPulang > 0 ? s.lupaPulang : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {/* RINCIAN HARIAN */}
+      <Card title="Rincian Harian" sub="Klik jam untuk melihat foto selfie">
+        {loading ? <Loader text="Memuat..."/> :
+         !rows.length ? <Empty title="Belum ada catatan" sub="Belum ada absensi di periode ini."/> : (
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {rows.map(r => (
+              <div key={r.id} style={{padding:'10px 12px',border:'1px solid var(--line)',borderRadius:10,background:'var(--paper)'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10,flexWrap:'wrap'}}>
+                  <div style={{minWidth:0,flex:1}}>
+                    <div style={{fontWeight:500,fontSize:14}}>{r.employee?.full_name || '—'}</div>
+                    <div style={{fontSize:12,color:'var(--muted)'}}>{fmtDate(r.date)}</div>
+                  </div>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => showPhoto(r.clock_in_photo, `${r.employee?.full_name} · masuk`)}>
+                      Masuk {fmtJam(r.clock_in_at)}
+                      {r.late_minutes > 0 && <span style={{color:'var(--red)'}}> · telat {r.late_minutes}m</span>}
+                    </button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => showPhoto(r.clock_out_photo, `${r.employee?.full_name} · pulang`)}
+                      disabled={!r.clock_out_at}>
+                      Pulang {fmtJam(r.clock_out_at)}
+                    </button>
+                    {canDelete && (
+                      <button className="btn btn-ghost btn-sm" style={{color:'var(--red)'}} onClick={() => handleDelete(r)}>Hapus</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Modal foto */}
+      {photoUrl && (
+        <div style={{position:'fixed',inset:0,background:'rgba(36,26,44,0.75)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+          onClick={() => setPhotoUrl(null)}>
+          <div style={{maxWidth:420,width:'100%',textAlign:'center'}} onClick={e => e.stopPropagation()}>
+            <div style={{color:'#fff',marginBottom:10,fontSize:14}}>{photoLabel}</div>
+            <img src={photoUrl} alt="Selfie absensi" style={{width:'100%',borderRadius:16,display:'block'}}/>
+            <button className="btn btn-ghost" style={{marginTop:14,color:'#fff',borderColor:'rgba(255,255,255,0.4)'}}
+              onClick={() => setPhotoUrl(null)}>Tutup</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 Object.assign(window, {
   LoginPage, AdminDashboard, BranchesPage,
   NewTransactionPage, TransactionsPage,
@@ -6841,5 +7086,5 @@ Object.assign(window, {
   EditTransactionModal,
   // Tahap E
   PhotoUploadField, PhotoGalleryModal,
-  AbsensiPage, FaceScanCamera,
+  AbsensiPage, FaceScanCamera, LaporanAbsensiPage,
 });

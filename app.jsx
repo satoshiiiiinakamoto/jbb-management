@@ -140,6 +140,7 @@ function App() {
     { id: 'reports', label: 'Laporan' },
     { id: 'kas', label: 'Kas' },
     { id: 'absensi', label: 'Absensi' },
+    { id: 'laporanAbsensi', label: 'Lap. Absensi' },
     { id: 'payroll', label: 'Gaji' },
     { id: 'employees', label: 'Karyawan' },
     { id: 'branches', label: 'Cabang' },
@@ -152,6 +153,7 @@ function App() {
     { id: 'reports', label: 'Laporan' },
     { id: 'kas', label: 'Kas' },
     { id: 'absensi', label: 'Absensi' },
+    { id: 'laporanAbsensi', label: 'Lap. Absensi' },
     { id: 'payroll', label: 'Gaji' },
     { id: 'employees', label: 'Karyawan' },
   ];
@@ -189,6 +191,9 @@ function App() {
         break;
       case 'absensi':
         pageContent = <AbsensiPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
+        break;
+      case 'laporanAbsensi':
+        pageContent = <LaporanAbsensiPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
         break;
       case 'payroll':
         pageContent = <PayrollPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;

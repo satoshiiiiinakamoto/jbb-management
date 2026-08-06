@@ -93,6 +93,25 @@ const JOB_TITLES = [
 // Jabatan yang tidak wajib gaji pokok (biasanya owner/manager dapat profit sharing, bukan gaji)
 const SALARY_OPTIONAL_TITLES = ['Owner', 'Manager'];
 
+// Jabatan yang otomatis tidak ikut absensi harian
+const NO_ATTENDANCE_TITLES = ['Owner', 'Manager'];
+
+// Karyawan dikecualikan dari absensi kalau jabatannya Owner/Manager,
+// atau ditandai manual (misalnya akun kiosk absensi)
+function isAttendanceExempt(employee) {
+  if (!employee) return false;
+  if (employee.skip_attendance) return true;
+  return NO_ATTENDANCE_TITLES.includes(employee.job_title);
+}
+
+// Alasan pengecualian, untuk ditampilkan di kiosk
+function attendanceExemptReason(employee) {
+  if (!employee) return '';
+  if (NO_ATTENDANCE_TITLES.includes(employee.job_title)) return employee.job_title;
+  if (employee.skip_attendance) return 'Dikecualikan';
+  return '';
+}
+
 function isSalaryOptional(jobTitle) {
   return SALARY_OPTIONAL_TITLES.includes(jobTitle);
 }
@@ -4082,6 +4101,7 @@ Object.assign(window, {
   uploadTreatmentPhoto, getTransactionPhotos, deleteTreatmentPhoto,
   clockIn, clockOut, getTodayAttendance, listAttendance, getAttendancePhotoUrl,
   getAttendanceSummary, calcLateMinutes, calcEarlyLeaveMinutes, todayDateStr,
+  isAttendanceExempt, attendanceExemptReason, NO_ATTENDANCE_TITLES,
   WORK_START, WORK_END,
   markPhotoMarketing, refreshPhotoSignedUrl, updatePhotoSkipReason,
   listMarketingPhotos, listAllPhotos,
