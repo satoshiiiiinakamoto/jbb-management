@@ -410,6 +410,9 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
 
   const isOT = isOvertime(startTime);
   const [hsJobId, setHsJobId] = useStateP(null);
+  // Menandai transaksi ini berasal dari home service, supaya setelah simpan
+  // bisa langsung diarahkan balik untuk menyelesaikan tahap terakhir
+  const [hsReturnPending, setHsReturnPending] = useStateP(false);
 
   // Isi otomatis kalau datang dari halaman Home Service setelah treatment selesai
   useEffectP(() => {
@@ -682,7 +685,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
       // Hubungkan kembali ke orderan home service kalau transaksi ini berasal dari sana
       if (hsJobId) {
         try { await linkHomeServiceTransaction(hsJobId, newTrx.id); } catch (e) {}
-        setHsJobId(null);
+        setHsReturnPending(true);
       }
     } catch (err) {
       toast('Gagal: ' + (err.message || err), 'error');
@@ -1365,7 +1368,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
           position:'fixed',inset:0,background:'rgba(36,26,44,0.6)',
           zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',
           padding:20,backdropFilter:'blur(3px)',
-        }} onClick={() => { setShowInvoicePrompt(false); setPage('transactions'); }}>
+        }} onClick={() => { setShowInvoicePrompt(false); setPage(hsReturnPending ? 'homeService' : 'transactions'); }}>
           <div style={{
             background:'var(--paper)',borderRadius:16,padding:'24px 22px',maxWidth:340,width:'100%',
             boxShadow:'0 12px 40px rgba(0,0,0,0.2)',textAlign:'center',
@@ -1381,10 +1384,29 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
               <button className="btn btn-primary" onClick={() => printInvoice(savedTransactionId)}>
                 🧾 Cetak / Download Invoice
               </button>
-              <button className="btn btn-ghost" onClick={() => { setShowInvoicePrompt(false); setPage('transactions'); }}>
-                Nanti saja
-              </button>
+              {hsReturnPending ? (
+                <button className="btn btn-ghost" onClick={() => { setShowInvoicePrompt(false); setPage('homeService'); }}>
+                  Nanti saja
+                </button>
+              ) : (
+                <button className="btn btn-ghost" onClick={() => { setShowInvoicePrompt(false); setPage('transactions'); }}>
+                  Nanti saja
+                </button>
+              )}
             </div>
+
+            {hsReturnPending && (
+              <div style={{marginTop:16,paddingTop:14,borderTop:'1px solid var(--line)'}}>
+                <div style={{fontSize:12,color:'var(--plum)',marginBottom:10,lineHeight:1.5}}>
+                  Transaksi ini dari home service. Jangan lupa geser tahap terakhir
+                  <strong> Sudah Sampai Kembali</strong> setelah kamu tiba di salon atau di rumah.
+                </div>
+                <button className="btn btn-primary" style={{width:'100%'}}
+                  onClick={() => { setShowInvoicePrompt(false); setPage('homeService'); }}>
+                  Kembali ke Home Service
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
