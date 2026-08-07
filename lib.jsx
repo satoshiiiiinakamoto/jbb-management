@@ -3938,6 +3938,9 @@ const WORK_END = { hour: 19, minute: 30 };    // pulang 19:30
 // Toleransi keterlambatan: datang 09:30 sampai 10:00 belum dihitung telat.
 // Di atas 10:00 baru terhitung terlambat, dan dihitung mulai dari 10:00.
 const LATE_TOLERANCE_MINUTES = 30;
+// Toleransi pulang: pulang 19:15 sampai 19:30 masih dianggap wajar.
+// Di bawah 19:15 dihitung pulang cepat, kecuali memang ambil lembur pagi.
+const EARLY_LEAVE_TOLERANCE_MINUTES = 15;
 
 function todayDateStr() {
   const d = new Date();
@@ -3980,7 +3983,30 @@ function calcEarlyLeaveMinutes(at = new Date()) {
   const sched = new Date(at);
   sched.setHours(WORK_END.hour, WORK_END.minute, 0, 0);
   const diff = Math.floor((sched - at) / 60000);
-  return diff > 0 ? diff : 0;
+  const cepat = diff - EARLY_LEAVE_TOLERANCE_MINUTES;
+  return cepat > 0 ? cepat : 0;
+}
+
+// Status kepulangan: 'lewat' (>= 19:30), 'toleransi' (19:15 sampai 19:30),
+// atau 'cepat' (sebelum 19:15). Dipakai untuk tampilan.
+function getDepartureStatus(clockOutAt) {
+  if (!clockOutAt) return null;
+  const at = new Date(clockOutAt);
+  const sched = new Date(at);
+  sched.setHours(WORK_END.hour, WORK_END.minute, 0, 0);
+  const minutesBefore = Math.floor((sched - at) / 60000);
+  const earlyMinutes = Math.max(0, minutesBefore - EARLY_LEAVE_TOLERANCE_MINUTES);
+  let status = 'lewat';
+  if (earlyMinutes > 0) status = 'cepat';
+  else if (minutesBefore > 0) status = 'toleransi';
+  return { status, minutesBefore, earlyMinutes };
+}
+
+// Batas awal toleransi pulang, misal "19:15"
+function departureToleranceLabel() {
+  const d = new Date();
+  d.setHours(WORK_END.hour, WORK_END.minute - EARLY_LEAVE_TOLERANCE_MINUTES, 0, 0);
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
 
 // Ambil lokasi perangkat. TIDAK PERNAH menggagalkan absensi:
@@ -4173,6 +4199,69 @@ async function getAttendancePhotoUrl(storagePath, expiresIn = 3600) {
     .createSignedUrl(storagePath, expiresIn);
   if (error) return null;
   return data?.signedUrl || null;
+}
+
+// Hapus foto selfie absensi periode lama supaya penyimpanan tidak penuh.
+// Catatan absensinya TIDAK dihapus (masih dibutuhkan untuk riwayat gaji),
+// hanya file fotonya yang dibuang dan penunjuknya dikosongkan.
+async function cleanupOldAttendancePhotos(branchId = null) {
+  // Batas: semua yang tanggalnya sebelum periode gaji yang sedang berjalan
+  const periode = getPayrollPeriod();
+  const batas = periode.period_start;
+
+  let query = sb
+    .from('attendance')
+    .select('id, clock_in_photo, clock_out_photo')
+    .lt('date', batas)
+    .or('clock_in_photo.not.is.null,clock_out_photo.not.is.null');
+  if (branchId) query = query.eq('branch_id', branchId);
+
+  const { data, error } = await query;
+  if (error) throw error;
+  const rows = data || [];
+  if (!rows.length) return { deletedPhotos: 0, affectedRows: 0, batas };
+
+  const paths = [];
+  for (const r of rows) {
+    if (r.clock_in_photo) paths.push(r.clock_in_photo);
+    if (r.clock_out_photo) paths.push(r.clock_out_photo);
+  }
+
+  // Hapus file per 100 supaya tidak kelebihan beban
+  for (let i = 0; i < paths.length; i += 100) {
+    const batch = paths.slice(i, i + 100);
+    try { await sb.storage.from(ATTENDANCE_BUCKET).remove(batch); } catch (e) {}
+  }
+
+  // Kosongkan penunjuk fotonya
+  const ids = rows.map(r => r.id);
+  for (let i = 0; i < ids.length; i += 200) {
+    const batch = ids.slice(i, i + 200);
+    await sb.from('attendance')
+      .update({ clock_in_photo: null, clock_out_photo: null })
+      .in('id', batch);
+  }
+
+  return { deletedPhotos: paths.length, affectedRows: rows.length, batas };
+}
+
+// Berapa foto lama yang masih tersimpan (untuk ditampilkan sebelum dibersihkan)
+async function countOldAttendancePhotos(branchId = null) {
+  const periode = getPayrollPeriod();
+  let query = sb
+    .from('attendance')
+    .select('id, clock_in_photo, clock_out_photo')
+    .lt('date', periode.period_start)
+    .or('clock_in_photo.not.is.null,clock_out_photo.not.is.null');
+  if (branchId) query = query.eq('branch_id', branchId);
+  const { data, error } = await query;
+  if (error) return { photos: 0, rows: 0, batas: periode.period_start };
+  let photos = 0;
+  for (const r of (data || [])) {
+    if (r.clock_in_photo) photos++;
+    if (r.clock_out_photo) photos++;
+  }
+  return { photos, rows: (data || []).length, batas: periode.period_start };
 }
 
 // Ringkasan absensi per karyawan dalam satu periode (untuk gaji)
@@ -4442,6 +4531,8 @@ Object.assign(window, {
   getAttendanceSummary, calcLateMinutes, calcEarlyLeaveMinutes, todayDateStr,
   isAttendanceExempt, attendanceExemptReason, NO_ATTENDANCE_TITLES, isAttendanceExemptByTitle,
   getArrivalStatus, toleranceEndLabel, LATE_TOLERANCE_MINUTES,
+  getDepartureStatus, departureToleranceLabel, EARLY_LEAVE_TOLERANCE_MINUTES,
+  cleanupOldAttendancePhotos, countOldAttendancePhotos,
   getDeviceLocation, mapsLinkFor, distanceMeters, getBranchGeo, distanceFromBranch,
   listHomeServiceJobs, createHomeServiceJob, advanceHomeServiceJob, cancelHomeServiceJob,
   linkHomeServiceTransaction, deleteHomeServiceJob, hsStatusInfo,

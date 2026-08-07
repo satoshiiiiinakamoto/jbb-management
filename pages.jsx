@@ -6787,7 +6787,7 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
           {jam}<span style={{fontSize:24,opacity:0.7}}>:{detik}</span>
         </div>
         <div style={{fontSize:12,opacity:0.85,marginTop:8}}>
-          {branch?.name || '—'} · masuk 09:30 (toleransi sampai {toleranceEndLabel()}) · pulang 19:30
+          {branch?.name || '—'} · masuk 09:30 (toleransi {toleranceEndLabel()}) · pulang 19:30 (toleransi {departureToleranceLabel()})
         </div>
       </div>
 
@@ -6851,6 +6851,11 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
                       const st = getArrivalStatus(r.clock_in_at);
                       if (st?.status === 'telat') return <div style={{color:'var(--red)'}}>telat {st.lateMinutes} menit</div>;
                       if (st?.status === 'toleransi') return <div style={{color:'var(--amber)'}}>dalam toleransi</div>;
+                      return null;
+                    })()}
+                    {(() => {
+                      const dp = getDepartureStatus(r.clock_out_at);
+                      if (dp?.status === 'cepat') return <div style={{color:'var(--red)'}}>pulang cepat {dp.earlyMinutes} menit</div>;
                       return null;
                     })()}
                     <div style={{color:'var(--hijau)',fontWeight:500,marginTop:2}}>Selesai</div>
@@ -7098,6 +7103,8 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
   const [customTo, setCustomTo] = useStateP('');
   const [photoUrl, setPhotoUrl] = useStateP(null);
   const [photoLabel, setPhotoLabel] = useStateP('');
+  const [fotoLama, setFotoLama] = useStateP(null);
+  const [bersihkan, setBersihkan] = useStateP(false);
 
   const isSuper = profile.role === 'super_admin';
   const effectiveBranchId = isSuper ? currentBranchId : profile.branch_id;
@@ -7129,7 +7136,13 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
     }
   }
 
+  async function cekFotoLama() {
+    try { setFotoLama(await countOldAttendancePhotos(effectiveBranchId)); }
+    catch (e) { setFotoLama(null); }
+  }
+
   useEffectP(() => { load(); }, [effectiveBranchId, range.from, range.to]);
+  useEffectP(() => { cekFotoLama(); }, [effectiveBranchId]);
 
   async function showPhoto(path, label) {
     if (!path) { toast('Tidak ada foto', 'error'); return; }
@@ -7174,6 +7187,40 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
       <PageHeader title="Laporan Absensi" sub="Kehadiran">
         <button className="btn btn-ghost btn-sm" onClick={load}>Muat ulang</button>
       </PageHeader>
+
+      {/* Pembersihan foto periode lama supaya penyimpanan tidak penuh */}
+      {fotoLama && fotoLama.photos > 0 && (
+        <Card>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+            <div style={{minWidth:0,flex:1}}>
+              <div style={{fontSize:13,fontWeight:600,color:'var(--plum-deep)'}}>
+                {fotoLama.photos} foto selfie dari periode lama
+              </div>
+              <div style={{fontSize:12,color:'var(--muted)',marginTop:3,lineHeight:1.5}}>
+                Foto sebelum {fmtDate(fotoLama.batas)} sudah tidak dibutuhkan karena gajinya sudah diproses.
+                Catatan absensinya tetap tersimpan, hanya fotonya yang dihapus.
+              </div>
+            </div>
+            <button className="btn btn-primary btn-sm" disabled={bersihkan}
+              onClick={async () => {
+                if (!window.confirm(`Hapus ${fotoLama.photos} foto selfie dari periode sebelum ${fmtDate(fotoLama.batas)}?\n\nCatatan absensi dan jam kerjanya TIDAK ikut terhapus.`)) return;
+                setBersihkan(true);
+                try {
+                  const hasil = await cleanupOldAttendancePhotos(effectiveBranchId);
+                  toast(`${hasil.deletedPhotos} foto lama dihapus ✓`, 'success');
+                  cekFotoLama();
+                  load();
+                } catch (err) {
+                  toast('Gagal: ' + (err.message || err), 'error');
+                } finally {
+                  setBersihkan(false);
+                }
+              }}>
+              {bersihkan ? 'Membersihkan...' : 'Bersihkan Foto Lama'}
+            </button>
+          </div>
+        </Card>
+      )}
 
       <Card>
         <Field label="Periode">
@@ -7256,6 +7303,12 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                     <button className="btn btn-ghost btn-sm" onClick={() => showPhoto(r.clock_out_photo, `${r.employee?.full_name} · pulang`)}
                       disabled={!r.clock_out_at}>
                       Pulang {fmtJam(r.clock_out_at)}
+                      {(() => {
+                        const dp = getDepartureStatus(r.clock_out_at);
+                        if (dp?.status === 'cepat') return <span style={{color:'var(--red)'}}> · cepat {dp.earlyMinutes}m</span>;
+                        if (dp?.status === 'toleransi') return <span style={{color:'var(--amber)'}}> · toleransi</span>;
+                        return null;
+                      })()}
                     </button>
                     {canDelete && (
                       <button className="btn btn-ghost btn-sm" style={{color:'var(--red)'}} onClick={() => handleDelete(r)}>Hapus</button>
@@ -7414,12 +7467,16 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
   const [showHistory, setShowHistory] = useStateP(false);
   const [detailJob, setDetailJob] = useStateP(null);
   const [addMemberJob, setAddMemberJob] = useStateP(null);
+  const [returnAsk, setReturnAsk] = useStateP(null);  // { job, member }
   const [tick, setTick] = useStateP(0);
 
   const isAdmin = profile.role === 'super_admin' || profile.role === 'branch_admin';
+  // Super admin: kalau "Semua Cabang" dipilih (currentBranchId kosong),
+  // tampilkan orderan SEMUA cabang, bukan jatuh ke cabang sendiri.
   const effectiveBranchId = profile.role === 'super_admin'
-    ? (currentBranchId || profile.branch_id)
+    ? currentBranchId
     : profile.branch_id;
+  const semuaCabang = profile.role === 'super_admin' && !currentBranchId;
 
   // Perbarui tampilan durasi tiap menit
   useEffectP(() => {
@@ -7428,7 +7485,7 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
   }, []);
 
   async function load() {
-    if (!effectiveBranchId) return;
+    if (!effectiveBranchId && !semuaCabang) return;
     setLoading(true);
     try {
       const data = await listHomeServiceJobs({ branchId: effectiveBranchId });
@@ -7440,22 +7497,25 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
     }
   }
 
-  useEffectP(() => { load(); }, [effectiveBranchId]);
+  useEffectP(() => { load(); }, [effectiveBranchId, semuaCabang]);
 
   // Beautician hanya melihat orderan miliknya. Admin melihat semua.
   const visibleJobs = isAdmin ? jobs : jobs.filter(j => (j.members || []).some(m => m.employee_id === profile.id));
   const activeJobs = visibleJobs.filter(j => HS_ACTIVE_STATUSES.includes(j.status));
   const pastJobs = visibleJobs.filter(j => !HS_ACTIVE_STATUSES.includes(j.status));
 
+  // Saat tahap terakhir, tanyakan dulu kembali ke mana lewat dua tombol
   async function handleAdvance(job, member) {
+    const info = hsStatusInfo(member.status);
+    if (info.next === 'returned') {
+      setReturnAsk({ job, member });
+      return;
+    }
+    await doAdvance(job, member, {});
+  }
+
+  async function doAdvance(job, member, extra) {
     try {
-      const info = hsStatusInfo(member.status);
-      const extra = {};
-      // Saat menandai sudah sampai, tanyakan kembali ke mana
-      if (info.next === 'returned') {
-        const keSalon = window.confirm('Sudah sampai di salon?\n\nOK = kembali ke salon\nBatal = langsung pulang ke rumah');
-        extra.return_to = keSalon ? 'salon' : 'rumah';
-      }
       const updated = await advanceHomeServiceMember(member, extra);
       toast(hsStatusInfo(updated.status).label + ' ✓', 'success');
       await load();
@@ -7535,6 +7595,11 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
                     )}
                     {job.client_address && (
                       <div style={{fontSize:12,color:'var(--muted)',marginTop:4}}>{job.client_address}</div>
+                    )}
+                    {semuaCabang && (
+                      <span className="badge badge-mauve" style={{fontSize:10,marginTop:5,display:'inline-block'}}>
+                        {branches.find(b => b.id === job.branch_id)?.name || job.branch_id}
+                      </span>
                     )}
                   </div>
                   <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:6}}>
@@ -7695,6 +7760,35 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
         />
       )}
 
+      {returnAsk && (
+        <div style={{position:'fixed',inset:0,background:'rgba(36,26,44,0.65)',zIndex:9300,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+          onClick={() => setReturnAsk(null)}>
+          <div style={{background:'var(--paper)',borderRadius:16,padding:'24px 22px',maxWidth:340,width:'100%',textAlign:'center'}}
+            onClick={e => e.stopPropagation()}>
+            <div style={{fontSize:34,marginBottom:8}}>🏠</div>
+            <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:22,fontWeight:600,color:'var(--plum-deep)',marginBottom:6}}>
+              Kamu sekarang di mana?
+            </div>
+            <div style={{fontSize:13,color:'var(--muted)',marginBottom:18,lineHeight:1.5}}>
+              Pilih salah satu supaya kami tahu kamu sudah sampai dengan selamat.
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:9}}>
+              <button className="btn btn-primary" style={{padding:'12px'}}
+                onClick={() => { const t = returnAsk; setReturnAsk(null); doAdvance(t.job, t.member, { return_to: 'salon' }); }}>
+                🏪 Balik ke Store
+              </button>
+              <button className="btn btn-primary" style={{padding:'12px',background:'var(--hijau)'}}
+                onClick={() => { const t = returnAsk; setReturnAsk(null); doAdvance(t.job, t.member, { return_to: 'rumah' }); }}>
+                🏠 Langsung Pulang ke Rumah
+              </button>
+              <button className="btn btn-ghost" onClick={() => setReturnAsk(null)}>
+                Batal
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {addMemberJob && (
         <HomeServiceAddMemberModal
           job={addMemberJob}
@@ -7708,6 +7802,8 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
         <HomeServiceFormModal
           profile={profile}
           branchId={effectiveBranchId}
+          branches={branches}
+          perluPilihCabang={semuaCabang}
           onClose={() => setShowForm(false)}
           onSuccess={() => { setShowForm(false); load(); }}
         />
@@ -7719,28 +7815,34 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
 // =====================================================
 // Form buat orderan home service baru
 // =====================================================
-function HomeServiceFormModal({ profile, branchId, onClose, onSuccess }) {
+function HomeServiceFormModal({ profile, branchId, branches = [], perluPilihCabang = false, onClose, onSuccess }) {
   const [employees, setEmployees] = useStateP([]);
   const [form, setForm] = useStateP({
     employee_ids: profile.role === 'employee' ? [profile.id] : [],
+    branch_id: branchId || '',
     client_name: '', client_phone: '', client_address: '', notes: '',
   });
   const [saving, setSaving] = useStateP(false);
 
+  // Daftar karyawan mengikuti cabang yang dipilih
+  const cabangAktif = perluPilihCabang ? form.branch_id : branchId;
+
   useEffectP(() => {
-    listEmployees(branchId, true).then(setEmployees).catch(() => {});
-  }, [branchId]);
+    if (!cabangAktif) { setEmployees([]); return; }
+    listEmployees(cabangAktif, true).then(setEmployees).catch(() => {});
+  }, [cabangAktif]);
 
   function update(patch) { setForm(f => ({ ...f, ...patch })); }
 
   async function handleSubmit(e) {
     e.preventDefault();
+    if (!cabangAktif) { toast('Pilih cabang dulu', 'error'); return; }
     if (!form.client_name.trim()) { toast('Nama client wajib diisi', 'error'); return; }
     if (!form.employee_ids.length) { toast('Pilih minimal satu beautician', 'error'); return; }
     setSaving(true);
     try {
       await createHomeServiceJob({
-        branch_id: branchId,
+        branch_id: cabangAktif,
         client_name: form.client_name.trim(),
         client_phone: form.client_phone.trim() || null,
         client_address: form.client_address.trim() || null,
@@ -7762,9 +7864,26 @@ function HomeServiceFormModal({ profile, branchId, onClose, onSuccess }) {
         onClick={e => e.stopPropagation()}>
         <h3 className="card-title" style={{marginBottom:14}}>Orderan Home Service Baru</h3>
         <form onSubmit={handleSubmit}>
+          {perluPilihCabang && (
+            <Field label="Cabang *" hint="Kamu sedang melihat semua cabang, jadi tentukan dulu cabangnya">
+              <select className="form-select" value={form.branch_id}
+                onChange={e => update({ branch_id: e.target.value, employee_ids: [] })}>
+                <option value="">— pilih cabang —</option>
+                {branches.map(b => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            </Field>
+          )}
+
           <Field label="Beautician *" hint="Bisa pilih lebih dari satu kalau berangkat berdua atau lebih">
             <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:190,overflowY:'auto',
               border:'1px solid var(--line)',borderRadius:10,padding:8}}>
+              {!cabangAktif && (
+                <div style={{fontSize:12,color:'var(--muted)',padding:'10px 6px',textAlign:'center'}}>
+                  Pilih cabang dulu di atas
+                </div>
+              )}
               {employees.map(emp => {
                 const dipilih = form.employee_ids.includes(emp.id);
                 return (
