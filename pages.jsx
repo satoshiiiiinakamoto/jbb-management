@@ -7588,7 +7588,12 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
       )}
 
       {detailJob && (
-        <HomeServiceDetailModal job={detailJob} onClose={() => setDetailJob(null)}/>
+        <HomeServiceDetailModal
+          job={detailJob}
+          canDelete={isAdmin}
+          onClose={() => setDetailJob(null)}
+          onDeleted={() => { setDetailJob(null); load(); }}
+        />
       )}
 
       {showForm && (
@@ -7694,7 +7699,7 @@ function HomeServiceFormModal({ profile, branchId, onClose, onSuccess }) {
 // =====================================================
 // Detail perjalanan home service — riwayat 4 tahap + lokasi
 // =====================================================
-function HomeServiceDetailModal({ job, onClose }) {
+function HomeServiceDetailModal({ job, onClose, canDelete = false, onDeleted }) {
   if (!job) return null;
 
   const fmtJam = ts => ts ? new Date(ts).toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit' }) : null;
@@ -7857,6 +7862,27 @@ function HomeServiceDetailModal({ job, onClose }) {
           {job.status === 'cancelled' && job.cancel_reason && (
             <div style={{marginTop:12,padding:'10px 12px',background:'#fdf2f2',borderRadius:8,fontSize:12,color:'var(--red)'}}>
               Dibatalkan: {job.cancel_reason}
+            </div>
+          )}
+
+          {canDelete && (
+            <div style={{marginTop:16,paddingTop:14,borderTop:'1px solid var(--line)'}}>
+              <button className="btn btn-ghost btn-sm" style={{color:'var(--red)'}}
+                onClick={async () => {
+                  if (!window.confirm(`Hapus permanen orderan "${job.client_name}"?\n\nRiwayat perjalanan dan lokasinya ikut hilang dan tidak bisa dikembalikan.`)) return;
+                  try {
+                    await deleteHomeServiceJob(job.id);
+                    toast('Orderan dihapus', 'success');
+                    onDeleted && onDeleted();
+                  } catch (err) {
+                    toast('Gagal menghapus: ' + (err.message || err), 'error');
+                  }
+                }}>
+                Hapus orderan ini
+              </button>
+              <div style={{fontSize:11,color:'var(--muted)',marginTop:6}}>
+                Untuk membersihkan data latihan. Transaksi yang sudah diinput tidak ikut terhapus.
+              </div>
             </div>
           )}
         </div>

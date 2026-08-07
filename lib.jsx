@@ -4290,6 +4290,13 @@ async function cancelHomeServiceJob(jobId, reason) {
   return data;
 }
 
+// Hapus permanen satu orderan home service (untuk membersihkan data latihan).
+// Hanya berhasil untuk admin, dibatasi oleh aturan keamanan database.
+async function deleteHomeServiceJob(jobId) {
+  const { error } = await sb.from('home_service_jobs').delete().eq('id', jobId);
+  if (error) throw error;
+}
+
 async function linkHomeServiceTransaction(jobId, transactionId) {
   const { error } = await sb
     .from('home_service_jobs')
@@ -4353,7 +4360,7 @@ Object.assign(window, {
   getArrivalStatus, toleranceEndLabel, LATE_TOLERANCE_MINUTES,
   getDeviceLocation, mapsLinkFor, distanceMeters, getBranchGeo, distanceFromBranch,
   listHomeServiceJobs, createHomeServiceJob, advanceHomeServiceJob, cancelHomeServiceJob,
-  linkHomeServiceTransaction, hsStatusInfo, HS_STATUS, HS_ACTIVE_STATUSES, minutesSince, fmtDurasi,
+  linkHomeServiceTransaction, deleteHomeServiceJob, hsStatusInfo, HS_STATUS, HS_ACTIVE_STATUSES, minutesSince, fmtDurasi,
   WORK_START, WORK_END,
   markPhotoMarketing, refreshPhotoSignedUrl, updatePhotoSkipReason,
   listMarketingPhotos, listAllPhotos,
