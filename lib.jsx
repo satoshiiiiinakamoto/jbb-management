@@ -4221,7 +4221,7 @@ const HS_ACTIVE_STATUSES = ['pending', 'accepted', 'working', 'done'];
 async function listHomeServiceJobs({ branchId = null, employeeId = null, activeOnly = false, from = null, to = null } = {}) {
   let query = sb
     .from('home_service_jobs')
-    .select('*, employee:employees(id, full_name, job_title)')
+    .select('*, employee:employees(id, full_name, job_title), members:home_service_job_members(*, employee:employees(id, full_name, job_title))')
     .order('created_at', { ascending: false });
   if (branchId) query = query.eq('branch_id', branchId);
   if (employeeId) query = query.eq('employee_id', employeeId);
@@ -4233,14 +4233,98 @@ async function listHomeServiceJobs({ branchId = null, employeeId = null, activeO
   return data || [];
 }
 
-async function createHomeServiceJob(payload) {
+async function createHomeServiceJob(payload, employeeIds = []) {
   const createdBy = (await sb.auth.getUser()).data?.user?.id || null;
+  const ids = (employeeIds && employeeIds.length) ? employeeIds : [payload.employee_id].filter(Boolean);
+  if (!ids.length) throw new Error('Pilih minimal satu beautician');
+
   const { data, error } = await sb
     .from('home_service_jobs')
-    .insert({ ...payload, status: 'pending', created_by: createdBy })
+    .insert({ ...payload, employee_id: ids[0], status: 'pending', created_by: createdBy })
+    .select()
+    .single();
+  if (error) throw error;
+
+  // Tiap beautician jadi anggota dengan tahapnya sendiri
+  const rows = ids.map(eid => ({ job_id: data.id, employee_id: eid, status: 'pending' }));
+  const { error: mErr } = await sb.from('home_service_job_members').insert(rows);
+  if (mErr) throw mErr;
+  return data;
+}
+
+// Tambah beautician ke orderan yang sudah berjalan
+async function addHomeServiceMember(jobId, employeeId) {
+  const { data, error } = await sb
+    .from('home_service_job_members')
+    .insert({ job_id: jobId, employee_id: employeeId, status: 'pending' })
     .select('*, employee:employees(id, full_name, job_title)')
     .single();
   if (error) throw error;
+  await refreshJobStatus(jobId);
+  return data;
+}
+
+async function removeHomeServiceMember(memberId, jobId) {
+  const { error } = await sb.from('home_service_job_members').delete().eq('id', memberId);
+  if (error) throw error;
+  if (jobId) await refreshJobStatus(jobId);
+}
+
+// Urutan kemajuan tahap, untuk menentukan status keseluruhan orderan
+const HS_ORDER = { pending: 0, accepted: 1, working: 2, done: 3, returned: 4 };
+
+// Status orderan mengikuti anggota yang PALING TERTINGGAL.
+// Jadi orderan belum dianggap selesai sebelum semua orang menandai sudah sampai.
+function computeJobStatus(members) {
+  const aktif = (members || []).filter(m => m.status !== 'cancelled');
+  if (!aktif.length) return 'pending';
+  let min = 99, minKey = 'pending';
+  for (const m of aktif) {
+    const v = HS_ORDER[m.status] ?? 0;
+    if (v < min) { min = v; minKey = m.status; }
+  }
+  return minKey;
+}
+
+async function refreshJobStatus(jobId) {
+  const { data } = await sb.from('home_service_job_members').select('status').eq('job_id', jobId);
+  const next = computeJobStatus(data || []);
+  await sb.from('home_service_jobs').update({ status: next }).eq('id', jobId);
+  return next;
+}
+
+// Maju satu tahap untuk SATU anggota. Tiap orang menggeser tahapnya sendiri.
+async function advanceHomeServiceMember(member, extra = {}) {
+  const info = hsStatusInfo(member.status);
+  if (!info.next) throw new Error('Tahap ini sudah selesai');
+
+  const loc = await getDeviceLocation();
+  const now = new Date().toISOString();
+  const next = info.next;
+
+  const fieldByStatus = {
+    accepted: ['accepted_at', 'accepted_lat', 'accepted_lng'],
+    working:  ['started_at', 'started_lat', 'started_lng'],
+    done:     ['finished_at', 'finished_lat', 'finished_lng'],
+    returned: ['returned_at', 'returned_lat', 'returned_lng'],
+  };
+  const [atField, latField, lngField] = fieldByStatus[next];
+
+  const { data, error } = await sb
+    .from('home_service_job_members')
+    .update({
+      status: next,
+      [atField]: now,
+      [latField]: loc?.lat ?? null,
+      [lngField]: loc?.lng ?? null,
+      ...extra,
+    })
+    .eq('id', member.id)
+    .select('*, employee:employees(id, full_name, job_title)')
+    .single();
+  if (error) throw error;
+
+  await refreshJobStatus(member.job_id);
   return data;
 }
 
@@ -4360,7 +4444,9 @@ Object.assign(window, {
   getArrivalStatus, toleranceEndLabel, LATE_TOLERANCE_MINUTES,
   getDeviceLocation, mapsLinkFor, distanceMeters, getBranchGeo, distanceFromBranch,
   listHomeServiceJobs, createHomeServiceJob, advanceHomeServiceJob, cancelHomeServiceJob,
-  linkHomeServiceTransaction, deleteHomeServiceJob, hsStatusInfo, HS_STATUS, HS_ACTIVE_STATUSES, minutesSince, fmtDurasi,
+  linkHomeServiceTransaction, deleteHomeServiceJob, hsStatusInfo,
+  addHomeServiceMember, removeHomeServiceMember, advanceHomeServiceMember,
+  computeJobStatus, refreshJobStatus, HS_ORDER, HS_STATUS, HS_ACTIVE_STATUSES, minutesSince, fmtDurasi,
   WORK_START, WORK_END,
   markPhotoMarketing, refreshPhotoSignedUrl, updatePhotoSkipReason,
   listMarketingPhotos, listAllPhotos,

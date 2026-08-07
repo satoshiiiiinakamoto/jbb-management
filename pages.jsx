@@ -7382,6 +7382,7 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
   const [showForm, setShowForm] = useStateP(false);
   const [showHistory, setShowHistory] = useStateP(false);
   const [detailJob, setDetailJob] = useStateP(null);
+  const [addMemberJob, setAddMemberJob] = useStateP(null);
   const [tick, setTick] = useStateP(0);
 
   const isAdmin = profile.role === 'super_admin' || profile.role === 'branch_admin';
@@ -7411,20 +7412,20 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
   useEffectP(() => { load(); }, [effectiveBranchId]);
 
   // Beautician hanya melihat orderan miliknya. Admin melihat semua.
-  const visibleJobs = isAdmin ? jobs : jobs.filter(j => j.employee_id === profile.id);
+  const visibleJobs = isAdmin ? jobs : jobs.filter(j => (j.members || []).some(m => m.employee_id === profile.id));
   const activeJobs = visibleJobs.filter(j => HS_ACTIVE_STATUSES.includes(j.status));
   const pastJobs = visibleJobs.filter(j => !HS_ACTIVE_STATUSES.includes(j.status));
 
-  async function handleAdvance(job) {
+  async function handleAdvance(job, member) {
     try {
-      const info = hsStatusInfo(job.status);
+      const info = hsStatusInfo(member.status);
       const extra = {};
       // Saat menandai sudah sampai, tanyakan kembali ke mana
       if (info.next === 'returned') {
         const keSalon = window.confirm('Sudah sampai di salon?\n\nOK = kembali ke salon\nBatal = langsung pulang ke rumah');
         extra.return_to = keSalon ? 'salon' : 'rumah';
       }
-      const updated = await advanceHomeServiceJob(job.id, job.status, extra);
+      const updated = await advanceHomeServiceMember(member, extra);
       toast(hsStatusInfo(updated.status).label + ' ✓', 'success');
       await load();
 
@@ -7432,9 +7433,9 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
       if (updated.status === 'done') {
         try {
           sessionStorage.setItem('jbb_hs_prefill', JSON.stringify({
-            job_id: updated.id,
-            client_name: updated.client_name,
-            client_phone: updated.client_phone || '',
+            job_id: job.id,
+            client_name: job.client_name,
+            client_phone: job.client_phone || '',
             employee_id: updated.employee_id,
           }));
         } catch (e) {}
@@ -7519,57 +7520,102 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
                   </div>
                 </div>
 
-                {/* Beautician & durasi */}
-                <div style={{display:'flex',gap:14,flexWrap:'wrap',fontSize:12,color:'var(--muted)',marginBottom:12}}>
-                  <span>Beautician: <strong style={{color:'var(--plum)'}}>{job.employee?.full_name || '—'}</strong></span>
-                  {menit != null && <span>{fmtDurasi(menit)} lalu</span>}
+                {/* Durasi */}
+                {menit != null && (
+                  <div style={{fontSize:12,color:'var(--muted)',marginBottom:12}}>{fmtDurasi(menit)} lalu</div>
+                )}
+
+                {/* Daftar beautician, tiap orang punya tahapnya sendiri */}
+                <div className="eyebrow" style={{marginBottom:8}}>
+                  Beautician ({(job.members || []).length} orang)
                 </div>
 
-                {/* Riwayat tahap */}
-                <div style={{display:'flex',flexWrap:'wrap',gap:10,fontSize:11,color:'var(--muted)',
-                  padding:'8px 12px',background:'var(--cream)',borderRadius:8,marginBottom:12}}>
-                  {job.accepted_at && <span>Berangkat {fmtJam(job.accepted_at)}</span>}
-                  {job.started_at && (
-                    <span>
-                      Mulai {fmtJam(job.started_at)}
-                      {job.started_lat != null && (
-                        <a href={mapsLinkFor(job.started_lat, job.started_lng)} target="_blank" rel="noopener noreferrer"
-                          style={{marginLeft:5,color:'var(--mauve)',textDecoration:'none'}}>📍 lokasi</a>
+                {(job.members || []).map(m => {
+                  const mInfo = hsStatusInfo(m.status);
+                  const punyaSaya = m.employee_id === profile.id;
+                  const belumPulang = m.status === 'done' && minutesSince(m.finished_at) > 90;
+                  return (
+                    <div key={m.id} style={{
+                      padding:'10px 12px',borderRadius:10,marginBottom:10,
+                      background: punyaSaya ? 'var(--mauve-tint)' : 'var(--cream)',
+                      border: belumPulang ? '1px solid var(--red)' : '1px solid transparent',
+                    }}>
+                      <div style={{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap',marginBottom: punyaSaya && mInfo.next ? 10 : 0}}>
+                        <div style={{fontSize:13,fontWeight:600,color:'var(--plum-deep)'}}>
+                          {m.employee?.full_name || '—'}
+                          {punyaSaya && <span style={{fontSize:11,fontWeight:400,color:'var(--mauve)'}}> · kamu</span>}
+                        </div>
+                        <div style={{fontSize:11,fontWeight:600,color:mInfo.color,whiteSpace:'nowrap'}}>
+                          {mInfo.label}
+                        </div>
+                      </div>
+
+                      {/* Jejak jam tiap tahap */}
+                      <div style={{display:'flex',flexWrap:'wrap',gap:8,fontSize:11,color:'var(--muted)'}}>
+                        {m.accepted_at && <span>Berangkat {fmtJam(m.accepted_at)}</span>}
+                        {m.started_at && (
+                          <span>
+                            Mulai {fmtJam(m.started_at)}
+                            {m.started_lat != null && (
+                              <a href={mapsLinkFor(m.started_lat, m.started_lng)} target="_blank" rel="noopener noreferrer"
+                                style={{marginLeft:4,color:'var(--mauve)',textDecoration:'none'}}>📍</a>
+                            )}
+                          </span>
+                        )}
+                        {m.finished_at && <span>Selesai {fmtJam(m.finished_at)}</span>}
+                        {m.returned_at && <span>Sampai {fmtJam(m.returned_at)}{m.return_to ? ` (${m.return_to})` : ''}</span>}
+                      </div>
+
+                      {belumPulang && (
+                        <div style={{marginTop:8,fontSize:11,color:'var(--red)',fontWeight:500}}>
+                          Sudah {fmtDurasi(minutesSince(m.finished_at))} sejak selesai tapi belum menandai sudah sampai.
+                          Ada baiknya dihubungi.
+                        </div>
                       )}
-                    </span>
-                  )}
-                  {job.finished_at && <span>Selesai {fmtJam(job.finished_at)}</span>}
-                  {!job.accepted_at && <span>Dibuat {fmtJam(job.created_at)}</span>}
-                </div>
 
-                {lamaKembali && (
-                  <div style={{padding:'10px 12px',background:'#fdf2f2',border:'1px solid var(--red)',
-                    borderRadius:8,fontSize:12,color:'var(--red)',marginBottom:12}}>
-                    Sudah {fmtDurasi(menit)} sejak selesai treatment tapi belum menandai sudah sampai.
-                    Ada baiknya dihubungi.
-                  </div>
-                )}
+                      {/* Slider hanya untuk diri sendiri */}
+                      {punyaSaya && mInfo.next && (
+                        <SwipeConfirm
+                          label={mInfo.nextLabel}
+                          color={hsStatusInfo(mInfo.next).color}
+                          onConfirm={() => handleAdvance(job, m)}
+                        />
+                      )}
 
-                {/* Swipe untuk maju tahap */}
-                {info.next && (milikSaya || isAdmin) && (
-                  <SwipeConfirm
-                    label={info.nextLabel}
-                    color={hsStatusInfo(info.next).color}
-                    onConfirm={() => handleAdvance(job)}
-                  />
-                )}
-                {info.next && !milikSaya && !isAdmin && (
+                      {isAdmin && !punyaSaya && job.status === 'pending' && (job.members || []).length > 1 && (
+                        <button className="btn btn-ghost btn-sm" style={{marginTop:8,padding:'2px 8px',fontSize:11,color:'var(--red)'}}
+                          onClick={async () => {
+                            if (!window.confirm(`Keluarkan ${m.employee?.full_name} dari orderan ini?`)) return;
+                            try {
+                              await removeHomeServiceMember(m.id, job.id);
+                              toast('Beautician dikeluarkan', 'success');
+                              load();
+                            } catch (err) { toast('Gagal: ' + (err.message || err), 'error'); }
+                          }}>
+                          Keluarkan
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {!(job.members || []).some(m => m.employee_id === profile.id) && !isAdmin && (
                   <div style={{fontSize:12,color:'var(--muted)',textAlign:'center',padding:10}}>
-                    Orderan ini untuk beautician lain
+                    Kamu bukan bagian dari orderan ini
                   </div>
                 )}
 
-                {isAdmin && job.status === 'pending' && (
-                  <button className="btn btn-ghost btn-sm" style={{marginTop:10,color:'var(--red)'}}
-                    onClick={() => handleCancel(job)}>
-                    Batalkan orderan
+                <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:4}}>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setAddMemberJob(job)}>
+                    + Tambah Beautician
                   </button>
-                )}
+                  {isAdmin && job.status === 'pending' && (
+                    <button className="btn btn-ghost btn-sm" style={{color:'var(--red)'}}
+                      onClick={() => handleCancel(job)}>
+                      Batalkan orderan
+                    </button>
+                  )}
+                </div>
               </Card>
             );
           })}
@@ -7618,6 +7664,15 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
         />
       )}
 
+      {addMemberJob && (
+        <HomeServiceAddMemberModal
+          job={addMemberJob}
+          branchId={effectiveBranchId}
+          onClose={() => setAddMemberJob(null)}
+          onSuccess={() => { setAddMemberJob(null); load(); }}
+        />
+      )}
+
       {showForm && (
         <HomeServiceFormModal
           profile={profile}
@@ -7636,7 +7691,7 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
 function HomeServiceFormModal({ profile, branchId, onClose, onSuccess }) {
   const [employees, setEmployees] = useStateP([]);
   const [form, setForm] = useStateP({
-    employee_id: profile.role === 'employee' ? profile.id : '',
+    employee_ids: profile.role === 'employee' ? [profile.id] : [],
     client_name: '', client_phone: '', client_address: '', notes: '',
   });
   const [saving, setSaving] = useStateP(false);
@@ -7650,17 +7705,16 @@ function HomeServiceFormModal({ profile, branchId, onClose, onSuccess }) {
   async function handleSubmit(e) {
     e.preventDefault();
     if (!form.client_name.trim()) { toast('Nama client wajib diisi', 'error'); return; }
-    if (!form.employee_id) { toast('Pilih beautician yang mengerjakan', 'error'); return; }
+    if (!form.employee_ids.length) { toast('Pilih minimal satu beautician', 'error'); return; }
     setSaving(true);
     try {
       await createHomeServiceJob({
         branch_id: branchId,
-        employee_id: form.employee_id,
         client_name: form.client_name.trim(),
         client_phone: form.client_phone.trim() || null,
         client_address: form.client_address.trim() || null,
         notes: form.notes.trim() || null,
-      });
+      }, form.employee_ids);
       toast('Orderan home service dibuat ✓', 'success');
       onSuccess();
     } catch (err) {
@@ -7677,14 +7731,34 @@ function HomeServiceFormModal({ profile, branchId, onClose, onSuccess }) {
         onClick={e => e.stopPropagation()}>
         <h3 className="card-title" style={{marginBottom:14}}>Orderan Home Service Baru</h3>
         <form onSubmit={handleSubmit}>
-          <Field label="Beautician *">
-            <select className="form-select" value={form.employee_id}
-              onChange={e => update({ employee_id: e.target.value })}>
-              <option value="">— pilih beautician —</option>
-              {employees.map(emp => (
-                <option key={emp.id} value={emp.id}>{emp.full_name}{emp.job_title ? ` · ${emp.job_title}` : ''}</option>
-              ))}
-            </select>
+          <Field label="Beautician *" hint="Bisa pilih lebih dari satu kalau berangkat berdua atau lebih">
+            <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:190,overflowY:'auto',
+              border:'1px solid var(--line)',borderRadius:10,padding:8}}>
+              {employees.map(emp => {
+                const dipilih = form.employee_ids.includes(emp.id);
+                return (
+                  <label key={emp.id} style={{display:'flex',alignItems:'center',gap:9,cursor:'pointer',
+                    padding:'7px 9px',borderRadius:8,background: dipilih ? 'var(--mauve-tint)' : 'transparent'}}>
+                    <input type="checkbox" checked={dipilih}
+                      onChange={e => update({
+                        employee_ids: e.target.checked
+                          ? [...form.employee_ids, emp.id]
+                          : form.employee_ids.filter(id => id !== emp.id),
+                      })}
+                      style={{accentColor:'var(--mauve)',width:16,height:16}}/>
+                    <span style={{fontSize:13}}>
+                      {emp.full_name}
+                      {emp.job_title && <span style={{color:'var(--muted)',fontSize:11}}> · {emp.job_title}</span>}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            {form.employee_ids.length > 1 && (
+              <div style={{fontSize:11,color:'var(--mauve)',marginTop:6}}>
+                {form.employee_ids.length} beautician. Masing-masing menggeser tahapnya sendiri dari HP-nya.
+              </div>
+            )}
           </Field>
           <Field label="Nama Client *">
             <input className="form-input" value={form.client_name}
@@ -7719,6 +7793,84 @@ function HomeServiceFormModal({ profile, branchId, onClose, onSuccess }) {
 }
 
 // =====================================================
+// Tambah beautician ke orderan home service yang sudah berjalan
+// =====================================================
+function HomeServiceAddMemberModal({ job, branchId, onClose, onSuccess }) {
+  const [employees, setEmployees] = useStateP([]);
+  const [picked, setPicked] = useStateP([]);
+  const [saving, setSaving] = useStateP(false);
+
+  useEffectP(() => {
+    listEmployees(branchId, true).then(setEmployees).catch(() => {});
+  }, [branchId]);
+
+  const sudahAda = new Set((job.members || []).map(m => m.employee_id));
+  const tersedia = employees.filter(e => !sudahAda.has(e.id));
+
+  async function handleSave() {
+    if (!picked.length) { toast('Pilih minimal satu beautician', 'error'); return; }
+    setSaving(true);
+    try {
+      for (const eid of picked) {
+        await addHomeServiceMember(job.id, eid);
+      }
+      toast('Beautician ditambahkan ✓', 'success');
+      onSuccess();
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(36,26,44,0.6)',zIndex:9100,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+      onClick={onClose}>
+      <div style={{background:'var(--paper)',borderRadius:16,padding:20,maxWidth:420,width:'100%',maxHeight:'85vh',overflowY:'auto'}}
+        onClick={e => e.stopPropagation()}>
+        <h3 className="card-title" style={{marginBottom:4}}>Tambah Beautician</h3>
+        <div style={{fontSize:12,color:'var(--muted)',marginBottom:14}}>
+          Orderan {job.client_name}. Yang ditambahkan mulai dari tahap awal dan menggeser tahapnya sendiri.
+        </div>
+
+        {!tersedia.length ? (
+          <Empty title="Tidak ada yang bisa ditambahkan" sub="Semua beautician cabang ini sudah masuk orderan."/>
+        ) : (
+          <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:16}}>
+            {tersedia.map(emp => {
+              const dipilih = picked.includes(emp.id);
+              return (
+                <label key={emp.id} style={{display:'flex',alignItems:'center',gap:9,cursor:'pointer',
+                  padding:'9px 11px',borderRadius:8,background: dipilih ? 'var(--mauve-tint)' : 'var(--cream)'}}>
+                  <input type="checkbox" checked={dipilih}
+                    onChange={e => setPicked(e.target.checked
+                      ? [...picked, emp.id]
+                      : picked.filter(id => id !== emp.id))}
+                    style={{accentColor:'var(--mauve)',width:16,height:16}}/>
+                  <span style={{fontSize:13}}>
+                    {emp.full_name}
+                    {emp.job_title && <span style={{color:'var(--muted)',fontSize:11}}> · {emp.job_title}</span>}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+
+        <div style={{display:'flex',gap:10,justifyContent:'flex-end',flexWrap:'wrap'}}>
+          <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Batal</button>
+          {tersedia.length > 0 && (
+            <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+              {saving ? 'Menyimpan...' : 'Tambahkan'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================
 // Detail perjalanan home service — riwayat 4 tahap + lokasi
 // =====================================================
 function HomeServiceDetailModal({ job, onClose, canDelete = false, onDeleted }) {
@@ -7727,38 +7879,43 @@ function HomeServiceDetailModal({ job, onClose, canDelete = false, onDeleted }) 
   const fmtJam = ts => ts ? new Date(ts).toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit' }) : null;
   const fmtTgl = ts => ts ? new Date(ts).toLocaleDateString('id-ID', { weekday:'long', day:'numeric', month:'long', year:'numeric' }) : '';
 
-  const tahapan = [
+  // Kalau orderan punya beberapa beautician, tampilkan garis waktu tiap orang
+  const members = job.members || [];
+  const sumber = members.length ? members : [job];
+
+  const tahapanFor = m => [
     {
       nama: 'Terima & Berangkat',
-      ket: 'Beautician menerima orderan dan berangkat',
-      at: job.accepted_at, lat: job.accepted_lat, lng: job.accepted_lng,
+      ket: 'Menerima orderan dan berangkat',
+      at: m.accepted_at, lat: m.accepted_lat, lng: m.accepted_lng,
     },
     {
       nama: 'Sampai & Mulai Kerjakan',
       ket: 'Lokasi rumah client',
-      at: job.started_at, lat: job.started_lat, lng: job.started_lng,
+      at: m.started_at, lat: m.started_lat, lng: m.started_lng,
       penting: true,
     },
     {
       nama: 'Selesai Treatment',
       ket: 'Treatment selesai dikerjakan',
-      at: job.finished_at, lat: job.finished_lat, lng: job.finished_lng,
+      at: m.finished_at, lat: m.finished_lat, lng: m.finished_lng,
     },
     {
       nama: 'Sudah Sampai Kembali',
-      ket: job.return_to === 'salon' ? 'Kembali ke salon'
-        : job.return_to === 'rumah' ? 'Langsung pulang ke rumah'
+      ket: m.return_to === 'salon' ? 'Kembali ke salon'
+        : m.return_to === 'rumah' ? 'Langsung pulang ke rumah'
         : 'Beautician sudah sampai',
-      at: job.returned_at, lat: job.returned_lat, lng: job.returned_lng,
+      at: m.returned_at, lat: m.returned_lat, lng: m.returned_lng,
       penting: true,
     },
   ];
 
   // Lama treatment & lama perjalanan pulang
-  const lamaTreatment = (job.started_at && job.finished_at)
-    ? Math.floor((new Date(job.finished_at) - new Date(job.started_at)) / 60000) : null;
-  const lamaPulang = (job.finished_at && job.returned_at)
-    ? Math.floor((new Date(job.returned_at) - new Date(job.finished_at)) / 60000) : null;
+  const acuan = (job.members && job.members.length) ? job.members[0] : job;
+  const lamaTreatment = (acuan.started_at && acuan.finished_at)
+    ? Math.floor((new Date(acuan.finished_at) - new Date(acuan.started_at)) / 60000) : null;
+  const lamaPulang = (acuan.finished_at && acuan.returned_at)
+    ? Math.floor((new Date(acuan.returned_at) - new Date(acuan.finished_at)) / 60000) : null;
 
   const info = hsStatusInfo(job.status);
 
@@ -7813,9 +7970,22 @@ function HomeServiceDetailModal({ job, onClose, canDelete = false, onDeleted }) 
 
         {/* Timeline tahapan */}
         <div style={{padding:'16px 20px'}}>
-          <div className="eyebrow" style={{marginBottom:12}}>Riwayat Perjalanan</div>
+          <div className="eyebrow" style={{marginBottom:12}}>
+            Riwayat Perjalanan{members.length > 1 ? ` (${members.length} beautician)` : ''}
+          </div>
 
-          {tahapan.map((t, i) => {
+          {sumber.map((m, mi) => (
+          <div key={m.id || mi} style={{marginBottom: mi < sumber.length - 1 ? 20 : 0}}>
+          {members.length > 1 && (
+            <div style={{fontSize:13,fontWeight:600,color:'var(--plum-deep)',marginBottom:10,
+              paddingBottom:6,borderBottom:'1px solid var(--line)'}}>
+              {m.employee?.full_name || '—'}
+              <span style={{fontSize:11,fontWeight:400,color:hsStatusInfo(m.status).color,marginLeft:8}}>
+                {hsStatusInfo(m.status).label}
+              </span>
+            </div>
+          )}
+          {tahapanFor(m).map((t, i) => {
             const sudah = !!t.at;
             return (
               <div key={i} style={{display:'flex',gap:12,marginBottom: i < tahapan.length - 1 ? 4 : 0}}>
@@ -7861,6 +8031,8 @@ function HomeServiceDetailModal({ job, onClose, canDelete = false, onDeleted }) 
               </div>
             );
           })}
+          </div>
+          ))}
 
           {/* Ringkasan durasi */}
           {(lamaTreatment != null || lamaPulang != null) && (
@@ -7927,4 +8099,5 @@ Object.assign(window, {
   PhotoUploadField, PhotoGalleryModal,
   AbsensiPage, FaceScanCamera, LaporanAbsensiPage,
   HomeServicePage, HomeServiceFormModal, SwipeConfirm, HomeServiceDetailModal,
+  HomeServiceAddMemberModal,
 });
