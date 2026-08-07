@@ -6660,11 +6660,12 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
     try {
       if (kind === 'in') {
         const rec = await clockIn({ employeeId: employee.id, branchId: effectiveBranchId, photoBlob: blob });
-        const late = rec.late_minutes || 0;
-        toast(late > 0
-          ? `${employee.full_name}: absen masuk tercatat, terlambat ${late} menit`
-          : `${employee.full_name}: absen masuk tercatat, tepat waktu`,
-          late > 0 ? 'error' : 'success');
+        const st = getArrivalStatus(rec.clock_in_at);
+        let pesan;
+        if (st?.status === 'telat') pesan = `${employee.full_name}: absen masuk tercatat, terlambat ${st.lateMinutes} menit`;
+        else if (st?.status === 'toleransi') pesan = `${employee.full_name}: absen masuk tercatat, masih dalam toleransi`;
+        else pesan = `${employee.full_name}: absen masuk tercatat, tepat waktu`;
+        toast(pesan, st?.status === 'telat' ? 'error' : 'success');
       } else {
         await clockOut({ employeeId: employee.id, branchId: effectiveBranchId, photoBlob: blob });
         toast(`${employee.full_name}: absen pulang tercatat`, 'success');
@@ -6705,7 +6706,7 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
           {jam}<span style={{fontSize:24,opacity:0.7}}>:{detik}</span>
         </div>
         <div style={{fontSize:12,opacity:0.85,marginTop:8}}>
-          {branch?.name || '—'} · masuk 09:30 · pulang 19:30
+          {branch?.name || '—'} · masuk 09:30 (toleransi sampai {toleranceEndLabel()}) · pulang 19:30
         </div>
       </div>
 
@@ -6752,7 +6753,12 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
                   <>
                     <div style={{fontSize:12,color:'var(--hijau)',fontWeight:500}}>
                       Masuk {fmtJam(r.clock_in_at)}
-                      {r.late_minutes > 0 && <span style={{color:'var(--red)'}}> · telat {r.late_minutes}m</span>}
+                      {(() => {
+                        const st = getArrivalStatus(r.clock_in_at);
+                        if (st?.status === 'telat') return <span style={{color:'var(--red)'}}> · telat {st.lateMinutes}m</span>;
+                        if (st?.status === 'toleransi') return <span style={{color:'var(--amber)'}}> · dalam toleransi</span>;
+                        return null;
+                      })()}
                     </div>
                     <div style={{fontSize:12,color:'var(--mauve)',fontWeight:500,marginTop:4}}>Tap untuk absen pulang</div>
                   </>
@@ -6760,7 +6766,12 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
                 {st === 'selesai' && (
                   <div style={{fontSize:12,color:'var(--muted)'}}>
                     {fmtJam(r.clock_in_at)} sampai {fmtJam(r.clock_out_at)}
-                    {r.late_minutes > 0 && <div style={{color:'var(--red)'}}>telat {r.late_minutes} menit</div>}
+                    {(() => {
+                      const st = getArrivalStatus(r.clock_in_at);
+                      if (st?.status === 'telat') return <div style={{color:'var(--red)'}}>telat {st.lateMinutes} menit</div>;
+                      if (st?.status === 'toleransi') return <div style={{color:'var(--amber)'}}>dalam toleransi</div>;
+                      return null;
+                    })()}
                     <div style={{color:'var(--hijau)',fontWeight:500,marginTop:2}}>Selesai</div>
                   </div>
                 )}
@@ -7154,7 +7165,12 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                   <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
                     <button className="btn btn-ghost btn-sm" onClick={() => showPhoto(r.clock_in_photo, `${r.employee?.full_name} · masuk`)}>
                       Masuk {fmtJam(r.clock_in_at)}
-                      {r.late_minutes > 0 && <span style={{color:'var(--red)'}}> · telat {r.late_minutes}m</span>}
+                      {(() => {
+                        const st = getArrivalStatus(r.clock_in_at);
+                        if (st?.status === 'telat') return <span style={{color:'var(--red)'}}> · telat {st.lateMinutes}m</span>;
+                        if (st?.status === 'toleransi') return <span style={{color:'var(--amber)'}}> · toleransi</span>;
+                        return null;
+                      })()}
                     </button>
                     <button className="btn btn-ghost btn-sm" onClick={() => showPhoto(r.clock_out_photo, `${r.employee?.full_name} · pulang`)}
                       disabled={!r.clock_out_at}>

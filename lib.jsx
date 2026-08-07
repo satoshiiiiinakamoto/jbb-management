@@ -3933,10 +3933,11 @@ async function getCashBalance({ from, to, branchId = null }) {
 // =====================================================
 const ATTENDANCE_BUCKET = 'attendance-photos';
 // Jam kerja standar
-const WORK_START = { hour: 9, minute: 30 };   // masuk 09:30
+const WORK_START = { hour: 9, minute: 30 };   // jam masuk 09:30 (persiapan sebelum toko buka 10:00)
 const WORK_END = { hour: 19, minute: 30 };    // pulang 19:30
-// Toleransi telat (menit) sebelum dihitung terlambat
-const LATE_TOLERANCE_MINUTES = 0;
+// Toleransi keterlambatan: datang 09:30 sampai 10:00 belum dihitung telat.
+// Di atas 10:00 baru terhitung terlambat, dan dihitung mulai dari 10:00.
+const LATE_TOLERANCE_MINUTES = 30;
 
 function todayDateStr() {
   const d = new Date();
@@ -3950,6 +3951,28 @@ function calcLateMinutes(at = new Date()) {
   const diff = Math.floor((at - sched) / 60000);
   const late = diff - LATE_TOLERANCE_MINUTES;
   return late > 0 ? late : 0;
+}
+
+// Status kedatangan: 'tepat' (sebelum 09:30), 'toleransi' (09:30 sampai 10:00),
+// atau 'telat' (di atas 10:00). Dipakai untuk tampilan, bukan perhitungan gaji.
+function getArrivalStatus(clockInAt) {
+  if (!clockInAt) return null;
+  const at = new Date(clockInAt);
+  const start = new Date(at);
+  start.setHours(WORK_START.hour, WORK_START.minute, 0, 0);
+  const minutesAfterStart = Math.floor((at - start) / 60000);
+  const lateMinutes = Math.max(0, minutesAfterStart - LATE_TOLERANCE_MINUTES);
+  let status = 'tepat';
+  if (lateMinutes > 0) status = 'telat';
+  else if (minutesAfterStart > 0) status = 'toleransi';
+  return { status, minutesAfterStart, lateMinutes };
+}
+
+// Batas akhir toleransi dalam format jam (untuk ditampilkan, misal "10:00")
+function toleranceEndLabel() {
+  const d = new Date();
+  d.setHours(WORK_START.hour, WORK_START.minute + LATE_TOLERANCE_MINUTES, 0, 0);
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
 
 // Hitung menit pulang lebih awal dibanding jam pulang standar
@@ -4214,6 +4237,7 @@ Object.assign(window, {
   clockIn, clockOut, getTodayAttendance, listAttendance, getAttendancePhotoUrl,
   getAttendanceSummary, calcLateMinutes, calcEarlyLeaveMinutes, todayDateStr,
   isAttendanceExempt, attendanceExemptReason, NO_ATTENDANCE_TITLES, isAttendanceExemptByTitle,
+  getArrivalStatus, toleranceEndLabel, LATE_TOLERANCE_MINUTES,
   getDeviceLocation, mapsLinkFor, distanceMeters, getBranchGeo, distanceFromBranch,
   WORK_START, WORK_END,
   markPhotoMarketing, refreshPhotoSignedUrl, updatePhotoSkipReason,
