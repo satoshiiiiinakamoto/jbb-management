@@ -413,6 +413,8 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
   // Menandai transaksi ini berasal dari home service, supaya setelah simpan
   // bisa langsung diarahkan balik untuk menyelesaikan tahap terakhir
   const [hsReturnPending, setHsReturnPending] = useStateP(false);
+  // Layar setelah simpan dibagi dua langkah: cetak nota dulu, baru kembali
+  const [postSaveStep, setPostSaveStep] = useStateP('invoice');
 
   // Isi otomatis kalau datang dari halaman Home Service setelah treatment selesai
   useEffectP(() => {
@@ -682,6 +684,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
       toast('Transaksi tersimpan! 🎉 Sekarang upload foto.', 'success');
       setSavedTransactionId(newTrx.id);
       setShowPhotoUploadAfter(true);
+      setPostSaveStep('invoice');
       // Hubungkan kembali ke orderan home service kalau transaksi ini berasal dari sana
       if (hsJobId) {
         try { await linkHomeServiceTransaction(hsJobId, newTrx.id); } catch (e) {}
@@ -1368,44 +1371,72 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
           position:'fixed',inset:0,background:'rgba(36,26,44,0.6)',
           zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',
           padding:20,backdropFilter:'blur(3px)',
-        }} onClick={() => { setShowInvoicePrompt(false); setPage(hsReturnPending ? 'homeService' : 'transactions'); }}>
+        }} onClick={() => {
+          // Klik latar: kalau dari home service, jangan langsung keluar sebelum
+          // sempat melihat pengingat tahap terakhir
+          if (hsReturnPending && postSaveStep === 'invoice') { setPostSaveStep('return'); return; }
+          setShowInvoicePrompt(false);
+          setPage(hsReturnPending ? 'homeService' : 'transactions');
+        }}>
           <div style={{
             background:'var(--paper)',borderRadius:16,padding:'24px 22px',maxWidth:340,width:'100%',
             boxShadow:'0 12px 40px rgba(0,0,0,0.2)',textAlign:'center',
           }} onClick={e => e.stopPropagation()}>
-            <div style={{fontSize:36,marginBottom:8}}>🧾</div>
-            <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:22,fontWeight:600,color:'var(--plum-deep)',marginBottom:6}}>
-              Transaksi Tersimpan
-            </div>
-            <div style={{fontSize:13,color:'var(--muted)',marginBottom:18,lineHeight:1.5}}>
-              Mau cetak / download invoice untuk klien sekarang? Bisa juga dilakukan nanti dari tab Transaksi.
-            </div>
-            <div style={{display:'flex',flexDirection:'column',gap:8}}>
-              <button className="btn btn-primary" onClick={() => printInvoice(savedTransactionId)}>
-                🧾 Cetak / Download Invoice
-              </button>
-              {hsReturnPending ? (
-                <button className="btn btn-ghost" onClick={() => { setShowInvoicePrompt(false); setPage('homeService'); }}>
-                  Nanti saja
-                </button>
-              ) : (
-                <button className="btn btn-ghost" onClick={() => { setShowInvoicePrompt(false); setPage('transactions'); }}>
-                  Nanti saja
-                </button>
-              )}
-            </div>
 
-            {hsReturnPending && (
-              <div style={{marginTop:16,paddingTop:14,borderTop:'1px solid var(--line)'}}>
-                <div style={{fontSize:12,color:'var(--plum)',marginBottom:10,lineHeight:1.5}}>
-                  Transaksi ini dari home service. Jangan lupa geser tahap terakhir
-                  <strong> Sudah Sampai Kembali</strong> setelah kamu tiba di salon atau di rumah.
+            {(!hsReturnPending || postSaveStep === 'invoice') ? (
+              <>
+                <div style={{fontSize:36,marginBottom:8}}>🧾</div>
+                <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:22,fontWeight:600,color:'var(--plum-deep)',marginBottom:6}}>
+                  Transaksi Tersimpan
                 </div>
-                <button className="btn btn-primary" style={{width:'100%'}}
-                  onClick={() => { setShowInvoicePrompt(false); setPage('homeService'); }}>
-                  Kembali ke Home Service
-                </button>
-              </div>
+                <div style={{fontSize:13,color:'var(--muted)',marginBottom:18,lineHeight:1.5}}>
+                  {hsReturnPending
+                    ? 'Download notanya dulu untuk dikirim ke client. Setelah itu ada satu langkah terakhir.'
+                    : 'Mau cetak / download invoice untuk klien sekarang? Bisa juga dilakukan nanti dari tab Transaksi.'}
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                  <button className="btn btn-primary"
+                    onClick={() => {
+                      printInvoice(savedTransactionId);
+                      // Setelah nota dibuka, layar di belakangnya berganti ke langkah terakhir
+                      if (hsReturnPending) setPostSaveStep('return');
+                    }}>
+                    🧾 Cetak / Download Nota
+                  </button>
+                  <button className="btn btn-ghost"
+                    onClick={() => {
+                      if (hsReturnPending) { setPostSaveStep('return'); return; }
+                      setShowInvoicePrompt(false);
+                      setPage('transactions');
+                    }}>
+                    {hsReturnPending ? 'Lewati, nanti saja' : 'Nanti saja'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{fontSize:36,marginBottom:8}}>🛡️</div>
+                <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:22,fontWeight:600,color:'var(--plum-deep)',marginBottom:6}}>
+                  Satu Langkah Terakhir
+                </div>
+                <div style={{fontSize:13,color:'var(--plum)',marginBottom:6,lineHeight:1.55}}>
+                  Setelah kamu tiba di salon atau di rumah, geser tahap terakhir
+                  <strong> Sudah Sampai Kembali</strong> supaya kami tahu kamu sudah sampai dengan selamat.
+                </div>
+                <div style={{fontSize:12,color:'var(--muted)',marginBottom:18,lineHeight:1.5}}>
+                  Belum sampai? Tidak apa-apa, buka lagi menu Home Service nanti kalau sudah tiba.
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                  <button className="btn btn-primary"
+                    onClick={() => { setShowInvoicePrompt(false); setPage('homeService'); }}>
+                    Kembali ke Home Service
+                  </button>
+                  <button className="btn btn-ghost"
+                    onClick={() => { setPostSaveStep('invoice'); }}>
+                    Download nota lagi
+                  </button>
+                </div>
+              </>
             )}
           </div>
         </div>
