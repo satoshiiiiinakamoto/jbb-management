@@ -4199,6 +4199,119 @@ async function getAttendanceSummary(branchId, periodStart, periodEnd) {
   return Object.values(byEmployee);
 }
 
+// =====================================================
+// HOME SERVICE — pelacakan 4 tahap (mirip aplikasi ojol)
+// =====================================================
+const HS_STATUS = {
+  pending:   { label: 'Menunggu diterima', next: 'accepted', nextLabel: 'Terima & Berangkat', color: '#7a667e' },
+  accepted:  { label: 'Dalam perjalanan',  next: 'working',  nextLabel: 'Sampai & Mulai Kerjakan', color: '#b8893d' },
+  working:   { label: 'Sedang dikerjakan', next: 'done',     nextLabel: 'Selesai Treatment', color: '#4a7c59' },
+  done:      { label: 'Selesai treatment', next: 'returned', nextLabel: 'Sudah Sampai Kembali', color: '#a8884a' },
+  returned:  { label: 'Selesai & sudah sampai', next: null,  nextLabel: null, color: '#6b5b6e' },
+  cancelled: { label: 'Dibatalkan',        next: null,       nextLabel: null, color: '#a85555' },
+};
+
+function hsStatusInfo(status) {
+  return HS_STATUS[status] || HS_STATUS.pending;
+}
+
+// Orderan yang masih berjalan (belum selesai atau dibatalkan)
+const HS_ACTIVE_STATUSES = ['pending', 'accepted', 'working', 'done'];
+
+async function listHomeServiceJobs({ branchId = null, employeeId = null, activeOnly = false, from = null, to = null } = {}) {
+  let query = sb
+    .from('home_service_jobs')
+    .select('*, employee:employees(id, full_name, job_title)')
+    .order('created_at', { ascending: false });
+  if (branchId) query = query.eq('branch_id', branchId);
+  if (employeeId) query = query.eq('employee_id', employeeId);
+  if (activeOnly) query = query.in('status', HS_ACTIVE_STATUSES);
+  if (from) query = query.gte('created_at', from);
+  if (to) query = query.lte('created_at', to);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+async function createHomeServiceJob(payload) {
+  const createdBy = (await sb.auth.getUser()).data?.user?.id || null;
+  const { data, error } = await sb
+    .from('home_service_jobs')
+    .insert({ ...payload, status: 'pending', created_by: createdBy })
+    .select('*, employee:employees(id, full_name, job_title)')
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// Maju satu tahap. Lokasi direkam tiap tahap (tidak wajib berhasil).
+async function advanceHomeServiceJob(jobId, currentStatus, extra = {}) {
+  const info = hsStatusInfo(currentStatus);
+  if (!info.next) throw new Error('Tahap ini sudah selesai');
+
+  const loc = await getDeviceLocation();
+  const now = new Date().toISOString();
+  const next = info.next;
+
+  const fieldByStatus = {
+    accepted: ['accepted_at', 'accepted_lat', 'accepted_lng'],
+    working:  ['started_at', 'started_lat', 'started_lng'],
+    done:     ['finished_at', 'finished_lat', 'finished_lng'],
+    returned: ['returned_at', 'returned_lat', 'returned_lng'],
+  };
+  const [atField, latField, lngField] = fieldByStatus[next];
+
+  const patch = {
+    status: next,
+    [atField]: now,
+    [latField]: loc?.lat ?? null,
+    [lngField]: loc?.lng ?? null,
+    ...extra,
+  };
+
+  const { data, error } = await sb
+    .from('home_service_jobs')
+    .update(patch)
+    .eq('id', jobId)
+    .select('*, employee:employees(id, full_name, job_title)')
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function cancelHomeServiceJob(jobId, reason) {
+  const { data, error } = await sb
+    .from('home_service_jobs')
+    .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), cancel_reason: reason || null })
+    .eq('id', jobId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function linkHomeServiceTransaction(jobId, transactionId) {
+  const { error } = await sb
+    .from('home_service_jobs')
+    .update({ transaction_id: transactionId })
+    .eq('id', jobId);
+  if (error) throw error;
+}
+
+// Berapa lama sejak sebuah tahap dimulai (menit). Untuk memantau yang belum pulang.
+function minutesSince(ts) {
+  if (!ts) return null;
+  return Math.floor((Date.now() - new Date(ts).getTime()) / 60000);
+}
+
+// Format durasi ringkas: 45m, 2j 10m
+function fmtDurasi(menit) {
+  if (menit == null) return '';
+  if (menit < 60) return `${menit}m`;
+  const j = Math.floor(menit / 60), m = menit % 60;
+  return m > 0 ? `${j}j ${m}m` : `${j}j`;
+}
+
 Object.assign(window, {
   sb, SERVICES, JOB_TITLES, SALARY_OPTIONAL_TITLES, ROLES,
   CATEGORY_LABELS, getDashboardRange, getDashboardData,
@@ -4239,6 +4352,8 @@ Object.assign(window, {
   isAttendanceExempt, attendanceExemptReason, NO_ATTENDANCE_TITLES, isAttendanceExemptByTitle,
   getArrivalStatus, toleranceEndLabel, LATE_TOLERANCE_MINUTES,
   getDeviceLocation, mapsLinkFor, distanceMeters, getBranchGeo, distanceFromBranch,
+  listHomeServiceJobs, createHomeServiceJob, advanceHomeServiceJob, cancelHomeServiceJob,
+  linkHomeServiceTransaction, hsStatusInfo, HS_STATUS, HS_ACTIVE_STATUSES, minutesSince, fmtDurasi,
   WORK_START, WORK_END,
   markPhotoMarketing, refreshPhotoSignedUrl, updatePhotoSkipReason,
   listMarketingPhotos, listAllPhotos,

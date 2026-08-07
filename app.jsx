@@ -139,6 +139,7 @@ function App() {
     { id: 'transactions', label: 'Transaksi' },
     { id: 'reports', label: 'Laporan' },
     { id: 'kas', label: 'Kas' },
+    { id: 'homeService', label: 'Home Service' },
     { id: 'absensi', label: 'Absensi' },
     { id: 'laporanAbsensi', label: 'Lap. Absensi' },
     { id: 'payroll', label: 'Gaji' },
@@ -152,6 +153,7 @@ function App() {
     { id: 'transactions', label: 'Transaksi' },
     { id: 'reports', label: 'Laporan' },
     { id: 'kas', label: 'Kas' },
+    { id: 'homeService', label: 'Home Service' },
     { id: 'absensi', label: 'Absensi' },
     { id: 'laporanAbsensi', label: 'Lap. Absensi' },
     { id: 'payroll', label: 'Gaji' },
@@ -162,6 +164,7 @@ function App() {
     { id: 'newTransaction', label: 'Input Transaksi' },
     { id: 'transactions', label: 'Transaksi Cabang' },
     { id: 'kas', label: 'Kas' },
+    { id: 'homeService', label: 'Home Service' },
     { id: 'absensi', label: 'Absensi' },
     { id: 'myTransactions', label: 'Transaksi Saya' },
   ];
@@ -188,6 +191,9 @@ function App() {
         break;
       case 'kas':
         pageContent = <KasPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
+        break;
+      case 'homeService':
+        pageContent = <HomeServicePage profile={profile} currentBranchId={currentBranchId} branches={branches} setPage={setPage}/>;
         break;
       case 'absensi':
         pageContent = <AbsensiPage profile={profile} currentBranchId={currentBranchId} branches={branches}/>;
@@ -232,6 +238,9 @@ function App() {
         break;
       case 'kas':
         pageContent = <KasPage profile={profile} currentBranchId={profile.branch_id} branches={branches}/>;
+        break;
+      case 'homeService':
+        pageContent = <HomeServicePage profile={profile} currentBranchId={profile.branch_id} branches={branches} setPage={setPage}/>;
         break;
       case 'absensi':
         pageContent = <AbsensiPage profile={profile} currentBranchId={profile.branch_id} branches={branches}/>;

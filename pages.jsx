@@ -409,6 +409,29 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
   const [showInvoicePrompt, setShowInvoicePrompt] = useStateP(false);
 
   const isOT = isOvertime(startTime);
+  const [hsJobId, setHsJobId] = useStateP(null);
+
+  // Isi otomatis kalau datang dari halaman Home Service setelah treatment selesai
+  useEffectP(() => {
+    try {
+      const raw = sessionStorage.getItem('jbb_hs_prefill');
+      if (!raw) return;
+      sessionStorage.removeItem('jbb_hs_prefill');
+      const pre = JSON.parse(raw);
+      if (pre.client_name) setClientName(pre.client_name);
+      if (pre.client_phone) setClientPhone(pre.client_phone);
+      setIsHomeService(true);
+      if (pre.job_id) setHsJobId(pre.job_id);
+      if (pre.employee_id) {
+        setItems(prev => {
+          const next = [...prev];
+          next[0] = { ...next[0], employee_id: pre.employee_id };
+          return next;
+        });
+      }
+      toast('Data client dari home service sudah diisi', 'success');
+    } catch (e) {}
+  }, []);
 
   useEffectP(() => {
     if (!effectiveBranchId) return;
@@ -656,6 +679,11 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
       toast('Transaksi tersimpan! 🎉 Sekarang upload foto.', 'success');
       setSavedTransactionId(newTrx.id);
       setShowPhotoUploadAfter(true);
+      // Hubungkan kembali ke orderan home service kalau transaksi ini berasal dari sana
+      if (hsJobId) {
+        try { await linkHomeServiceTransaction(hsJobId, newTrx.id); } catch (e) {}
+        setHsJobId(null);
+      }
     } catch (err) {
       toast('Gagal: ' + (err.message || err), 'error');
     } finally {
@@ -7229,6 +7257,428 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
   );
 }
 
+// =====================================================
+// SWIPE UNTUK KONFIRMASI — geser ke kanan untuk maju tahap
+// Mencegah salah tekan saat buru-buru
+// =====================================================
+function SwipeConfirm({ label, color = 'var(--mauve)', onConfirm, disabled = false }) {
+  const trackRef = useRefP(null);
+  const [dragX, setDragX] = useStateP(0);
+  const [dragging, setDragging] = useStateP(false);
+  const [busy, setBusy] = useStateP(false);
+
+  const KNOB = 52;
+
+  function maxDrag() {
+    const w = trackRef.current?.offsetWidth || 280;
+    return Math.max(0, w - KNOB - 8);
+  }
+
+  function startDrag(clientX) {
+    if (disabled || busy) return;
+    setDragging(true);
+    trackRef.current._startX = clientX;
+  }
+
+  function moveDrag(clientX) {
+    if (!dragging) return;
+    const dx = clientX - (trackRef.current?._startX || 0);
+    setDragX(Math.min(maxDrag(), Math.max(0, dx)));
+  }
+
+  async function endDrag() {
+    if (!dragging) return;
+    setDragging(false);
+    const m = maxDrag();
+    if (dragX >= m * 0.85) {
+      setDragX(m);
+      setBusy(true);
+      try {
+        await onConfirm();
+      } finally {
+        setBusy(false);
+        setDragX(0);
+      }
+    } else {
+      setDragX(0);
+    }
+  }
+
+  const progress = maxDrag() > 0 ? dragX / maxDrag() : 0;
+
+  return (
+    <div
+      ref={trackRef}
+      onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); startDrag(e.clientX); }}
+      onPointerMove={e => moveDrag(e.clientX)}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      style={{
+        position:'relative', height:60, borderRadius:100,
+        background: disabled ? 'var(--cream)' : 'var(--mauve-tint)',
+        overflow:'hidden', touchAction:'none', userSelect:'none',
+        cursor: disabled ? 'default' : 'grab',
+        opacity: disabled ? 0.5 : 1,
+      }}>
+      {/* Isi warna mengikuti geseran */}
+      <div style={{
+        position:'absolute', inset:0, width:`${progress * 100}%`,
+        background: color, opacity:0.25, transition: dragging ? 'none' : 'width .2s',
+      }}/>
+
+      {/* Tulisan */}
+      <div style={{
+        position:'absolute', inset:0, display:'flex', alignItems:'center',
+        justifyContent:'center', fontSize:14, fontWeight:600,
+        color: color, paddingLeft:KNOB, opacity: 1 - progress * 0.8,
+        pointerEvents:'none',
+      }}>
+        {busy ? 'Menyimpan...' : label}
+      </div>
+
+      {/* Knob */}
+      <div style={{
+        position:'absolute', top:4, left:4 + dragX, width:KNOB, height:KNOB,
+        borderRadius:'50%', background: color, color:'#fff',
+        display:'flex', alignItems:'center', justifyContent:'center',
+        fontSize:22, fontWeight:700,
+        transition: dragging ? 'none' : 'left .2s',
+        boxShadow:'0 2px 8px rgba(0,0,0,0.18)',
+      }}>
+        {busy ? '⋯' : '›'}
+      </div>
+    </div>
+  );
+}
+
+// =====================================================
+// HOME SERVICE — halaman utama
+// =====================================================
+function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
+  const [jobs, setJobs] = useStateP([]);
+  const [loading, setLoading] = useStateP(true);
+  const [showForm, setShowForm] = useStateP(false);
+  const [showHistory, setShowHistory] = useStateP(false);
+  const [tick, setTick] = useStateP(0);
+
+  const isAdmin = profile.role === 'super_admin' || profile.role === 'branch_admin';
+  const effectiveBranchId = profile.role === 'super_admin'
+    ? (currentBranchId || profile.branch_id)
+    : profile.branch_id;
+
+  // Perbarui tampilan durasi tiap menit
+  useEffectP(() => {
+    const t = setInterval(() => setTick(x => x + 1), 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  async function load() {
+    if (!effectiveBranchId) return;
+    setLoading(true);
+    try {
+      const data = await listHomeServiceJobs({ branchId: effectiveBranchId });
+      setJobs(data);
+    } catch (err) {
+      toast('Gagal memuat: ' + (err.message || err), 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffectP(() => { load(); }, [effectiveBranchId]);
+
+  // Beautician hanya melihat orderan miliknya. Admin melihat semua.
+  const visibleJobs = isAdmin ? jobs : jobs.filter(j => j.employee_id === profile.id);
+  const activeJobs = visibleJobs.filter(j => HS_ACTIVE_STATUSES.includes(j.status));
+  const pastJobs = visibleJobs.filter(j => !HS_ACTIVE_STATUSES.includes(j.status));
+
+  async function handleAdvance(job) {
+    try {
+      const info = hsStatusInfo(job.status);
+      const extra = {};
+      // Saat menandai sudah sampai, tanyakan kembali ke mana
+      if (info.next === 'returned') {
+        const keSalon = window.confirm('Sudah sampai di salon?\n\nOK = kembali ke salon\nBatal = langsung pulang ke rumah');
+        extra.return_to = keSalon ? 'salon' : 'rumah';
+      }
+      const updated = await advanceHomeServiceJob(job.id, job.status, extra);
+      toast(hsStatusInfo(updated.status).label + ' ✓', 'success');
+      await load();
+
+      // Setelah selesai treatment, arahkan ke input transaksi
+      if (updated.status === 'done') {
+        try {
+          sessionStorage.setItem('jbb_hs_prefill', JSON.stringify({
+            job_id: updated.id,
+            client_name: updated.client_name,
+            client_phone: updated.client_phone || '',
+            employee_id: updated.employee_id,
+          }));
+        } catch (e) {}
+        setTimeout(() => {
+          if (window.confirm('Treatment selesai. Lanjut input transaksi sekarang?')) {
+            setPage && setPage('newTransaction');
+          }
+        }, 400);
+      }
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    }
+  }
+
+  async function handleCancel(job) {
+    const alasan = window.prompt('Alasan pembatalan:');
+    if (alasan === null) return;
+    try {
+      await cancelHomeServiceJob(job.id, alasan);
+      toast('Orderan dibatalkan', 'success');
+      load();
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    }
+  }
+
+  const fmtJam = ts => ts ? new Date(ts).toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit' }) : '—';
+
+  return (
+    <div className="page">
+      <PageHeader title="Home Service" sub="Pelacakan">
+        <button className="btn btn-ghost btn-sm" onClick={load}>Muat ulang</button>
+        <button className="btn btn-primary btn-sm" onClick={() => setShowForm(true)}>+ Orderan Baru</button>
+      </PageHeader>
+
+      {/* ORDERAN BERJALAN */}
+      {loading ? <Loader text="Memuat..."/> :
+       !activeJobs.length ? (
+        <Card>
+          <Empty title="Tidak ada home service berjalan"
+            sub={isAdmin ? 'Buat orderan baru lewat tombol di atas.' : 'Belum ada orderan untuk kamu saat ini.'}/>
+        </Card>
+       ) : (
+        <div style={{display:'flex',flexDirection:'column',gap:14}}>
+          {activeJobs.map(job => {
+            const info = hsStatusInfo(job.status);
+            const milikSaya = job.employee_id === profile.id;
+            // Waktu sejak tahap terakhir, untuk memantau yang belum kembali
+            const lastTs = job.finished_at || job.started_at || job.accepted_at || job.created_at;
+            const menit = minutesSince(lastTs);
+            const lamaKembali = job.status === 'done' && menit != null && menit > 90;
+
+            return (
+              <Card key={job.id}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10,flexWrap:'wrap',marginBottom:12}}>
+                  <div style={{minWidth:0,flex:1}}>
+                    <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:20,fontWeight:600,color:'var(--plum-deep)'}}>
+                      {job.client_name}
+                    </div>
+                    {job.client_phone && (
+                      <a href={`https://wa.me/${String(job.client_phone).replace(/[^0-9]/g,'').replace(/^0/,'62')}`}
+                        target="_blank" rel="noopener noreferrer"
+                        style={{fontSize:12,color:'var(--mauve)',textDecoration:'none'}}>
+                        {job.client_phone}
+                      </a>
+                    )}
+                    {job.client_address && (
+                      <div style={{fontSize:12,color:'var(--muted)',marginTop:4}}>{job.client_address}</div>
+                    )}
+                  </div>
+                  <span style={{
+                    padding:'5px 12px',borderRadius:100,fontSize:11,fontWeight:600,
+                    background:'var(--cream)',color:info.color,whiteSpace:'nowrap',
+                  }}>
+                    {info.label}
+                  </span>
+                </div>
+
+                {/* Beautician & durasi */}
+                <div style={{display:'flex',gap:14,flexWrap:'wrap',fontSize:12,color:'var(--muted)',marginBottom:12}}>
+                  <span>Beautician: <strong style={{color:'var(--plum)'}}>{job.employee?.full_name || '—'}</strong></span>
+                  {menit != null && <span>{fmtDurasi(menit)} lalu</span>}
+                </div>
+
+                {/* Riwayat tahap */}
+                <div style={{display:'flex',flexWrap:'wrap',gap:10,fontSize:11,color:'var(--muted)',
+                  padding:'8px 12px',background:'var(--cream)',borderRadius:8,marginBottom:12}}>
+                  {job.accepted_at && <span>Berangkat {fmtJam(job.accepted_at)}</span>}
+                  {job.started_at && (
+                    <span>
+                      Mulai {fmtJam(job.started_at)}
+                      {job.started_lat != null && (
+                        <a href={mapsLinkFor(job.started_lat, job.started_lng)} target="_blank" rel="noopener noreferrer"
+                          style={{marginLeft:5,color:'var(--mauve)',textDecoration:'none'}}>📍 lokasi</a>
+                      )}
+                    </span>
+                  )}
+                  {job.finished_at && <span>Selesai {fmtJam(job.finished_at)}</span>}
+                  {!job.accepted_at && <span>Dibuat {fmtJam(job.created_at)}</span>}
+                </div>
+
+                {lamaKembali && (
+                  <div style={{padding:'10px 12px',background:'#fdf2f2',border:'1px solid var(--red)',
+                    borderRadius:8,fontSize:12,color:'var(--red)',marginBottom:12}}>
+                    Sudah {fmtDurasi(menit)} sejak selesai treatment tapi belum menandai sudah sampai.
+                    Ada baiknya dihubungi.
+                  </div>
+                )}
+
+                {/* Swipe untuk maju tahap */}
+                {info.next && (milikSaya || isAdmin) && (
+                  <SwipeConfirm
+                    label={info.nextLabel}
+                    color={hsStatusInfo(info.next).color}
+                    onConfirm={() => handleAdvance(job)}
+                  />
+                )}
+                {info.next && !milikSaya && !isAdmin && (
+                  <div style={{fontSize:12,color:'var(--muted)',textAlign:'center',padding:10}}>
+                    Orderan ini untuk beautician lain
+                  </div>
+                )}
+
+                {isAdmin && job.status === 'pending' && (
+                  <button className="btn btn-ghost btn-sm" style={{marginTop:10,color:'var(--red)'}}
+                    onClick={() => handleCancel(job)}>
+                    Batalkan orderan
+                  </button>
+                )}
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* RIWAYAT */}
+      {!loading && pastJobs.length > 0 && (
+        <Card title="Riwayat" sub={`${pastJobs.length} orderan selesai atau dibatalkan`}
+          action={
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowHistory(v => !v)}>
+              {showHistory ? 'Sembunyikan' : 'Lihat'}
+            </button>
+          }>
+          {showHistory && (
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {pastJobs.slice(0, 40).map(job => {
+                const info = hsStatusInfo(job.status);
+                return (
+                  <div key={job.id} style={{padding:'10px 12px',border:'1px solid var(--line)',borderRadius:10}}>
+                    <div style={{display:'flex',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
+                      <div>
+                        <div style={{fontWeight:500,fontSize:14}}>{job.client_name}</div>
+                        <div style={{fontSize:12,color:'var(--muted)'}}>
+                          {fmtDate(job.created_at?.slice(0,10))} · {job.employee?.full_name || '—'}
+                          {job.return_to && ` · kembali ke ${job.return_to}`}
+                        </div>
+                      </div>
+                      <span style={{fontSize:11,color:info.color,fontWeight:600,whiteSpace:'nowrap'}}>{info.label}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {showForm && (
+        <HomeServiceFormModal
+          profile={profile}
+          branchId={effectiveBranchId}
+          onClose={() => setShowForm(false)}
+          onSuccess={() => { setShowForm(false); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// =====================================================
+// Form buat orderan home service baru
+// =====================================================
+function HomeServiceFormModal({ profile, branchId, onClose, onSuccess }) {
+  const [employees, setEmployees] = useStateP([]);
+  const [form, setForm] = useStateP({
+    employee_id: profile.role === 'employee' ? profile.id : '',
+    client_name: '', client_phone: '', client_address: '', notes: '',
+  });
+  const [saving, setSaving] = useStateP(false);
+
+  useEffectP(() => {
+    listEmployees(branchId, true).then(setEmployees).catch(() => {});
+  }, [branchId]);
+
+  function update(patch) { setForm(f => ({ ...f, ...patch })); }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!form.client_name.trim()) { toast('Nama client wajib diisi', 'error'); return; }
+    if (!form.employee_id) { toast('Pilih beautician yang mengerjakan', 'error'); return; }
+    setSaving(true);
+    try {
+      await createHomeServiceJob({
+        branch_id: branchId,
+        employee_id: form.employee_id,
+        client_name: form.client_name.trim(),
+        client_phone: form.client_phone.trim() || null,
+        client_address: form.client_address.trim() || null,
+        notes: form.notes.trim() || null,
+      });
+      toast('Orderan home service dibuat ✓', 'success');
+      onSuccess();
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(36,26,44,0.6)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+      onClick={onClose}>
+      <div style={{background:'var(--paper)',borderRadius:16,padding:20,maxWidth:460,width:'100%',maxHeight:'88vh',overflowY:'auto'}}
+        onClick={e => e.stopPropagation()}>
+        <h3 className="card-title" style={{marginBottom:14}}>Orderan Home Service Baru</h3>
+        <form onSubmit={handleSubmit}>
+          <Field label="Beautician *">
+            <select className="form-select" value={form.employee_id}
+              onChange={e => update({ employee_id: e.target.value })}>
+              <option value="">— pilih beautician —</option>
+              {employees.map(emp => (
+                <option key={emp.id} value={emp.id}>{emp.full_name}{emp.job_title ? ` · ${emp.job_title}` : ''}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Nama Client *">
+            <input className="form-input" value={form.client_name}
+              onChange={e => update({ client_name: e.target.value })} placeholder="Nama client"/>
+          </Field>
+          <div className="form-row">
+            <Field label="No. HP Client">
+              <input className="form-input" value={form.client_phone}
+                onChange={e => update({ client_phone: e.target.value })} placeholder="08xxxxxxxxxx"/>
+            </Field>
+          </div>
+          <Field label="Alamat" hint="Tulis selengkap mungkin untuk keamanan">
+            <textarea className="form-textarea" rows="2" value={form.client_address}
+              onChange={e => update({ client_address: e.target.value })}
+              placeholder="Alamat lengkap client"/>
+          </Field>
+          <Field label="Catatan">
+            <textarea className="form-textarea" rows="2" value={form.notes}
+              onChange={e => update({ notes: e.target.value })}
+              placeholder="Treatment yang dipesan, patokan lokasi, dll"/>
+          </Field>
+          <div style={{display:'flex',gap:10,justifyContent:'flex-end',marginTop:16,flexWrap:'wrap'}}>
+            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>Batal</button>
+            <button type="submit" className="btn btn-primary" disabled={saving}>
+              {saving ? 'Menyimpan...' : 'Buat Orderan'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 Object.assign(window, {
   LoginPage, AdminDashboard, BranchesPage,
   NewTransactionPage, TransactionsPage,
@@ -7242,4 +7692,5 @@ Object.assign(window, {
   // Tahap E
   PhotoUploadField, PhotoGalleryModal,
   AbsensiPage, FaceScanCamera, LaporanAbsensiPage,
+  HomeServicePage, HomeServiceFormModal, SwipeConfirm,
 });
