@@ -7359,6 +7359,7 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
   const [loading, setLoading] = useStateP(true);
   const [showForm, setShowForm] = useStateP(false);
   const [showHistory, setShowHistory] = useStateP(false);
+  const [detailJob, setDetailJob] = useStateP(null);
   const [tick, setTick] = useStateP(0);
 
   const isAdmin = profile.role === 'super_admin' || profile.role === 'branch_admin';
@@ -7482,12 +7483,18 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
                       <div style={{fontSize:12,color:'var(--muted)',marginTop:4}}>{job.client_address}</div>
                     )}
                   </div>
-                  <span style={{
-                    padding:'5px 12px',borderRadius:100,fontSize:11,fontWeight:600,
-                    background:'var(--cream)',color:info.color,whiteSpace:'nowrap',
-                  }}>
-                    {info.label}
-                  </span>
+                  <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:6}}>
+                    <span style={{
+                      padding:'5px 12px',borderRadius:100,fontSize:11,fontWeight:600,
+                      background:'var(--cream)',color:info.color,whiteSpace:'nowrap',
+                    }}>
+                      {info.label}
+                    </span>
+                    <button className="btn btn-ghost btn-sm" style={{padding:'3px 10px',fontSize:11}}
+                      onClick={() => setDetailJob(job)}>
+                      Lihat detail & lokasi
+                    </button>
+                  </div>
                 </div>
 
                 {/* Beautician & durasi */}
@@ -7549,7 +7556,7 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
 
       {/* RIWAYAT */}
       {!loading && pastJobs.length > 0 && (
-        <Card title="Riwayat" sub={`${pastJobs.length} orderan selesai atau dibatalkan`}
+        <Card title="Riwayat" sub={`${pastJobs.length} orderan selesai atau dibatalkan. Klik untuk lihat lokasi.`}
           action={
             <button className="btn btn-ghost btn-sm" onClick={() => setShowHistory(v => !v)}>
               {showHistory ? 'Sembunyikan' : 'Lihat'}
@@ -7560,7 +7567,8 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
               {pastJobs.slice(0, 40).map(job => {
                 const info = hsStatusInfo(job.status);
                 return (
-                  <div key={job.id} style={{padding:'10px 12px',border:'1px solid var(--line)',borderRadius:10}}>
+                  <div key={job.id} onClick={() => setDetailJob(job)}
+                    style={{padding:'10px 12px',border:'1px solid var(--line)',borderRadius:10,cursor:'pointer'}}>
                     <div style={{display:'flex',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
                       <div>
                         <div style={{fontWeight:500,fontSize:14}}>{job.client_name}</div>
@@ -7577,6 +7585,10 @@ function HomeServicePage({ profile, currentBranchId, branches, setPage }) {
             </div>
           )}
         </Card>
+      )}
+
+      {detailJob && (
+        <HomeServiceDetailModal job={detailJob} onClose={() => setDetailJob(null)}/>
       )}
 
       {showForm && (
@@ -7679,6 +7691,180 @@ function HomeServiceFormModal({ profile, branchId, onClose, onSuccess }) {
   );
 }
 
+// =====================================================
+// Detail perjalanan home service — riwayat 4 tahap + lokasi
+// =====================================================
+function HomeServiceDetailModal({ job, onClose }) {
+  if (!job) return null;
+
+  const fmtJam = ts => ts ? new Date(ts).toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit' }) : null;
+  const fmtTgl = ts => ts ? new Date(ts).toLocaleDateString('id-ID', { weekday:'long', day:'numeric', month:'long', year:'numeric' }) : '';
+
+  const tahapan = [
+    {
+      nama: 'Terima & Berangkat',
+      ket: 'Beautician menerima orderan dan berangkat',
+      at: job.accepted_at, lat: job.accepted_lat, lng: job.accepted_lng,
+    },
+    {
+      nama: 'Sampai & Mulai Kerjakan',
+      ket: 'Lokasi rumah client',
+      at: job.started_at, lat: job.started_lat, lng: job.started_lng,
+      penting: true,
+    },
+    {
+      nama: 'Selesai Treatment',
+      ket: 'Treatment selesai dikerjakan',
+      at: job.finished_at, lat: job.finished_lat, lng: job.finished_lng,
+    },
+    {
+      nama: 'Sudah Sampai Kembali',
+      ket: job.return_to === 'salon' ? 'Kembali ke salon'
+        : job.return_to === 'rumah' ? 'Langsung pulang ke rumah'
+        : 'Beautician sudah sampai',
+      at: job.returned_at, lat: job.returned_lat, lng: job.returned_lng,
+      penting: true,
+    },
+  ];
+
+  // Lama treatment & lama perjalanan pulang
+  const lamaTreatment = (job.started_at && job.finished_at)
+    ? Math.floor((new Date(job.finished_at) - new Date(job.started_at)) / 60000) : null;
+  const lamaPulang = (job.finished_at && job.returned_at)
+    ? Math.floor((new Date(job.returned_at) - new Date(job.finished_at)) / 60000) : null;
+
+  const info = hsStatusInfo(job.status);
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(36,26,44,0.65)',zIndex:9200,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+      onClick={onClose}>
+      <div style={{background:'var(--paper)',borderRadius:16,maxWidth:480,width:'100%',maxHeight:'88vh',overflowY:'auto'}}
+        onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{padding:'18px 20px',borderBottom:'1px solid var(--line)'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10}}>
+            <div style={{minWidth:0}}>
+              <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:22,fontWeight:600,color:'var(--plum-deep)'}}>
+                {job.client_name}
+              </div>
+              <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{fmtTgl(job.created_at)}</div>
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
+          </div>
+          <div style={{marginTop:10,display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+            <span style={{padding:'4px 11px',borderRadius:100,fontSize:11,fontWeight:600,background:'var(--cream)',color:info.color}}>
+              {info.label}
+            </span>
+            <span style={{fontSize:12,color:'var(--muted)'}}>
+              Beautician: <strong style={{color:'var(--plum)'}}>{job.employee?.full_name || '—'}</strong>
+            </span>
+          </div>
+        </div>
+
+        {/* Data client */}
+        <div style={{padding:'14px 20px',borderBottom:'1px solid var(--line)'}}>
+          <div className="eyebrow" style={{marginBottom:8}}>Data Client</div>
+          {job.client_phone && (
+            <div style={{fontSize:13,marginBottom:5}}>
+              <a href={`https://wa.me/${String(job.client_phone).replace(/[^0-9]/g,'').replace(/^0/,'62')}`}
+                target="_blank" rel="noopener noreferrer" style={{color:'var(--mauve)',textDecoration:'none'}}>
+                {job.client_phone} · chat WhatsApp
+              </a>
+            </div>
+          )}
+          {job.client_address && (
+            <div style={{fontSize:13,color:'var(--plum)',marginBottom:5}}>{job.client_address}</div>
+          )}
+          {job.notes && (
+            <div style={{fontSize:12,color:'var(--muted)',fontStyle:'italic'}}>{job.notes}</div>
+          )}
+          {!job.client_phone && !job.client_address && !job.notes && (
+            <div style={{fontSize:12,color:'var(--muted)'}}>Tidak ada data tambahan</div>
+          )}
+        </div>
+
+        {/* Timeline tahapan */}
+        <div style={{padding:'16px 20px'}}>
+          <div className="eyebrow" style={{marginBottom:12}}>Riwayat Perjalanan</div>
+
+          {tahapan.map((t, i) => {
+            const sudah = !!t.at;
+            return (
+              <div key={i} style={{display:'flex',gap:12,marginBottom: i < tahapan.length - 1 ? 4 : 0}}>
+                {/* Garis waktu */}
+                <div style={{display:'flex',flexDirection:'column',alignItems:'center',flexShrink:0}}>
+                  <div style={{
+                    width:22,height:22,borderRadius:'50%',flexShrink:0,
+                    background: sudah ? (t.penting ? 'var(--mauve)' : 'var(--hijau)') : 'var(--cream)',
+                    border: sudah ? 'none' : '2px dashed var(--line)',
+                    color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',
+                    fontSize:12,fontWeight:700,
+                  }}>
+                    {sudah ? '✓' : ''}
+                  </div>
+                  {i < tahapan.length - 1 && (
+                    <div style={{width:2,flex:1,minHeight:34,background: sudah ? 'var(--mauve-soft)' : 'var(--line)'}}/>
+                  )}
+                </div>
+
+                {/* Isi tahap */}
+                <div style={{flex:1,minWidth:0,paddingBottom:14}}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
+                    <div style={{fontSize:13,fontWeight:600,color: sudah ? 'var(--plum-deep)' : 'var(--muted)'}}>
+                      {t.nama}
+                    </div>
+                    <div style={{fontSize:13,fontWeight:600,color: sudah ? 'var(--plum)' : 'var(--muted)',whiteSpace:'nowrap'}}>
+                      {fmtJam(t.at) || 'belum'}
+                    </div>
+                  </div>
+                  <div style={{fontSize:11,color:'var(--muted)',marginTop:2}}>{t.ket}</div>
+                  {sudah && (
+                    t.lat != null
+                      ? <a href={mapsLinkFor(t.lat, t.lng)} target="_blank" rel="noopener noreferrer"
+                          style={{display:'inline-block',marginTop:5,fontSize:12,color:'var(--mauve)',
+                            textDecoration:'none',fontWeight:500}}>
+                          📍 Buka lokasi di Maps
+                        </a>
+                      : <div style={{fontSize:11,color:'var(--amber)',marginTop:5}}>
+                          Lokasi tidak terekam (izin lokasi mati atau sinyal lemah)
+                        </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Ringkasan durasi */}
+          {(lamaTreatment != null || lamaPulang != null) && (
+            <div style={{marginTop:6,padding:'10px 12px',background:'var(--cream)',borderRadius:8,
+              display:'flex',gap:18,flexWrap:'wrap',fontSize:12}}>
+              {lamaTreatment != null && (
+                <div>
+                  <div style={{color:'var(--muted)',fontSize:11}}>Lama treatment</div>
+                  <div style={{fontWeight:600,color:'var(--plum-deep)'}}>{fmtDurasi(lamaTreatment)}</div>
+                </div>
+              )}
+              {lamaPulang != null && (
+                <div>
+                  <div style={{color:'var(--muted)',fontSize:11}}>Perjalanan kembali</div>
+                  <div style={{fontWeight:600,color:'var(--plum-deep)'}}>{fmtDurasi(lamaPulang)}</div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {job.status === 'cancelled' && job.cancel_reason && (
+            <div style={{marginTop:12,padding:'10px 12px',background:'#fdf2f2',borderRadius:8,fontSize:12,color:'var(--red)'}}>
+              Dibatalkan: {job.cancel_reason}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 Object.assign(window, {
   LoginPage, AdminDashboard, BranchesPage,
   NewTransactionPage, TransactionsPage,
@@ -7692,5 +7878,5 @@ Object.assign(window, {
   // Tahap E
   PhotoUploadField, PhotoGalleryModal,
   AbsensiPage, FaceScanCamera, LaporanAbsensiPage,
-  HomeServicePage, HomeServiceFormModal, SwipeConfirm,
+  HomeServicePage, HomeServiceFormModal, SwipeConfirm, HomeServiceDetailModal,
 });
