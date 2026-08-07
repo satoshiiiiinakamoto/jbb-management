@@ -8016,10 +8016,10 @@ function HomeServiceDetailModal({ job, onClose, canDelete = false, onDeleted }) 
               </span>
             </div>
           )}
-          {tahapanFor(m).map((t, i) => {
+          {tahapanFor(m).map((t, i, daftarTahap) => {
             const sudah = !!t.at;
             return (
-              <div key={i} style={{display:'flex',gap:12,marginBottom: i < tahapan.length - 1 ? 4 : 0}}>
+              <div key={i} style={{display:'flex',gap:12,marginBottom: i < daftarTahap.length - 1 ? 4 : 0}}>
                 {/* Garis waktu */}
                 <div style={{display:'flex',flexDirection:'column',alignItems:'center',flexShrink:0}}>
                   <div style={{
@@ -8031,7 +8031,7 @@ function HomeServiceDetailModal({ job, onClose, canDelete = false, onDeleted }) 
                   }}>
                     {sudah ? '✓' : ''}
                   </div>
-                  {i < tahapan.length - 1 && (
+                  {i < daftarTahap.length - 1 && (
                     <div style={{width:2,flex:1,minHeight:34,background: sudah ? 'var(--mauve-soft)' : 'var(--line)'}}/>
                   )}
                 </div>
