@@ -4131,7 +4131,7 @@ async function distanceFromBranch(branchId, loc) {
 }
 
 // Catat jam masuk (buat baris baru)
-async function clockIn({ employeeId, branchId, photoBlob }) {
+async function clockIn({ employeeId, branchId, photoBlob, faceVerified = null }) {
   const now = new Date();
   const date = todayDateStr();
 
@@ -4162,6 +4162,7 @@ async function clockIn({ employeeId, branchId, photoBlob }) {
     clock_in_lng: loc?.lng ?? null,
     clock_in_accuracy: loc?.accuracy ?? null,
     clock_in_distance_m: await distanceFromBranch(branchId, loc),
+    face_verified: faceVerified,
   };
 
   if (existing?.id) {
@@ -4175,7 +4176,7 @@ async function clockIn({ employeeId, branchId, photoBlob }) {
 }
 
 // Catat jam pulang (update baris hari ini)
-async function clockOut({ employeeId, branchId, photoBlob }) {
+async function clockOut({ employeeId, branchId, photoBlob, faceVerified = null }) {
   const now = new Date();
   const date = todayDateStr();
 
@@ -4202,6 +4203,7 @@ async function clockOut({ employeeId, branchId, photoBlob }) {
       clock_out_lng: loc?.lng ?? null,
       clock_out_accuracy: loc?.accuracy ?? null,
       clock_out_distance_m: await distanceFromBranch(branchId, loc),
+      face_verified: faceVerified,
     })
     .eq('id', existing.id)
     .select()

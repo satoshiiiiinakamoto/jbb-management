@@ -6777,13 +6777,13 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
     return 'selesai';
   }
 
-  async function handleCaptured(blob) {
+  async function handleCaptured(blob, faceVerified) {
     if (!camTarget) return;
     const { employee, kind } = camTarget;
     setCamTarget(null);
     try {
       if (kind === 'in') {
-        const rec = await clockIn({ employeeId: employee.id, branchId: effectiveBranchId, photoBlob: blob });
+        const rec = await clockIn({ employeeId: employee.id, branchId: effectiveBranchId, photoBlob: blob, faceVerified });
         const st = getArrivalStatus(rec.clock_in_at);
         let pesan;
         if (st?.status === 'telat') pesan = `${employee.full_name}: absen masuk tercatat, terlambat ${st.lateMinutes} menit`;
@@ -6791,7 +6791,7 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
         else pesan = `${employee.full_name}: absen masuk tercatat, tepat waktu`;
         toast(pesan, st?.status === 'telat' ? 'error' : 'success');
       } else {
-        await clockOut({ employeeId: employee.id, branchId: effectiveBranchId, photoBlob: blob });
+        await clockOut({ employeeId: employee.id, branchId: effectiveBranchId, photoBlob: blob, faceVerified });
         toast(`${employee.full_name}: absen pulang tercatat`, 'success');
       }
       loadData();
@@ -6948,15 +6948,110 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
 // Kamera selfie dengan animasi pemindaian wajah
 // Catatan: animasi ini efek visual, bukan pengenalan wajah sungguhan
 // =====================================================
+// =====================================================
+// DETEKSI WAJAH — memakai MediaPipe Face Detector
+// Model hanya dimuat saat kamera dibuka, jadi tidak memberatkan
+// pemuatan aplikasi secara keseluruhan.
+// =====================================================
+const MP_VERSION = '0.10.18';
+let _faceDetectorPromise = null;
+
+function loadFaceDetector() {
+  if (_faceDetectorPromise) return _faceDetectorPromise;
+  _faceDetectorPromise = (async () => {
+    const vision = await import(
+      `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/vision_bundle.mjs`
+    );
+    const fileset = await vision.FilesetResolver.forVisionTasks(
+      `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/wasm`
+    );
+    return await vision.FaceDetector.createFromOptions(fileset, {
+      baseOptions: {
+        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
+        delegate: 'GPU',
+      },
+      runningMode: 'VIDEO',
+      minDetectionConfidence: 0.5,
+    });
+  })().catch(err => {
+    _faceDetectorPromise = null;   // biar bisa dicoba lagi nanti
+    throw err;
+  });
+  return _faceDetectorPromise;
+}
+
+// Aturan kelayakan wajah. Dibuat tidak terlalu ketat supaya karyawan
+// tidak frustrasi, tapi cukup untuk menolak jari, langit-langit, dan
+// wajah yang terlalu jauh atau membelakangi.
+const FACE_MIN_WIDTH_RATIO = 0.26;   // lebar wajah minimal terhadap lebar layar
+const FACE_MAX_WIDTH_RATIO = 0.92;   // terlalu dekat sampai terpotong
+const FACE_CENTER_TOLERANCE_X = 0.22;
+const FACE_CENTER_TOLERANCE_Y = 0.26;
+
+function evaluateFace(result, vw, vh) {
+  const dets = result?.detections || [];
+  if (dets.length === 0) return { ok: false, msg: 'Wajah tidak terdeteksi' };
+  if (dets.length > 1) return { ok: false, msg: 'Terdeteksi lebih dari satu wajah' };
+
+  const d = dets[0];
+  const box = d.boundingBox;
+  if (!box) return { ok: false, msg: 'Wajah tidak terdeteksi' };
+
+  const ratio = box.width / vw;
+  if (ratio < FACE_MIN_WIDTH_RATIO) return { ok: false, msg: 'Dekatkan wajah ke kamera' };
+  if (ratio > FACE_MAX_WIDTH_RATIO) return { ok: false, msg: 'Terlalu dekat, mundur sedikit' };
+
+  // Titik tengah wajah harus berada di sekitar tengah layar
+  const cx = (box.originX + box.width / 2) / vw;
+  const cy = (box.originY + box.height / 2) / vh;
+  if (Math.abs(cx - 0.5) > FACE_CENTER_TOLERANCE_X) return { ok: false, msg: 'Posisikan wajah di tengah' };
+  if (Math.abs(cy - 0.5) > FACE_CENTER_TOLERANCE_Y) return { ok: false, msg: 'Posisikan wajah di tengah' };
+
+  // Tingkat 2: pastikan wajah menghadap depan lewat titik mata & hidung.
+  // Titik dari MediaPipe: mata kanan, mata kiri, ujung hidung, mulut, 2 tragion.
+  const kp = d.keypoints || [];
+  if (kp.length >= 4) {
+    const [m1, m2, hidung] = kp;
+    if (m1 && m2 && hidung) {
+      const jarakMata = Math.abs(m1.x - m2.x);
+      if (jarakMata < 0.04) return { ok: false, msg: 'Hadapkan wajah lurus ke kamera' };
+
+      // Hidung harus berada di antara kedua mata, tidak melenceng jauh
+      const tengahMata = (m1.x + m2.x) / 2;
+      const geser = Math.abs(hidung.x - tengahMata) / jarakMata;
+      if (geser > 0.62) return { ok: false, msg: 'Jangan menoleh, hadap ke kamera' };
+
+      // Kepala tidak boleh terlalu miring
+      const beda = Math.abs(m1.y - m2.y) / jarakMata;
+      if (beda > 0.55) return { ok: false, msg: 'Tegakkan kepala' };
+    }
+  }
+
+  return { ok: true, msg: 'Wajah terdeteksi, siap difoto' };
+}
+
+// =====================================================
+// Kamera selfie dengan pemeriksaan wajah sungguhan
+// =====================================================
 function FaceScanCamera({ employeeName, kind, onCancel, onCaptured }) {
   const videoRef = useRefP(null);
   const streamRef = useRefP(null);
+  const detectorRef = useRefP(null);
+  const rafRef = useRefP(null);
+  const okStreakRef = useRefP(0);
+
   const [phase, setPhase] = useStateP('starting');  // starting | ready | scanning | done | error
   const [errMsg, setErrMsg] = useStateP('');
+  const [faceMsg, setFaceMsg] = useStateP('Menyiapkan pemeriksaan wajah...');
+  const [faceOk, setFaceOk] = useStateP(false);
+  const [detectorSiap, setDetectorSiap] = useStateP(false);
+  const [detectorGagal, setDetectorGagal] = useStateP(false);
 
   useEffectP(() => {
     let cancelled = false;
+
     async function start() {
+      // 1. Nyalakan kamera dulu supaya karyawan tidak menunggu lama
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 640 } },
@@ -6972,16 +7067,66 @@ function FaceScanCamera({ employeeName, kind, onCancel, onCaptured }) {
       } catch (e) {
         setErrMsg('Kamera tidak bisa diakses. Pastikan izin kamera diaktifkan di browser.');
         setPhase('error');
+        return;
+      }
+
+      // 2. Muat model pemeriksa wajah
+      try {
+        const det = await loadFaceDetector();
+        if (cancelled) return;
+        detectorRef.current = det;
+        setDetectorSiap(true);
+        setFaceMsg('Posisikan wajah di dalam oval');
+        jalankanDeteksi();
+      } catch (e) {
+        if (cancelled) return;
+        // Gagal muat model: absensi tetap boleh jalan, tapi ditandai belum terverifikasi
+        setDetectorGagal(true);
+        setFaceOk(true);
+        setFaceMsg('Pemeriksaan wajah tidak aktif');
       }
     }
+
+    function jalankanDeteksi() {
+      const v = videoRef.current;
+      const det = detectorRef.current;
+      if (!v || !det || cancelled) return;
+
+      let lastTs = -1;
+      const loop = () => {
+        if (cancelled) return;
+        const vid = videoRef.current;
+        if (vid && vid.readyState >= 2 && vid.videoWidth > 0) {
+          const ts = performance.now();
+          if (ts !== lastTs) {
+            lastTs = ts;
+            try {
+              const hasil = det.detectForVideo(vid, ts);
+              const nilai = evaluateFace(hasil, vid.videoWidth, vid.videoHeight);
+              // Butuh beberapa frame berturut-turut supaya tidak berkedip-kedip
+              if (nilai.ok) okStreakRef.current += 1;
+              else okStreakRef.current = 0;
+              const stabil = okStreakRef.current >= 3;
+              setFaceOk(stabil);
+              setFaceMsg(stabil ? 'Wajah terdeteksi, siap difoto' : nilai.msg);
+            } catch (e) { /* lewati frame yang bermasalah */ }
+          }
+        }
+        rafRef.current = requestAnimationFrame(loop);
+      };
+      rafRef.current = requestAnimationFrame(loop);
+    }
+
     start();
     return () => {
       cancelled = true;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
     };
   }, []);
 
-  function stopCamera() {
+  function stopKamera() {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
     if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
   }
 
@@ -6993,11 +7138,9 @@ function FaceScanCamera({ employeeName, kind, onCancel, onCaptured }) {
       const canvas = document.createElement('canvas');
       canvas.width = size; canvas.height = size;
       const ctx = canvas.getContext('2d');
-      // Crop tengah jadi persegi
       const vw = v.videoWidth || size, vh = v.videoHeight || size;
       const side = Math.min(vw, vh);
       const sx = (vw - side) / 2, sy = (vh - side) / 2;
-      // Mirror supaya terasa natural seperti cermin
       ctx.translate(size, 0);
       ctx.scale(-1, 1);
       ctx.drawImage(v, sx, sy, side, side, 0, 0, size, size);
@@ -7006,19 +7149,22 @@ function FaceScanCamera({ employeeName, kind, onCancel, onCaptured }) {
   }
 
   async function handleShoot() {
+    if (!faceOk) return;
     setPhase('scanning');
     const blob = await captureBlob();
-    // Beri jeda supaya animasi pemindaian terlihat
+    // Jeda supaya animasi pemindaian terlihat
     setTimeout(() => {
       setPhase('done');
       setTimeout(() => {
-        stopCamera();
-        onCaptured(blob);
+        stopKamera();
+        // Tandai apakah foto ini benar-benar lolos pemeriksaan wajah
+        onCaptured(blob, !detectorGagal);
       }, 900);
-    }, 1600);
+    }, 1400);
   }
 
   const judul = kind === 'in' ? 'Absen Masuk' : 'Absen Pulang';
+  const bolehFoto = phase === 'ready' && faceOk;
 
   return (
     <div style={{position:'fixed',inset:0,background:'rgba(20,14,24,0.92)',zIndex:9500,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
@@ -7045,16 +7191,16 @@ function FaceScanCamera({ employeeName, kind, onCancel, onCaptured }) {
           box-shadow:0 0 14px 3px rgba(201,169,97,0.65);
           animation: jbbScanLine 2.6s ease-in-out infinite;
         }
-        /* Saat memindai, garis bergerak lebih cepat dan lebih terang */
         .jbb-scan-line.fast {
-          animation-duration: 1.2s;
-          height:4px;
+          animation-duration: 1.2s; height:4px;
           box-shadow:0 0 18px 5px rgba(201,169,97,0.85);
         }
         .jbb-corner {
           position:absolute; width:34px; height:34px;
           border-color:#c9a961; border-style:solid; border-width:0;
+          transition: border-color .25s;
         }
+        .jbb-corner.ok { border-color:#4a7c59; }
       `}</style>
 
       <div style={{width:'100%',maxWidth:400,textAlign:'center'}}>
@@ -7071,32 +7217,29 @@ function FaceScanCamera({ employeeName, kind, onCancel, onCaptured }) {
           </div>
         ) : (
           <>
-            {/* Bingkai kamera */}
-            <div style={{position:'relative',width:'100%',aspectRatio:'1 / 1',borderRadius:20,overflow:'hidden',background:'#000',marginBottom:18}}>
+            <div style={{position:'relative',width:'100%',aspectRatio:'1 / 1',borderRadius:20,overflow:'hidden',background:'#000',marginBottom:14}}>
               <video ref={videoRef} playsInline muted
                 style={{width:'100%',height:'100%',objectFit:'cover',transform:'scaleX(-1)'}}/>
 
-              {/* Sudut bingkai */}
-              <div className="jbb-corner" style={{top:12,left:12,borderTopWidth:3,borderLeftWidth:3,borderTopLeftRadius:10}}/>
-              <div className="jbb-corner" style={{top:12,right:12,borderTopWidth:3,borderRightWidth:3,borderTopRightRadius:10}}/>
-              <div className="jbb-corner" style={{bottom:12,left:12,borderBottomWidth:3,borderLeftWidth:3,borderBottomLeftRadius:10}}/>
-              <div className="jbb-corner" style={{bottom:12,right:12,borderBottomWidth:3,borderRightWidth:3,borderBottomRightRadius:10}}/>
+              <div className={'jbb-corner' + (faceOk ? ' ok' : '')} style={{top:12,left:12,borderTopWidth:3,borderLeftWidth:3,borderTopLeftRadius:10}}/>
+              <div className={'jbb-corner' + (faceOk ? ' ok' : '')} style={{top:12,right:12,borderTopWidth:3,borderRightWidth:3,borderTopRightRadius:10}}/>
+              <div className={'jbb-corner' + (faceOk ? ' ok' : '')} style={{bottom:12,left:12,borderBottomWidth:3,borderLeftWidth:3,borderBottomLeftRadius:10}}/>
+              <div className={'jbb-corner' + (faceOk ? ' ok' : '')} style={{bottom:12,right:12,borderBottomWidth:3,borderRightWidth:3,borderBottomRightRadius:10}}/>
 
-              {/* Oval panduan wajah */}
               {phase !== 'done' && (
                 <div style={{
                   position:'absolute',top:'12%',left:'22%',width:'56%',height:'70%',
-                  border:'2px dashed rgba(255,255,255,0.55)',borderRadius:'50% / 42%',
-                  animation:'jbbPulseRing 2s ease-in-out infinite',pointerEvents:'none',
+                  border: faceOk ? '2.5px solid rgba(74,124,89,0.9)' : '2px dashed rgba(255,255,255,0.55)',
+                  borderRadius:'50% / 42%',
+                  animation: faceOk ? 'none' : 'jbbPulseRing 2s ease-in-out infinite',
+                  pointerEvents:'none', transition:'border-color .25s',
                 }}/>
               )}
 
-              {/* Garis pemindai — sudah berjalan sejak kamera siap */}
               {(phase === 'ready' || phase === 'scanning') && (
                 <div className={'jbb-scan-line' + (phase === 'scanning' ? ' fast' : '')}/>
               )}
 
-              {/* Hasil */}
               {phase === 'done' && (
                 <div style={{position:'absolute',inset:0,background:'rgba(74,124,89,0.88)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',animation:'jbbPopIn .45s ease-out'}}>
                   <div style={{fontSize:52,marginBottom:10}}>✓</div>
@@ -7105,23 +7248,42 @@ function FaceScanCamera({ employeeName, kind, onCancel, onCaptured }) {
                 </div>
               )}
 
-              {/* Status pemindaian */}
-              {(phase === 'ready' || phase === 'scanning') && (
+              {phase === 'scanning' && (
                 <div style={{position:'absolute',bottom:14,left:0,right:0,color:'#c9a961',fontSize:12,fontWeight:600,letterSpacing:'0.06em'}}>
-                  {phase === 'scanning' ? 'MEMINDAI WAJAH...' : 'POSISIKAN WAJAH DI DALAM OVAL'}
+                  MEMINDAI WAJAH...
                 </div>
               )}
             </div>
 
-            {/* Tombol */}
+            {/* Petunjuk hasil pemeriksaan wajah */}
+            {(phase === 'ready') && (
+              <div style={{
+                padding:'9px 14px',borderRadius:100,marginBottom:14,fontSize:13,fontWeight:600,
+                background: faceOk ? 'rgba(74,124,89,0.22)' : 'rgba(255,255,255,0.12)',
+                color: faceOk ? '#8fd6a5' : '#fff',
+                display:'inline-block',
+              }}>
+                {faceOk ? '✓ ' : ''}{faceMsg}
+              </div>
+            )}
+
+            {detectorGagal && phase === 'ready' && (
+              <div style={{color:'rgba(255,255,255,0.6)',fontSize:11,marginBottom:12,lineHeight:1.5}}>
+                Pemeriksaan wajah tidak bisa dijalankan di perangkat ini.<br/>
+                Absensi tetap tersimpan dan akan ditandai untuk diperiksa manual.
+              </div>
+            )}
+
             {phase === 'ready' && (
               <div style={{display:'flex',gap:10,justifyContent:'center'}}>
-                <button className="btn btn-ghost" onClick={() => { stopCamera(); onCancel(); }}
+                <button className="btn btn-ghost" onClick={() => { stopKamera(); onCancel(); }}
                   style={{color:'#fff',borderColor:'rgba(255,255,255,0.4)'}}>
                   Batal
                 </button>
-                <button className="btn btn-primary" onClick={handleShoot} style={{minWidth:150}}>
-                  Ambil Foto & Absen
+                <button className="btn btn-primary" onClick={handleShoot}
+                  disabled={!bolehFoto}
+                  style={{minWidth:170, opacity: bolehFoto ? 1 : 0.45}}>
+                  {bolehFoto ? 'Ambil Foto & Absen' : 'Menunggu Wajah'}
                 </button>
               </div>
             )}
@@ -7298,6 +7460,32 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
         </div>
       </Card>
 
+      {/* Absensi yang pemeriksaan wajahnya tidak berjalan */}
+      {(() => {
+        const belum = rows.filter(r => r.face_verified === false);
+        if (!belum.length) return null;
+        return (
+          <Card>
+            <div style={{fontSize:13,fontWeight:600,color:'var(--amber)'}}>
+              ⚠️ {belum.length} absensi tanpa pemeriksaan wajah
+            </div>
+            <div style={{fontSize:12,color:'var(--muted)',marginTop:4,lineHeight:1.5,marginBottom:8}}>
+              Pemeriksaan wajah tidak bisa berjalan di perangkat mereka, biasanya karena
+              sinyal jelek saat memuat. Absensinya tetap tersimpan. Ada baiknya fotonya
+              diperiksa manual.
+            </div>
+            <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+              {belum.slice(0, 12).map(r => (
+                <button key={r.id} className="btn btn-ghost btn-sm" style={{fontSize:11}}
+                  onClick={() => showPhoto(r.clock_in_photo, `${r.employee?.full_name} · ${fmtDate(r.date)}`)}>
+                  {r.employee?.full_name} · {fmtDate(r.date)}
+                </button>
+              ))}
+            </div>
+          </Card>
+        );
+      })()}
+
       {/* REKAP */}
       <Card title="Rekap per Karyawan" sub="Jumlah hari hadir dan keterlambatan">
         {loading ? <Loader text="Memuat..."/> :
@@ -7351,6 +7539,7 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                   </div>
                   <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
                     <button className="btn btn-ghost btn-sm" onClick={() => showPhoto(r.clock_in_photo, `${r.employee?.full_name} · masuk`)}>
+                      {r.face_verified === false && <span title="Pemeriksaan wajah tidak berjalan, perlu dicek manual">⚠️ </span>}
                       Masuk {fmtJam(r.clock_in_at)}
                       {(() => {
                         const st = getArrivalStatus(r.clock_in_at);
