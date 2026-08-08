@@ -1105,13 +1105,16 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
   // the premium is due monthly regardless of days worked)
   const bpjsKesehatan = Number(adjustment?.bpjs_kesehatan) || 0;
 
-  // Gross take-home BEFORE any extra deduction (kasbon etc).
+  // Potongan keterlambatan (dari sistem absensi, dihitung per hari terlambat)
+  const lateDeduction = Number(adjustment?.late_deduction) || 0;
+
+  // Gross take-home BEFORE any deduction (kasbon, telat).
   // Shown on the slip so the employee sees their salary without deductions.
   const totalBeforeDeduction = baseSalaryActual + mealAllowanceActual + bpjsKesehatan
     + treatmentCommission + hsCommission + tips + bonus;
 
-  // Final take-home after extra deduction (kasbon)
-  const total = totalBeforeDeduction - extraDeduction;
+  // Final take-home after all deductions
+  const total = totalBeforeDeduction - extraDeduction - lateDeduction;
 
   return {
     base_salary: baseSalary,
@@ -1137,6 +1140,7 @@ function calculatePayroll({ employee, commissions, adjustment, defaultStandardDa
     is_prorated: isProrated,
     bonus,
     extra_deduction: extraDeduction,
+    late_deduction: lateDeduction,
     notes: adjustment?.notes || null,
     total_before_deduction: totalBeforeDeduction,
     total,
@@ -2601,16 +2605,16 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
     <thead>
       <tr>
         <th>Hari Hadir</th>
+        <th>Toleransi (jatah ${attendance.tolerance_quota || 7})</th>
         <th>Hari Telat</th>
-        <th>Total Telat</th>
         <th>Lupa Absen Pulang</th>
       </tr>
     </thead>
     <tbody>
       <tr>
         <td>${attendance.days_present} hari</td>
-        <td${attendance.days_late > 0 ? ' style="color: #a85555;"' : ''}>${attendance.days_late} hari</td>
-        <td${attendance.total_late_minutes > 0 ? ' style="color: #a85555;"' : ''}>${attendance.total_late_minutes} menit</td>
+        <td${(attendance.tolerance_over || 0) > 0 ? ' style="color: #b8893d;"' : ''}>${attendance.days_tolerance || 0} kali${(attendance.tolerance_over || 0) > 0 ? ` (${attendance.tolerance_over} lewat jatah)` : ''}</td>
+        <td${(attendance.effective_late_days || 0) > 0 ? ' style="color: #a85555;"' : ''}>${attendance.effective_late_days || 0} hari</td>
         <td${attendance.days_no_clockout > 0 ? ' style="color: #b8893d;"' : ''}>${attendance.days_no_clockout} hari</td>
       </tr>
     </tbody>
@@ -2689,15 +2693,23 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
         <td class="cell-num pos">+${fmtRp(payroll.bonus)}</td>
       </tr>
       ` : ''}
-      ${payroll.extra_deduction > 0 ? `
+      ${(payroll.extra_deduction > 0 || payroll.late_deduction > 0) ? `
       <tr class="breakdown-row-bold">
         <td>GAJI DITERIMA</td>
-        <td class="cell-num">${fmtRp(payroll.total_before_deduction != null ? payroll.total_before_deduction : (payroll.total + payroll.extra_deduction))}</td>
+        <td class="cell-num">${fmtRp(payroll.total_before_deduction != null ? payroll.total_before_deduction : (payroll.total + payroll.extra_deduction + (payroll.late_deduction || 0)))}</td>
       </tr>
+      ${(payroll.late_deduction || 0) > 0 ? `
+      <tr>
+        <td>Potongan Keterlambatan${payroll.late_days ? ` (${payroll.late_days} hari × ${fmtRp(payroll.late_penalty_per_day || 15000)})` : ''}</td>
+        <td class="cell-num neg">−${fmtRp(payroll.late_deduction)}</td>
+      </tr>
+      ` : ''}
+      ${payroll.extra_deduction > 0 ? `
       <tr>
         <td>Potongan / Kasbon${payroll.notes ? ` (${escapeHtml(payroll.notes)})` : ''}</td>
         <td class="cell-num neg">−${fmtRp(payroll.extra_deduction)}</td>
       </tr>
+      ` : ''}
       <tr class="breakdown-row-final">
         <td>GAJI DITERIMA SETELAH POTONGAN</td>
         <td class="cell-num">${fmtRp(payroll.total)}</td>
@@ -3941,6 +3953,11 @@ const LATE_TOLERANCE_MINUTES = 30;
 // Toleransi pulang: pulang 19:15 sampai 19:30 masih dianggap wajar.
 // Di bawah 19:15 dihitung pulang cepat, kecuali memang ambil lembur pagi.
 const EARLY_LEAVE_TOLERANCE_MINUTES = 15;
+// Jatah toleransi datang (09:30 sampai 10:00) per periode gaji.
+// Toleransi ke-8 dan seterusnya dihitung sebagai terlambat.
+const TOLERANCE_QUOTA_PER_PERIOD = 7;
+// Potongan per hari terlambat
+const LATE_PENALTY_PER_DAY = 15000;
 
 function todayDateStr() {
   const d = new Date();
@@ -4268,6 +4285,7 @@ async function countOldAttendancePhotos(branchId = null) {
 async function getAttendanceSummary(branchId, periodStart, periodEnd) {
   const rows = await listAttendance(branchId, periodStart, periodEnd);
   const byEmployee = {};
+
   for (const r of rows) {
     const id = r.employee_id;
     if (!byEmployee[id]) {
@@ -4276,16 +4294,47 @@ async function getAttendanceSummary(branchId, periodStart, periodEnd) {
         employee_name: r.employee?.full_name || '',
         days_present: 0,
         total_late_minutes: 0,
-        days_late: 0,
+        days_over_ten: 0,        // datang di atas 10:00
         days_no_clockout: 0,
+        _toleransi: [],          // tanggal-tanggal yang masuk toleransi
       };
     }
     const s = byEmployee[id];
     if (r.clock_in_at) s.days_present += 1;
-    if (r.late_minutes > 0) { s.days_late += 1; s.total_late_minutes += r.late_minutes; }
     if (r.clock_in_at && !r.clock_out_at) s.days_no_clockout += 1;
+
+    const st = getArrivalStatus(r.clock_in_at);
+    if (st?.status === 'telat') {
+      s.days_over_ten += 1;
+      s.total_late_minutes += st.lateMinutes;
+    } else if (st?.status === 'toleransi') {
+      s._toleransi.push(r.date);
+    }
   }
-  return Object.values(byEmployee);
+
+  // Hitung jatah toleransi. Yang dipakai lebih dulu (tanggal awal) yang gratis.
+  return Object.values(byEmployee).map(s => {
+    const toleransi = s._toleransi.slice().sort();
+    const dipakai = Math.min(toleransi.length, TOLERANCE_QUOTA_PER_PERIOD);
+    const lewatJatah = Math.max(0, toleransi.length - TOLERANCE_QUOTA_PER_PERIOD);
+    const hariTelat = s.days_over_ten + lewatJatah;
+
+    delete s._toleransi;
+    return {
+      ...s,
+      // Nama lama dipertahankan supaya tampilan yang sudah ada tidak rusak
+      days_late: s.days_over_ten,
+      days_tolerance: toleransi.length,
+      tolerance_quota: TOLERANCE_QUOTA_PER_PERIOD,
+      tolerance_used: dipakai,
+      tolerance_left: Math.max(0, TOLERANCE_QUOTA_PER_PERIOD - toleransi.length),
+      tolerance_over: lewatJatah,
+      tolerance_over_dates: toleransi.slice(TOLERANCE_QUOTA_PER_PERIOD),
+      effective_late_days: hariTelat,
+      late_penalty_per_day: LATE_PENALTY_PER_DAY,
+      late_deduction_suggested: hariTelat * LATE_PENALTY_PER_DAY,
+    };
+  });
 }
 
 // =====================================================
@@ -4532,6 +4581,7 @@ Object.assign(window, {
   isAttendanceExempt, attendanceExemptReason, NO_ATTENDANCE_TITLES, isAttendanceExemptByTitle,
   getArrivalStatus, toleranceEndLabel, LATE_TOLERANCE_MINUTES,
   getDepartureStatus, departureToleranceLabel, EARLY_LEAVE_TOLERANCE_MINUTES,
+  TOLERANCE_QUOTA_PER_PERIOD, LATE_PENALTY_PER_DAY,
   cleanupOldAttendancePhotos, countOldAttendancePhotos,
   getDeviceLocation, mapsLinkFor, distanceMeters, getBranchGeo, distanceFromBranch,
   listHomeServiceJobs, createHomeServiceJob, advanceHomeServiceJob, cancelHomeServiceJob,

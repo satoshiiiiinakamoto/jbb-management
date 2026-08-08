@@ -4604,6 +4604,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
         unpaid_leave_days: currentAdjustment.unpaid_leave_days || 0,
         unpaid_leave_weekend_days: currentAdjustment.unpaid_leave_weekend_days || 0,
         bpjs_kesehatan: currentAdjustment.bpjs_kesehatan || 0,
+        late_deduction: currentAdjustment.late_deduction || 0,
         bonus: currentAdjustment.bonus || 0,
         extra_deduction: currentAdjustment.extra_deduction || 0,
         notes: currentAdjustment.notes || '',
@@ -4617,6 +4618,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
         unpaid_leave_days: 0,
         unpaid_leave_weekend_days: 0,
         bpjs_kesehatan: 0,
+        late_deduction: 0,
         bonus: 0,
         extra_deduction: 0,
         notes: '',
@@ -4714,6 +4716,7 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
         unpaid_leave_days: unpaid,
         unpaid_leave_weekend_days: Number(form.unpaid_leave_weekend_days) || 0,
         bpjs_kesehatan: Number(form.bpjs_kesehatan) || 0,
+        late_deduction: Number(form.late_deduction) || 0,
         bonus: Number(form.bonus) || 0,
         extra_deduction: Number(form.extra_deduction) || 0,
         notes: form.notes || null,
@@ -4836,6 +4839,38 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
                   <div style={{fontSize:11,color:'var(--muted)',marginTop:8}}>
                     Isi dulu cuti dan sakit bersurat di bawah, baru tekan tombol ini supaya hasilnya tepat.
                   </div>
+
+                  {/* Potongan keterlambatan */}
+                  {(() => {
+                    const kuota = attendance.tolerance_quota || 7;
+                    const tol = attendance.days_tolerance || 0;
+                    const lewat = attendance.tolerance_over || 0;
+                    const atas10 = attendance.days_late || 0;
+                    const hariTelat = attendance.effective_late_days || 0;
+                    const saranPotong = attendance.late_deduction_suggested || 0;
+                    const cocok = Number(form.late_deduction) === saranPotong;
+                    return (
+                      <div style={{borderTop:'1px solid rgba(122,102,126,0.2)',marginTop:12,paddingTop:10}}>
+                        <div style={{marginBottom:6,color:'var(--plum)'}}>
+                          Toleransi datang (09:30 sampai 10:00): <strong>{tol} kali</strong> dari jatah {kuota}
+                          {lewat > 0
+                            ? <span style={{color:'var(--red)'}}> · {lewat} kali lewat jatah, dihitung telat</span>
+                            : <span style={{color:'var(--hijau)'}}> · masih aman</span>}
+                        </div>
+                        <div style={{marginBottom:8,color:'var(--plum)'}}>
+                          Hari terlambat: {atas10} hari di atas 10:00
+                          {lewat > 0 ? ` + ${lewat} lewat jatah toleransi` : ''}
+                          {' = '}<strong>{hariTelat} hari</strong>
+                          {hariTelat > 0 && <> × {fmtRp(attendance.late_penalty_per_day || 15000)} = <strong style={{color:'var(--red)'}}>{fmtRp(saranPotong)}</strong></>}
+                        </div>
+                        <button type="button" className={'btn btn-sm ' + (cocok ? 'btn-ghost' : 'btn-primary')}
+                          disabled={cocok}
+                          onClick={() => update({ late_deduction: saranPotong })}>
+                          {cocok ? 'Potongan telat sudah sesuai' : `Isi otomatis: potongan ${fmtRp(saranPotong)}`}
+                        </button>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             );
@@ -4919,7 +4954,12 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
                 onChange={e => update({ bonus: e.target.value })}
                 min="0" step="any" placeholder="0"/>
             </Field>
-            <Field label="Potongan / Kasbon (Rp)" hint="Kasbon, denda telat, dll. Dipotong dari gaji. Opsional">
+            <Field label="Potongan Keterlambatan (Rp)" hint="Terisi otomatis dari absensi lewat tombol di atas. Bisa diubah manual.">
+              <input type="number" className="form-input" value={form.late_deduction}
+                onChange={e => update({ late_deduction: e.target.value })}
+                min="0" step="any" placeholder="0"/>
+            </Field>
+            <Field label="Potongan / Kasbon (Rp)" hint="Kasbon dan potongan lain di luar keterlambatan. Opsional">
               <input type="number" className="form-input" value={form.extra_deduction}
                 onChange={e => update({ extra_deduction: e.target.value })}
                 min="0" step="any" placeholder="0"/>
@@ -5020,8 +5060,9 @@ function PayrollPage({ profile, currentBranchId, branches }) {
       tips: acc.tips + (r.payroll.tips || 0),
       bonus: acc.bonus + r.payroll.bonus,
       deduction: acc.deduction + r.payroll.extra_deduction,
+      lateDeduction: acc.lateDeduction + (r.payroll.late_deduction || 0),
       total: acc.total + r.payroll.total,
-    }), { base: 0, meal: 0, bpjs: 0, commission: 0, tips: 0, bonus: 0, deduction: 0, total: 0 });
+    }), { base: 0, meal: 0, bpjs: 0, lateDeduction: 0, commission: 0, tips: 0, bonus: 0, deduction: 0, total: 0 });
   }, [rows]);
 
   const scopeLabel = effectiveBranchId
