@@ -6733,9 +6733,11 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
   const [camTarget, setCamTarget] = useStateP(null);  // { employee, kind: 'in'|'out' }
   const [clock, setClock] = useStateP(new Date());
 
+  // Super admin: kalau "Semua Cabang" dipilih, tampilkan karyawan semua cabang
   const effectiveBranchId = profile.role === 'super_admin'
-    ? (currentBranchId || profile.branch_id)
+    ? currentBranchId
     : profile.branch_id;
+  const semuaCabang = profile.role === 'super_admin' && !currentBranchId;
   const branch = branches.find(b => b.id === effectiveBranchId);
 
   // Jam berjalan
@@ -6745,7 +6747,7 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
   }, []);
 
   async function loadData() {
-    if (!effectiveBranchId) return;
+    if (!effectiveBranchId && !semuaCabang) return;
     setLoading(true);
     try {
       const [emps, att] = await Promise.all([
@@ -6761,7 +6763,7 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
     }
   }
 
-  useEffectP(() => { loadData(); }, [effectiveBranchId]);
+  useEffectP(() => { loadData(); }, [effectiveBranchId, semuaCabang]);
 
   function rowFor(empId) {
     return todayRows.find(r => r.employee_id === empId) || null;
@@ -6828,7 +6830,7 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
           {jam}<span style={{fontSize:24,opacity:0.7}}>:{detik}</span>
         </div>
         <div style={{fontSize:12,opacity:0.85,marginTop:8}}>
-          {branch?.name || '—'} · masuk 09:30 (toleransi {toleranceEndLabel()}) · pulang 19:30 (toleransi {departureToleranceLabel()})
+          {semuaCabang ? 'Semua Cabang' : (branch?.name || '—')} · masuk 09:30 (toleransi {toleranceEndLabel()}) · pulang 19:30 (toleransi {departureToleranceLabel()})
         </div>
       </div>
 
@@ -6866,7 +6868,10 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
                   transition:'all .15s',
                 }}>
                 <div style={{fontWeight:600,fontSize:14,color:'var(--plum-deep)',marginBottom:2}}>{emp.full_name}</div>
-                <div style={{fontSize:11,color:'var(--muted)',marginBottom:8}}>{emp.job_title || '—'}</div>
+                <div style={{fontSize:11,color:'var(--muted)',marginBottom:8}}>
+                  {emp.job_title || '—'}
+                  {semuaCabang && <span style={{color:'var(--mauve)'}}> · {branches.find(b => b.id === emp.branch_id)?.name || emp.branch_id}</span>}
+                </div>
 
                 {st === 'belum' && (
                   <div style={{fontSize:12,color:'var(--mauve)',fontWeight:500}}>Tap untuk absen masuk</div>
@@ -7205,18 +7210,27 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
     }
   }
 
-  // Rekap per karyawan
+  // Rekap per karyawan.
+  // Dihitung ulang dari jam masuknya, BUKAN dari angka telat yang tersimpan,
+  // supaya konsisten dengan rincian harian dan tidak terpengaruh data lama
+  // yang tersimpan sebelum aturan toleransi berlaku.
   const summary = useMemoP(() => {
     const by = {};
+    const kuota = (typeof TOLERANCE_QUOTA_PER_PERIOD !== 'undefined') ? TOLERANCE_QUOTA_PER_PERIOD : 7;
     for (const r of rows) {
       const id = r.employee_id;
-      if (!by[id]) by[id] = { name: r.employee?.full_name || '—', hadir: 0, telat: 0, menitTelat: 0, lupaPulang: 0 };
+      if (!by[id]) by[id] = { name: r.employee?.full_name || '—', hadir: 0, toleransi: 0, telat: 0, menitTelat: 0, lupaPulang: 0 };
       const s = by[id];
       if (r.clock_in_at) s.hadir += 1;
-      if (r.late_minutes > 0) { s.telat += 1; s.menitTelat += r.late_minutes; }
+      const st = getArrivalStatus(r.clock_in_at);
+      if (st?.status === 'telat') { s.telat += 1; s.menitTelat += st.lateMinutes; }
+      else if (st?.status === 'toleransi') { s.toleransi += 1; }
       if (r.clock_in_at && !r.clock_out_at) s.lupaPulang += 1;
     }
-    return Object.values(by).sort((a, b) => a.name.localeCompare(b.name));
+    return Object.values(by).map(s => {
+      const lewat = Math.max(0, s.toleransi - kuota);
+      return { ...s, kuota, lewatJatah: lewat, telatEfektif: s.telat + lewat };
+    }).sort((a, b) => a.name.localeCompare(b.name));
   }, [rows]);
 
   const fmtJam = ts => ts ? new Date(ts).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '—';
@@ -7294,6 +7308,7 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                 <tr>
                   <th>Karyawan</th>
                   <th className="table-numeric">Hari Hadir</th>
+                  <th className="table-numeric">Toleransi</th>
                   <th className="table-numeric">Hari Telat</th>
                   <th className="table-numeric">Total Telat</th>
                   <th className="table-numeric">Lupa Pulang</th>
@@ -7304,7 +7319,10 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                   <tr key={s.name}>
                     <td style={{fontWeight:500}}>{s.name}</td>
                     <td className="table-numeric">{s.hadir}</td>
-                    <td className="table-numeric" style={{color: s.telat > 0 ? 'var(--red)' : 'inherit'}}>{s.telat}</td>
+                    <td className="table-numeric" style={{color: s.lewatJatah > 0 ? 'var(--amber)' : 'inherit'}}>
+                      {s.toleransi}/{s.kuota}{s.lewatJatah > 0 ? ` (+${s.lewatJatah})` : ''}
+                    </td>
+                    <td className="table-numeric" style={{color: s.telatEfektif > 0 ? 'var(--red)' : 'inherit'}}>{s.telatEfektif}</td>
                     <td className="table-numeric" style={{color: s.menitTelat > 0 ? 'var(--red)' : 'inherit'}}>
                       {s.menitTelat > 0 ? `${s.menitTelat} menit` : '—'}
                     </td>

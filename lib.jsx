@@ -4092,12 +4092,14 @@ async function uploadAttendancePhoto(blob, branchId, employeeId, kind) {
 }
 
 // Ambil absensi hari ini untuk satu cabang
-async function getTodayAttendance(branchId) {
-  const { data, error } = await sb
+async function getTodayAttendance(branchId = null) {
+  let query = sb
     .from('attendance')
     .select('*, employee:employees(id, full_name, job_title)')
-    .eq('branch_id', branchId)
     .eq('date', todayDateStr());
+  // branchId kosong berarti semua cabang (untuk super admin)
+  if (branchId) query = query.eq('branch_id', branchId);
+  const { data, error } = await query;
   if (error) throw error;
   return data || [];
 }
