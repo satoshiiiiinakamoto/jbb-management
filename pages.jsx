@@ -6731,6 +6731,9 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
   const [todayRows, setTodayRows] = useStateP([]);
   const [loading, setLoading] = useStateP(true);
   const [camTarget, setCamTarget] = useStateP(null);  // { employee, kind: 'in'|'out' }
+  const [statSaya, setStatSaya] = useStateP(null);   // ringkasan absensi diri sendiri
+  const [riwayatSaya, setRiwayatSaya] = useStateP([]);
+  const [bukaRiwayat, setBukaRiwayat] = useStateP(false);
   const [clock, setClock] = useStateP(new Date());
 
   // Super admin: kalau "Semua Cabang" dipilih, tampilkan karyawan semua cabang
@@ -6763,7 +6766,29 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
     }
   }
 
+  // Ringkasan absensi diri sendiri untuk periode gaji berjalan,
+  // supaya karyawan bisa memantau sisa jatah toleransinya sendiri
+  async function loadStatSaya() {
+    const cabangSaya = profile.branch_id;
+    if (!cabangSaya) return;
+    try {
+      const periode = getPayrollPeriod();
+      const [ringkas, rincian] = await Promise.all([
+        getAttendanceSummary(cabangSaya, periode.period_start, periode.period_end),
+        listAttendance(cabangSaya, periode.period_start, periode.period_end),
+      ]);
+      setStatSaya({
+        ...(ringkas.find(x => x.employee_id === profile.id) || null),
+        periode,
+      });
+      setRiwayatSaya(rincian.filter(r => r.employee_id === profile.id));
+    } catch (e) {
+      setStatSaya(null);
+    }
+  }
+
   useEffectP(() => { loadData(); }, [effectiveBranchId, semuaCabang]);
+  useEffectP(() => { loadStatSaya(); }, [profile.id]);
 
   function rowFor(empId) {
     return todayRows.find(r => r.employee_id === empId) || null;
@@ -6919,6 +6944,90 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
           })}
         </div>
       )}
+
+      {/* Ringkasan absensi pribadi periode berjalan */}
+      {!loading && !isKioskMode && statSaya && statSaya.employee_id && (() => {
+        const kuota = statSaya.tolerance_quota || 7;
+        const tol = statSaya.days_tolerance || 0;
+        const sisa = Math.max(0, kuota - tol);
+        const lewat = statSaya.tolerance_over || 0;
+        const telat = statSaya.effective_late_days || 0;
+        const potong = statSaya.late_deduction_suggested || 0;
+        const fmtJamR = ts => ts ? new Date(ts).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}) : '—';
+        return (
+          <Card title="Absensi Saya" sub={`Periode ${fmtDate(statSaya.periode.period_start)} sampai ${fmtDate(statSaya.periode.period_end)}`}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))',gap:10,marginBottom:12}}>
+              <div style={{padding:'11px 13px',background:'var(--cream)',borderRadius:10}}>
+                <div style={{fontSize:11,color:'var(--muted)'}}>Hari hadir</div>
+                <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:23,fontWeight:700,color:'var(--plum-deep)'}}>
+                  {statSaya.days_present || 0}
+                </div>
+              </div>
+              <div style={{padding:'11px 13px',borderRadius:10,
+                background: lewat > 0 ? '#fdf6e3' : 'var(--cream)'}}>
+                <div style={{fontSize:11,color:'var(--muted)'}}>Toleransi terpakai</div>
+                <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:23,fontWeight:700,
+                  color: lewat > 0 ? 'var(--amber)' : 'var(--plum-deep)'}}>
+                  {tol}<span style={{fontSize:14,opacity:0.6}}>/{kuota}</span>
+                </div>
+                <div style={{fontSize:11,color: lewat > 0 ? 'var(--amber)' : 'var(--hijau)',fontWeight:500}}>
+                  {lewat > 0 ? `${lewat} lewat jatah` : `sisa ${sisa} kali`}
+                </div>
+              </div>
+              <div style={{padding:'11px 13px',borderRadius:10,
+                background: telat > 0 ? '#fdf2f2' : 'var(--cream)'}}>
+                <div style={{fontSize:11,color:'var(--muted)'}}>Hari terlambat</div>
+                <div style={{fontFamily:"'Cormorant Garamond', serif",fontSize:23,fontWeight:700,
+                  color: telat > 0 ? 'var(--red)' : 'var(--plum-deep)'}}>
+                  {telat}
+                </div>
+                {potong > 0 && (
+                  <div style={{fontSize:11,color:'var(--red)',fontWeight:500}}>
+                    perkiraan {fmtRp(potong)}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div style={{padding:'10px 12px',background:'var(--mauve-tint)',borderRadius:9,fontSize:11.5,
+              color:'var(--plum)',lineHeight:1.55,marginBottom:10}}>
+              Datang sebelum 09:30 tepat waktu. Antara 09:30 sampai 10:00 masuk toleransi,
+              jatahnya {kuota} kali per periode. Lewat jatah atau datang di atas 10:00
+              dihitung terlambat dan dipotong {fmtRp(statSaya.late_penalty_per_day || 15000)} per hari.
+            </div>
+
+            <button className="btn btn-ghost btn-sm" onClick={() => setBukaRiwayat(v => !v)}>
+              {bukaRiwayat ? 'Sembunyikan rincian harian' : `Lihat rincian harian (${riwayatSaya.length} hari)`}
+            </button>
+
+            {bukaRiwayat && (
+              <div style={{marginTop:10,display:'flex',flexDirection:'column',gap:5}}>
+                {riwayatSaya.length === 0 && (
+                  <div style={{fontSize:12,color:'var(--muted)'}}>Belum ada catatan di periode ini.</div>
+                )}
+                {riwayatSaya.slice().sort((a,b) => (a.date < b.date ? 1 : -1)).map(r => {
+                  const st = getArrivalStatus(r.clock_in_at);
+                  const warna = st?.status === 'telat' ? 'var(--red)'
+                    : st?.status === 'toleransi' ? 'var(--amber)' : 'var(--hijau)';
+                  const label = st?.status === 'telat' ? `telat ${st.lateMinutes}m`
+                    : st?.status === 'toleransi' ? 'toleransi' : 'tepat waktu';
+                  return (
+                    <div key={r.id} style={{display:'flex',justifyContent:'space-between',gap:8,
+                      padding:'7px 11px',background:'var(--paper)',border:'1px solid var(--line)',
+                      borderRadius:8,fontSize:12,flexWrap:'wrap'}}>
+                      <span style={{fontWeight:500}}>{fmtDate(r.date)}</span>
+                      <span style={{color:'var(--muted)'}}>
+                        {fmtJamR(r.clock_in_at)} sampai {fmtJamR(r.clock_out_at)}
+                      </span>
+                      <span style={{color:warna,fontWeight:600}}>{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+        );
+      })()}
 
       {!loading && isKioskMode && exemptEmployees.length > 0 && (
         <div style={{marginTop:22}}>
