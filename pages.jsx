@@ -6781,9 +6781,16 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
     if (!camTarget) return;
     const { employee, kind } = camTarget;
     setCamTarget(null);
+    // Absensi selalu tercatat di cabang KARYAWANNYA, bukan cabang yang
+    // sedang dilihat. Penting saat super admin membuka "Semua Cabang".
+    const branchAbsen = employee.branch_id || effectiveBranchId;
+    if (!branchAbsen) {
+      toast('Cabang karyawan tidak diketahui. Hubungi admin.', 'error');
+      return;
+    }
     try {
       if (kind === 'in') {
-        const rec = await clockIn({ employeeId: employee.id, branchId: effectiveBranchId, photoBlob: blob, faceVerified });
+        const rec = await clockIn({ employeeId: employee.id, branchId: branchAbsen, photoBlob: blob, faceVerified });
         const st = getArrivalStatus(rec.clock_in_at);
         let pesan;
         if (st?.status === 'telat') pesan = `${employee.full_name}: absen masuk tercatat, terlambat ${st.lateMinutes} menit`;
@@ -6791,7 +6798,7 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
         else pesan = `${employee.full_name}: absen masuk tercatat, tepat waktu`;
         toast(pesan, st?.status === 'telat' ? 'error' : 'success');
       } else {
-        await clockOut({ employeeId: employee.id, branchId: effectiveBranchId, photoBlob: blob, faceVerified });
+        await clockOut({ employeeId: employee.id, branchId: branchAbsen, photoBlob: blob, faceVerified });
         toast(`${employee.full_name}: absen pulang tercatat`, 'success');
       }
       loadData();
