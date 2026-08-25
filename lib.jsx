@@ -3257,15 +3257,23 @@ async function checkTransactionEdited(transactionId) {
 // Get list of edited transaction IDs (for batch checking)
 async function getEditedTransactionIds(transactionIds) {
   if (!transactionIds.length) return new Set();
-  // Fetch both INSERT and UPDATE events with timestamps, so we can tell a real edit
-  // from an input-time side-effect (UPDATE that happens right after the INSERT).
-  const { data, error } = await sb
-    .from('audit_log')
-    .select('record_id, action, created_at')
-    .eq('table_name', 'transactions')
-    .in('action', ['INSERT', 'UPDATE'])
-    .in('record_id', transactionIds);
-  if (error) return new Set();
+
+  // Daftar ID dikirim lewat URL, jadi kalau transaksinya ribuan (misal filter
+  // 3 bulan) URL-nya jadi terlalu panjang dan permintaannya gagal atau
+  // menggantung. Karena itu dipecah jadi beberapa batch kecil.
+  const BATCH = 120;
+  const data = [];
+  for (let i = 0; i < transactionIds.length; i += BATCH) {
+    const batch = transactionIds.slice(i, i + BATCH);
+    const { data: part, error } = await sb
+      .from('audit_log')
+      .select('record_id, action, created_at')
+      .eq('table_name', 'transactions')
+      .in('action', ['INSERT', 'UPDATE'])
+      .in('record_id', batch);
+    if (error) return new Set();   // gagal di tengah, lewati saja penanda edit
+    if (part) data.push(...part);
+  }
 
   const INPUT_WINDOW_MS = 15000;
   const insertTime = {};

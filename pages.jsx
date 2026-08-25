@@ -1459,6 +1459,10 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
 
   // Filter states — default 3 bulan ke belakang
   const [filterPreset, setFilterPreset] = useStateP('3months');
+  // Untuk rentang panjang, jumlah transaksinya bisa ribuan. Merender semuanya
+  // sekaligus membuat HP macet, jadi ditampilkan bertahap.
+  const PAGE_SIZE = 100;
+  const [visibleCount, setVisibleCount] = useStateP(PAGE_SIZE);
   const [searchQuery, setSearchQuery] = useStateP('');
   const [customFrom, setCustomFrom] = useStateP('');
   const [customTo, setCustomTo] = useStateP('');
@@ -1523,11 +1527,19 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
         searchQuery,
       });
       setTrxs(data);
-      const ids = data.map(t => t.id);
-      const edited = await getEditedTransactionIds(ids);
-      setEditedIds(edited);
+      setLoading(false);   // daftar sudah bisa ditampilkan, jangan tunggu penanda edit
+
+      // Penanda "sudah diedit" hanya hiasan, jadi dijalankan belakangan dan
+      // kegagalannya tidak boleh menahan tampilan.
+      try {
+        const ids = data.map(t => t.id);
+        const edited = await getEditedTransactionIds(ids);
+        setEditedIds(edited);
+      } catch (e) {
+        setEditedIds(new Set());
+      }
     } catch (err) {
-      toast('Gagal: ' + err.message, 'error');
+      toast('Gagal memuat transaksi: ' + (err.message || err), 'error');
     } finally {
       setLoading(false);
     }
@@ -1594,6 +1606,14 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
   }, [trxs, paymentFilter, beauticianFilter, treatmentFilter]);
 
   const anyFilterActive = paymentFilter !== 'all' || beauticianFilter !== 'all' || treatmentFilter !== 'all';
+
+  // Hanya sebagian yang dirender supaya HP tidak macet saat rentangnya panjang
+  const renderedTrxs = useMemoP(() => displayedTrxs.slice(0, visibleCount), [displayedTrxs, visibleCount]);
+  const adaSisa = displayedTrxs.length > renderedTrxs.length;
+
+  // Balik ke 100 pertama tiap kali filter atau periode berubah
+  useEffectP(() => { setVisibleCount(PAGE_SIZE); },
+    [filterPreset, customFrom, customTo, paymentFilter, beauticianFilter, treatmentFilter, searchQuery, currentBranchId]);
 
   async function handleDelete() {
     if (!deleteTarget) return;
@@ -1711,7 +1731,9 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
             })()}
           </span>
           <span style={{color:'var(--plum)',fontWeight:500}}>
-            {displayedTrxs.length}{anyFilterActive ? ` dari ${trxs.length}` : ''} transaksi
+            {adaSisa
+              ? `Menampilkan ${renderedTrxs.length} dari ${displayedTrxs.length} transaksi`
+              : `${displayedTrxs.length}${anyFilterActive ? ` dari ${trxs.length}` : ''} transaksi`}
           </span>
         </div>
       </Card>
@@ -1722,7 +1744,7 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
           <>
           {/* MOBILE CARD LAYOUT */}
           <div className="table-mobile-cards">
-            {displayedTrxs.map(t => {
+            {renderedTrxs.map(t => {
               const wasEdited = editedIds.has(t.id);
               return (
                 <div key={t.id} className="row-card">
@@ -1872,7 +1894,7 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
                 </tr>
               </thead>
               <tbody>
-                {displayedTrxs.map(t => {
+                {renderedTrxs.map(t => {
                   const wasEdited = editedIds.has(t.id);
                   return (
                   <tr key={t.id}>
@@ -1991,6 +2013,18 @@ function TransactionsPage({ profile, currentBranchId, branches, setPage }) {
               </tbody>
             </table>
           </div>
+
+          {adaSisa && (
+            <div style={{textAlign:'center',marginTop:16}}>
+              <button className="btn btn-ghost" onClick={() => setVisibleCount(v => v + PAGE_SIZE)}>
+                Muat {Math.min(PAGE_SIZE, displayedTrxs.length - renderedTrxs.length)} transaksi lagi
+              </button>
+              <div style={{fontSize:11,color:'var(--muted)',marginTop:6}}>
+                Sisa {displayedTrxs.length - renderedTrxs.length} transaksi belum ditampilkan.
+                Semua sudah terhitung di laporan, ini hanya batas tampilan supaya tidak berat.
+              </div>
+            </div>
+          )}
           </>
         )}
       </Card>
