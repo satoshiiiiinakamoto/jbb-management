@@ -544,7 +544,8 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
     e.preventDefault();
     if (!effectiveBranchId) { toast('Cabang belum ditentukan', 'error'); return; }
     if (!clientName.trim()) { toast('Nama pelanggan wajib diisi', 'error'); return; }
-    if (!items.length || items.some(it => !it.employee_id || !it.service_name || !it.price)) {
+    if (!items.length || items.some(it => !it.employee_id || !it.service_name
+        || it.price === '' || it.price == null || Number(it.price) < 0)) {
       toast('Lengkapi semua item', 'error'); return;
     }
     // Validate: shared_with all picked, percents sum to 100
@@ -796,7 +797,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
                         <Field label="Harga (Rp) *">
                           <input type="number" className="form-input" value={item.price}
                             onChange={e => updateItem(idx, { price: e.target.value })}
-                            placeholder="200000" min="0" required/>
+                            placeholder="200000" min="0"/>
                         </Field>
                         {isFixedComm ? (
                           <Field label="Komisi Karyawan (Rp) *"
@@ -2342,11 +2343,15 @@ function EditTransactionModal({ open, transactionId, profile, branches, onClose,
       const it = items[i];
       if (!it.employee_id) { toast(`Karyawan wajib dipilih untuk treatment #${i+1}`, 'error'); return; }
       if (!it.service_name) { toast(`Treatment #${i+1} wajib dipilih`, 'error'); return; }
-      if (!it.price || Number(it.price) <= 0) { toast(`Harga treatment #${i+1} wajib diisi`, 'error'); return; }
+      // Harga 0 diperbolehkan (misal treatment gratis atau sudah termasuk paket),
+      // yang ditolak hanya kolom yang dibiarkan kosong atau bernilai minus.
+      if (it.price === '' || it.price == null || Number(it.price) < 0) {
+        toast(`Harga treatment #${i+1} wajib diisi. Isi 0 kalau gratis.`, 'error'); return;
+      }
       const svc = getServiceDef(it.service_name);
-      if (svc?.commission_type === 'fixed_amount' && (!it.fixed_commission || Number(it.fixed_commission) <= 0)) {
-        toast('Komisi sulam alis wajib diisi (> 0)', 'error');
-        return;
+      if (svc?.commission_type === 'fixed_amount'
+          && (it.fixed_commission === '' || it.fixed_commission == null || Number(it.fixed_commission) < 0)) {
+        toast('Komisi wajib diisi. Isi 0 kalau sudah termasuk paket.', 'error'); return;
       }
       // Share validation
       const allEmps = [it.employee_id, ...(it.share_with || [])];
@@ -2592,13 +2597,36 @@ function EditTransactionModal({ open, transactionId, profile, branches, onClose,
                     <Field label="Harga (Rp) *">
                       <input type="number" className="form-input" value={item.price}
                         onChange={e => updateItem(idx, { price: e.target.value })}
-                        placeholder="200000" min="0" step="1000" required/>
+                        placeholder="200000" min="0" step="1000"/>
                     </Field>
                     {isFixedComm ? (
-                      <Field label="Komisi Karyawan (Rp) *" hint="Input manual">
+                      <Field label="Komisi Karyawan (Rp) *" hint="Input manual. Isi 0 kalau sudah termasuk paket.">
                         <input type="number" className="form-input" value={item.fixed_commission}
                           onChange={e => updateItem(idx, { fixed_commission: e.target.value })}
-                          placeholder="50000" min="0" step="1000" required/>
+                          placeholder="50000" min="0" step="1000"/>
+                        {(() => {
+                          const sudahPaket = String(item.fixed_commission) === '0'
+                            && (item.notes || '').toLowerCase().includes('paket');
+                          return (
+                            <label style={{display:'flex',alignItems:'flex-start',gap:8,cursor:'pointer',
+                              marginTop:8,padding:'8px 10px',
+                              background: sudahPaket ? 'var(--mauve-tint)' : 'var(--cream)',borderRadius:8}}>
+                              <input type="checkbox" checked={sudahPaket}
+                                onChange={e => updateItem(idx, e.target.checked
+                                  ? { fixed_commission: '0', notes: 'Sudah paket' }
+                                  : { fixed_commission: '', notes: '' })}
+                                style={{accentColor:'var(--mauve)',width:16,height:16,marginTop:1}}/>
+                              <div>
+                                <div style={{fontSize:12.5,fontWeight:500,color:'var(--plum)'}}>
+                                  Sudah termasuk paket (komisi Rp 0)
+                                </div>
+                                <div style={{fontSize:11,color:'var(--muted)'}}>
+                                  Untuk retouch yang komisinya sudah dibayarkan di awal.
+                                </div>
+                              </div>
+                            </label>
+                          );
+                        })()}
                       </Field>
                     ) : item.service_name && isHomeService ? (
                       <Field label="Komisi Treatment (Rp)" hint="Default Rp 0 (HS mode)">
