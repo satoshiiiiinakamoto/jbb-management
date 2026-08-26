@@ -566,8 +566,11 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
     }
     for (const it of items) {
       const svc = getServiceDef(it.service_name);
-      if (svc?.commission_type === 'fixed_amount' && !it.fixed_commission) {
-        toast(`Komisi sulam alis wajib diisi`, 'error'); return;
+      // Komisi 0 diperbolehkan (misal retouch yang sudah termasuk paket),
+      // yang ditolak hanya kolom yang benar-benar dibiarkan kosong.
+      if (svc?.commission_type === 'fixed_amount'
+          && (it.fixed_commission === '' || it.fixed_commission == null)) {
+        toast('Komisi wajib diisi. Isi 0 kalau sudah termasuk paket.', 'error'); return;
       }
     }
     if (isHomeService && !homeServiceFee) { toast('Biaya home service wajib diisi', 'error'); return; }
@@ -800,7 +803,30 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
                             hint={`Input manual. ${isOT && effectiveBranchId !== 'bdg' ? '+Rp 5.000 lembur' : isOT && effectiveBranchId === 'bdg' ? 'Tidak ada bonus lembur (Bandung)' : ''}`}>
                             <input type="number" className="form-input" value={item.fixed_commission}
                               onChange={e => updateItem(idx, { fixed_commission: e.target.value })}
-                              placeholder="50000" min="0" step="1000" required/>
+                              placeholder="50000" min="0" step="1000"/>
+                            {(() => {
+                              const sudahPaket = String(item.fixed_commission) === '0'
+                                && (item.notes || '').toLowerCase().includes('paket');
+                              return (
+                                <label style={{display:'flex',alignItems:'flex-start',gap:8,cursor:'pointer',
+                                  marginTop:8,padding:'8px 10px',
+                                  background: sudahPaket ? 'var(--mauve-tint)' : 'var(--cream)',borderRadius:8}}>
+                                  <input type="checkbox" checked={sudahPaket}
+                                    onChange={e => updateItem(idx, e.target.checked
+                                      ? { fixed_commission: '0', notes: 'Sudah paket' }
+                                      : { fixed_commission: '', notes: '' })}
+                                    style={{accentColor:'var(--mauve)',width:16,height:16,marginTop:1}}/>
+                                  <div>
+                                    <div style={{fontSize:12.5,fontWeight:500,color:'var(--plum)'}}>
+                                      Sudah termasuk paket (komisi Rp 0)
+                                    </div>
+                                    <div style={{fontSize:11,color:'var(--muted)'}}>
+                                      Untuk retouch yang komisinya sudah dibayarkan di awal.
+                                    </div>
+                                  </div>
+                                </label>
+                              );
+                            })()}
                           </Field>
                         ) : item.service_name && isHomeService ? (
                           <Field
@@ -4892,10 +4918,21 @@ function AdjustAttendanceModal({ open, onClose, onSuccess, employee, period, cur
                             : <span style={{color:'var(--hijau)'}}> · masih aman</span>}
                         </div>
                         <div style={{marginBottom:8,color:'var(--plum)'}}>
-                          Hari terlambat: {atas10} hari di atas 10:00
-                          {lewat > 0 ? ` + ${lewat} lewat jatah toleransi` : ''}
-                          {' = '}<strong>{hariTelat} hari</strong>
-                          {hariTelat > 0 && <> × {fmtRp(attendance.late_penalty_per_day || 15000)} = <strong style={{color:'var(--red)'}}>{fmtRp(saranPotong)}</strong></>}
+                          {lewat > 0 && (
+                            <div>
+                              Lewat jatah toleransi: {lewat} hari × {fmtRp(attendance.tolerance_over_penalty_per_day || 5000)}
+                              {' = '}<strong style={{color:'var(--red)'}}>{fmtRp(attendance.tolerance_over_deduction || 0)}</strong>
+                            </div>
+                          )}
+                          {atas10 > 0 && (
+                            <div>
+                              Terlambat di atas 10:00: {atas10} hari × {fmtRp(attendance.late_penalty_per_day || 15000)}
+                              {' = '}<strong style={{color:'var(--red)'}}>{fmtRp(attendance.late_only_deduction || 0)}</strong>
+                            </div>
+                          )}
+                          {(lewat > 0 || atas10 > 0)
+                            ? <div style={{marginTop:4}}>Total potongan: <strong style={{color:'var(--red)'}}>{fmtRp(saranPotong)}</strong></div>
+                            : <div style={{color:'var(--hijau)'}}>Tidak ada potongan keterlambatan.</div>}
                         </div>
                         <button type="button" className={'btn btn-sm ' + (cocok ? 'btn-ghost' : 'btn-primary')}
                           disabled={cocok}
@@ -6896,7 +6933,7 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
           {jam}<span style={{fontSize:24,opacity:0.7}}>:{detik}</span>
         </div>
         <div style={{fontSize:12,opacity:0.85,marginTop:8}}>
-          {semuaCabang ? 'Semua Cabang' : (branch?.name || '—')} · masuk 09:30 (toleransi {toleranceEndLabel()}) · pulang 19:30 (toleransi {departureToleranceLabel()})
+          {semuaCabang ? 'Semua Cabang' : (branch?.name || '—')} · masuk 09:30 (toleransi {toleranceStartLabel()}–{toleranceEndLabel()}) · pulang 19:30 (toleransi {departureToleranceLabel()})
         </div>
       </div>
 
@@ -7025,9 +7062,12 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
 
             <div style={{padding:'10px 12px',background:'var(--mauve-tint)',borderRadius:9,fontSize:11.5,
               color:'var(--plum)',lineHeight:1.55,marginBottom:10}}>
-              Datang sebelum 09:30 tepat waktu. Antara 09:30 sampai 10:00 masuk toleransi,
-              jatahnya {kuota} kali per periode. Lewat jatah atau datang di atas 10:00
-              dihitung terlambat dan dipotong {fmtRp(statSaya.late_penalty_per_day || 15000)} per hari.
+              Datang sebelum {statSaya.tolerance_start_label || '09:45'} tepat waktu.
+              Antara {statSaya.tolerance_start_label || '09:45'} sampai 10:00 masuk toleransi,
+              jatahnya {kuota} kali per periode. Lewat jatah dipotong{' '}
+              {fmtRp(statSaya.tolerance_over_penalty_per_day || 5000)} per hari.
+              Datang di atas 10:00 dihitung terlambat dan dipotong{' '}
+              {fmtRp(statSaya.late_penalty_per_day || 15000)} per hari.
             </div>
 
             <button className="btn btn-ghost btn-sm" onClick={() => setBukaRiwayat(v => !v)}>

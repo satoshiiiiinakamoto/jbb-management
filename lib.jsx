@@ -2044,7 +2044,7 @@ async function getEmployeePeriodTransactions(employeeId, periodStart, periodEnd)
   const { data, error } = await sb
     .from('transaction_items')
     .select(`
-      id, service_name, price, commission_amount, commission_rate, commission_type, has_complaint, complaint_note,
+      id, service_name, price, commission_amount, commission_rate, commission_type, has_complaint, complaint_note, notes,
       share_group_id, share_percent,
       transaction:transactions(
         id, date, start_time, is_overtime, is_home_service, home_service_fee,
@@ -2175,6 +2175,7 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
             ${trx.is_home_service && isFirst ? '<span class="tag tag-gold">HS</span>' : ''}
             ${sharedTag}
             ${it.has_complaint ? '<span class="tag tag-red">komplain</span>' : ''}
+            ${(it.notes || '').toLowerCase().includes('paket') ? '<span class="tag tag-mauve">sudah paket</span>' : ''}
           </td>
           <td class="cell-num">${fmtRp(it.price)}</td>
           <td class="cell-num cell-commission" style="${commissionColor ? `color: ${commissionColor}; font-weight: 600;` : ''}">${fmtRp(displayCommission)}</td>
@@ -2605,8 +2606,8 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
     <thead>
       <tr>
         <th>Hari Hadir</th>
-        <th>Toleransi (jatah ${attendance.tolerance_quota || 7})</th>
-        <th>Hari Telat</th>
+        <th>Toleransi 09:45–10:00 (jatah ${attendance.tolerance_quota || 7})</th>
+        <th>Telat (di atas 10:00)</th>
         <th>Lupa Absen Pulang</th>
       </tr>
     </thead>
@@ -2700,7 +2701,20 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
       </tr>
       ${(payroll.late_deduction || 0) > 0 ? `
       <tr>
-        <td>Potongan Keterlambatan${payroll.late_days ? ` (${payroll.late_days} hari × ${fmtRp(payroll.late_penalty_per_day || 15000)})` : ''}</td>
+        <td>
+          Potongan Keterlambatan
+          ${attendance && ((attendance.tolerance_over || 0) > 0 || (attendance.days_late || 0) > 0) ? `
+          <span style="font-size: 10px; color: #6b5b6e;">
+            (${[
+              (attendance.tolerance_over || 0) > 0
+                ? `${attendance.tolerance_over} toleransi lewat jatah × ${fmtRp(attendance.tolerance_over_penalty_per_day || 5000)}`
+                : null,
+              (attendance.days_late || 0) > 0
+                ? `${attendance.days_late} hari telat × ${fmtRp(attendance.late_penalty_per_day || 15000)}`
+                : null,
+            ].filter(Boolean).join(' + ')})
+          </span>` : ''}
+        </td>
         <td class="cell-num neg">−${fmtRp(payroll.late_deduction)}</td>
       </tr>
       ` : ''}
@@ -3955,9 +3969,50 @@ const ATTENDANCE_BUCKET = 'attendance-photos';
 // Jam kerja standar
 const WORK_START = { hour: 9, minute: 30 };   // jam masuk 09:30 (persiapan sebelum toko buka 10:00)
 const WORK_END = { hour: 19, minute: 30 };    // pulang 19:30
-// Toleransi keterlambatan: datang 09:30 sampai 10:00 belum dihitung telat.
-// Di atas 10:00 baru terhitung terlambat, dan dihitung mulai dari 10:00.
-const LATE_TOLERANCE_MINUTES = 30;
+// ATURAN KETERLAMBATAN
+// Aturan berubah mulai periode gaji 26 Agustus 2026. Absensi sebelum tanggal itu
+// tetap dinilai dengan aturan lama, supaya periode gaji yang sudah tutup
+// (26 Juli sampai 25 Agustus) tidak ikut berubah angkanya.
+const ATTENDANCE_RULE_CHANGE_DATE = '2026-08-26';
+
+// Aturan LAMA (berlaku sampai 25 Agustus 2026)
+//   sampai 09:30       → tepat waktu
+//   09:30 sampai 10:00 → toleransi, jatah 7x
+//   di atas 10:00      → terlambat
+//   lewat jatah maupun terlambat sama-sama dipotong 15.000 per hari
+const RULE_OLD = {
+  graceMinutes: 0,
+  toleranceEndMinutes: 30,
+  quota: 7,
+  toleranceOverPenalty: 15000,
+  latePenalty: 15000,
+};
+
+// Aturan BARU (mulai 26 Agustus 2026)
+//   sampai 09:45       → tepat waktu
+//   09:45 sampai 10:00 → toleransi, jatah 7x
+//   di atas 10:00      → terlambat
+//   lewat jatah dipotong 5.000 per hari, terlambat dipotong 15.000 per hari
+const RULE_NEW = {
+  graceMinutes: 15,
+  toleranceEndMinutes: 30,
+  quota: 7,
+  toleranceOverPenalty: 5000,
+  latePenalty: 15000,
+};
+
+// Pilih aturan sesuai tanggal absensinya
+function attendanceRuleFor(dateOrTs) {
+  if (!dateOrTs) return RULE_NEW;
+  const d = typeof dateOrTs === 'string' && dateOrTs.length >= 10
+    ? dateOrTs.slice(0, 10)
+    : new Date(dateOrTs).toISOString().slice(0, 10);
+  return d < ATTENDANCE_RULE_CHANGE_DATE ? RULE_OLD : RULE_NEW;
+}
+
+// Nilai bawaan (aturan yang berlaku sekarang), dipakai untuk tampilan umum
+const GRACE_MINUTES = RULE_NEW.graceMinutes;
+const LATE_TOLERANCE_MINUTES = RULE_NEW.toleranceEndMinutes;
 // Toleransi pulang: pulang 19:15 sampai 19:30 masih dianggap wajar.
 // Di bawah 19:15 dihitung pulang cepat, kecuali memang ambil lembur pagi.
 const EARLY_LEAVE_TOLERANCE_MINUTES = 15;
@@ -3966,6 +4021,8 @@ const EARLY_LEAVE_TOLERANCE_MINUTES = 15;
 const TOLERANCE_QUOTA_PER_PERIOD = 7;
 // Potongan per hari terlambat
 const LATE_PENALTY_PER_DAY = 15000;
+// Potongan untuk toleransi yang melewati jatah (tarif lebih ringan)
+const TOLERANCE_OVER_PENALTY = 5000;
 
 function todayDateStr() {
   const d = new Date();
@@ -3986,14 +4043,24 @@ function calcLateMinutes(at = new Date()) {
 function getArrivalStatus(clockInAt) {
   if (!clockInAt) return null;
   const at = new Date(clockInAt);
+  const rule = attendanceRuleFor(clockInAt);
   const start = new Date(at);
   start.setHours(WORK_START.hour, WORK_START.minute, 0, 0);
   const minutesAfterStart = Math.floor((at - start) / 60000);
-  const lateMinutes = Math.max(0, minutesAfterStart - LATE_TOLERANCE_MINUTES);
+  const lateMinutes = Math.max(0, minutesAfterStart - rule.toleranceEndMinutes);
+
+  // Tiga tingkat, ambangnya mengikuti aturan yang berlaku pada tanggal itu
   let status = 'tepat';
   if (lateMinutes > 0) status = 'telat';
-  else if (minutesAfterStart > 0) status = 'toleransi';
-  return { status, minutesAfterStart, lateMinutes };
+  else if (minutesAfterStart > rule.graceMinutes) status = 'toleransi';
+  return { status, minutesAfterStart, lateMinutes, rule };
+}
+
+// Batas awal toleransi dalam format jam (misal "09:45")
+function toleranceStartLabel() {
+  const d = new Date();
+  d.setHours(WORK_START.hour, WORK_START.minute + GRACE_MINUTES, 0, 0);
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
 
 // Batas akhir toleransi dalam format jam (untuk ditampilkan, misal "10:00")
@@ -4327,24 +4394,33 @@ async function getAttendanceSummary(branchId, periodStart, periodEnd) {
   // Hitung jatah toleransi. Yang dipakai lebih dulu (tanggal awal) yang gratis.
   return Object.values(byEmployee).map(s => {
     const toleransi = s._toleransi.slice().sort();
-    const dipakai = Math.min(toleransi.length, TOLERANCE_QUOTA_PER_PERIOD);
-    const lewatJatah = Math.max(0, toleransi.length - TOLERANCE_QUOTA_PER_PERIOD);
-    const hariTelat = s.days_over_ten + lewatJatah;
+    // Tarif mengikuti aturan yang berlaku di periode ini
+    const rule = attendanceRuleFor(periodStart);
+    const dipakai = Math.min(toleransi.length, rule.quota);
+    const lewatJatah = Math.max(0, toleransi.length - rule.quota);
+    const hariTelat = s.days_over_ten;   // hanya yang datang di atas 10:00
+
+    const potonganToleransi = lewatJatah * rule.toleranceOverPenalty;
+    const potonganTelat = hariTelat * rule.latePenalty;
 
     delete s._toleransi;
     return {
       ...s,
-      // Nama lama dipertahankan supaya tampilan yang sudah ada tidak rusak
-      days_late: s.days_over_ten,
+      days_late: hariTelat,
       days_tolerance: toleransi.length,
-      tolerance_quota: TOLERANCE_QUOTA_PER_PERIOD,
+      tolerance_quota: rule.quota,
       tolerance_used: dipakai,
-      tolerance_left: Math.max(0, TOLERANCE_QUOTA_PER_PERIOD - toleransi.length),
+      tolerance_left: Math.max(0, rule.quota - toleransi.length),
       tolerance_over: lewatJatah,
-      tolerance_over_dates: toleransi.slice(TOLERANCE_QUOTA_PER_PERIOD),
+      tolerance_over_dates: toleransi.slice(rule.quota),
       effective_late_days: hariTelat,
-      late_penalty_per_day: LATE_PENALTY_PER_DAY,
-      late_deduction_suggested: hariTelat * LATE_PENALTY_PER_DAY,
+      late_penalty_per_day: rule.latePenalty,
+      tolerance_over_penalty_per_day: rule.toleranceOverPenalty,
+      rule_is_new: rule === RULE_NEW,
+      tolerance_start_label: `${String(WORK_START.hour).padStart(2,'0')}:${String(WORK_START.minute + rule.graceMinutes).padStart(2,'0')}`,
+      tolerance_over_deduction: potonganToleransi,
+      late_only_deduction: potonganTelat,
+      late_deduction_suggested: potonganToleransi + potonganTelat,
     };
   });
 }
@@ -4591,7 +4667,8 @@ Object.assign(window, {
   clockIn, clockOut, getTodayAttendance, listAttendance, getAttendancePhotoUrl,
   getAttendanceSummary, calcLateMinutes, calcEarlyLeaveMinutes, todayDateStr,
   isAttendanceExempt, attendanceExemptReason, NO_ATTENDANCE_TITLES, isAttendanceExemptByTitle,
-  getArrivalStatus, toleranceEndLabel, LATE_TOLERANCE_MINUTES,
+  getArrivalStatus, toleranceEndLabel, toleranceStartLabel, LATE_TOLERANCE_MINUTES,
+  GRACE_MINUTES, TOLERANCE_OVER_PENALTY, attendanceRuleFor, ATTENDANCE_RULE_CHANGE_DATE,
   getDepartureStatus, departureToleranceLabel, EARLY_LEAVE_TOLERANCE_MINUTES,
   TOLERANCE_QUOTA_PER_PERIOD, LATE_PENALTY_PER_DAY,
   cleanupOldAttendancePhotos, countOldAttendancePhotos,
