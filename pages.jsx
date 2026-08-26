@@ -647,7 +647,7 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
         paymentsArr = [
           { method: dpMethod, amount: dp, is_dp: true, paid_at: dpDate },
           { method: paymentMethod, amount: sisa, is_dp: false, paid_at: date },
-        ];
+        ].filter(p => Number(p.amount) > 0);
       }
 
       // Build tips array (only if hasTips). Validate each tip.
@@ -806,23 +806,23 @@ function NewTransactionPage({ profile, currentBranchId, branches, setPage }) {
                               onChange={e => updateItem(idx, { fixed_commission: e.target.value })}
                               placeholder="50000" min="0" step="1000"/>
                             {(() => {
-                              const sudahPaket = String(item.fixed_commission) === '0'
-                                && (item.notes || '').toLowerCase().includes('paket');
+                              const sudahPaket = (item.notes || '').toLowerCase().includes('paket');
                               return (
                                 <label style={{display:'flex',alignItems:'flex-start',gap:8,cursor:'pointer',
                                   marginTop:8,padding:'8px 10px',
                                   background: sudahPaket ? 'var(--mauve-tint)' : 'var(--cream)',borderRadius:8}}>
                                   <input type="checkbox" checked={sudahPaket}
                                     onChange={e => updateItem(idx, e.target.checked
-                                      ? { fixed_commission: '0', notes: 'Sudah paket' }
-                                      : { fixed_commission: '', notes: '' })}
+                                      ? { price: '0', notes: 'Sudah paket' }
+                                      : { notes: '' })}
                                     style={{accentColor:'var(--mauve)',width:16,height:16,marginTop:1}}/>
                                   <div>
                                     <div style={{fontSize:12.5,fontWeight:500,color:'var(--plum)'}}>
-                                      Sudah termasuk paket (komisi Rp 0)
+                                      Sudah termasuk paket (harga Rp 0)
                                     </div>
                                     <div style={{fontSize:11,color:'var(--muted)'}}>
-                                      Untuk retouch yang komisinya sudah dibayarkan di awal.
+                                      Client sudah bayar di awal. Komisi tetap diisi manual
+                                      untuk beautician yang mengerjakan.
                                     </div>
                                   </div>
                                 </label>
@@ -2439,6 +2439,9 @@ function EditTransactionModal({ open, transactionId, profile, branches, onClose,
           { method: paymentMethod, amount: grandTotal, is_dp: false, paid_at: date },
         ];
       }
+      // Transaksi bernilai nol (misal sudah dibayar di paket awal) tidak punya
+      // pembayaran untuk dicatat. Baris bernilai nol ditolak database.
+      paymentsArr = paymentsArr.filter(p => Number(p.amount) > 0);
 
       // Update transaction (will use direct ops since paymentMethod is set)
       await updateTransactionFull({
@@ -2605,23 +2608,23 @@ function EditTransactionModal({ open, transactionId, profile, branches, onClose,
                           onChange={e => updateItem(idx, { fixed_commission: e.target.value })}
                           placeholder="50000" min="0" step="1000"/>
                         {(() => {
-                          const sudahPaket = String(item.fixed_commission) === '0'
-                            && (item.notes || '').toLowerCase().includes('paket');
+                          const sudahPaket = (item.notes || '').toLowerCase().includes('paket');
                           return (
                             <label style={{display:'flex',alignItems:'flex-start',gap:8,cursor:'pointer',
                               marginTop:8,padding:'8px 10px',
                               background: sudahPaket ? 'var(--mauve-tint)' : 'var(--cream)',borderRadius:8}}>
                               <input type="checkbox" checked={sudahPaket}
                                 onChange={e => updateItem(idx, e.target.checked
-                                  ? { fixed_commission: '0', notes: 'Sudah paket' }
-                                  : { fixed_commission: '', notes: '' })}
+                                  ? { price: '0', notes: 'Sudah paket' }
+                                  : { notes: '' })}
                                 style={{accentColor:'var(--mauve)',width:16,height:16,marginTop:1}}/>
                               <div>
                                 <div style={{fontSize:12.5,fontWeight:500,color:'var(--plum)'}}>
-                                  Sudah termasuk paket (komisi Rp 0)
+                                  Sudah termasuk paket (harga Rp 0)
                                 </div>
                                 <div style={{fontSize:11,color:'var(--muted)'}}>
-                                  Untuk retouch yang komisinya sudah dibayarkan di awal.
+                                  Client sudah bayar di awal. Komisi tetap diisi manual
+                                  untuk beautician yang mengerjakan.
                                 </div>
                               </div>
                             </label>

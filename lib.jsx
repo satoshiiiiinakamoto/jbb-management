@@ -2176,6 +2176,7 @@ function generateSlipHTML({ employee, payroll, items, period, branch, generatedB
             ${sharedTag}
             ${it.has_complaint ? '<span class="tag tag-red">komplain</span>' : ''}
             ${(it.notes || '').toLowerCase().includes('paket') ? '<span class="tag tag-mauve">sudah paket</span>' : ''}
+            ${(Number(it.price) === 0 && !(it.notes || '').toLowerCase().includes('paket')) ? '<span class="tag tag-mauve">gratis</span>' : ''}
           </td>
           <td class="cell-num">${fmtRp(it.price)}</td>
           <td class="cell-num cell-commission" style="${commissionColor ? `color: ${commissionColor}; font-weight: 600;` : ''}">${fmtRp(displayCommission)}</td>
