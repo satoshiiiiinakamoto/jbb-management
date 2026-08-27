@@ -1,6 +1,25 @@
 // ===== Shared UI components =====
 const { useState, useEffect, useRef } = React;
 
+// ----- Logo JBB / VIALI (inline SVG, warnanya bisa diatur) -----
+function JBBLogo({ height = 26, color = '#7a667e', brand = 'jbb' }) {
+  const lg = (brand === 'viali') ? LOGO_VIALI : LOGO_JBB;
+  const w = Math.round(height * lg.w / lg.h);
+  return (
+    <svg
+      width={w}
+      height={height}
+      viewBox={'0 0 ' + lg.w + ' ' + lg.h}
+      xmlns="http://www.w3.org/2000/svg"
+      role="img"
+      aria-label={brand === 'viali' ? 'VIALI' : 'JBB'}
+      style={{ display: 'block' }}
+    >
+      <path fill={color} d={lg.d} />
+    </svg>
+  );
+}
+
 // ----- Topnav with branch switcher + hamburger -----
 function TopNav({ profile, page, setPage, tabs, currentBranchId, setCurrentBranchId, branches }) {
   const isSuper = profile.role === 'super_admin';
@@ -44,7 +63,7 @@ function TopNav({ profile, page, setPage, tabs, currentBranchId, setCurrentBranc
         </button>
 
         <div className="topnav-brand">
-          JBB<span className="ko">아름다움</span>
+          <JBBLogo height={34} color="#ffffff" />
         </div>
 
         <div className={'topnav-tabs' + (mobileMenuOpen ? ' mobile-open' : '')}>
@@ -172,7 +191,10 @@ function ToastStack() {
 function AppFooter() {
   return (
     <footer className="app-footer">
-      JBB <span className="ko">아름다움</span> · Management Program v.2.1
+      <div style={{display:'flex',justifyContent:'center',marginBottom:10}}>
+        <JBBLogo height={46} color="#7a667e" />
+      </div>
+      Management Program v.2.1
       <div style={{marginTop:4,fontSize:11}}>PT Wicaksono Berkarya Sejahtera</div>
     </footer>
   );
@@ -212,4 +234,4 @@ function BranchBadge({ branch }) {
   );
 }
 
-Object.assign(window, { TopNav, PageHeader, Card, Empty, Loader, ToastStack, AppFooter, Field, Metric, BranchBadge });
+Object.assign(window, { JBBLogo, TopNav, PageHeader, Card, Empty, Loader, ToastStack, AppFooter, Field, Metric, BranchBadge });

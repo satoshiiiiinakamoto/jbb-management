@@ -26,8 +26,7 @@ function LoginPage({ onLoggedIn }) {
   return (
     <div className="auth-page">
       <div className="auth-card">
-        <div className="auth-logo">JBB</div>
-        <div className="auth-sub">아름다움</div>
+        <div className="auth-logo"><JBBLogo height={64} color="#7a667e" /></div>
         <h2 className="auth-title">Management Program</h2>
         <p className="auth-desc">Anda keluarga besar JBB / VIALI? Silahkan Masuk</p>
         <form onSubmit={handleSubmit}>

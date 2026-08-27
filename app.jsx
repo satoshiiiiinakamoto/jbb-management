@@ -107,8 +107,7 @@ function App() {
     return (
       <div className="auth-page">
         <div className="auth-card">
-          <div className="auth-logo">JBB</div>
-          <div className="auth-sub">아름다움</div>
+          <div className="auth-logo"><JBBLogo height={64} color="#7a667e" /></div>
           <h2 className="auth-title">Setup Required</h2>
           <p className="auth-desc">
             File <code style={{background:'var(--mauve-tint)',padding:'2px 6px',borderRadius:4,fontSize:12}}>config.js</code> belum
