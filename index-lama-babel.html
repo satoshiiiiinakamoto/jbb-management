@@ -1,22 +1,4 @@
 <!DOCTYPE html>
-<!--
-  ===================================================================
-  PENTING, BACA DULU
-
-  Aplikasi ini TIDAK lagi membaca lib.jsx, components.jsx, pages.jsx,
-  dan app.jsx secara langsung. Yang dibaca cuma app.bundle.js, yaitu
-  gabungan keempatnya yang sudah diterjemahkan lebih dulu.
-
-  Artinya: mengubah file .jsx saja TIDAK akan mengubah apa pun di
-  aplikasi. app.bundle.js harus ikut dibuat ulang dan diupload.
-
-  File .jsx tetap disimpan di repo sebagai sumber asli, jangan dihapus.
-
-  Kalau bundelnya bermasalah dan mau balik ke cara lama: upload ulang
-  index-lama-babel.html dengan nama index.html. Aplikasi akan kembali
-  membaca file .jsx langsung, lambat tapi normal.
-  ===================================================================
--->
 <html lang="id">
 <head>
 <meta charset="UTF-8" />
@@ -548,30 +530,23 @@
 </div>
 <style>@keyframes bootspin{to{transform:rotate(360deg)}}</style>
 
+<script>
+  // Configure Babel to cache compiled output in browser storage — dramatically
+  // speeds up 2nd+ visits (skips recompiling large JSX files every time).
+  window.__babelCacheKey = 'jbb-babel-v1';
+</script>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.25.6/babel.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 
 <script src="config.js"></script>
 
-<!-- Kode aplikasi. Lihat catatan di bagian paling atas file ini. -->
-<script src="app.bundle.js"></script>
-
-<script>
-  // Jaring pengaman: kalau app.bundle.js gagal dimuat atau rusak,
-  // layar loading akan menempel selamanya tanpa penjelasan.
-  // Ini menggantinya dengan pesan yang bisa dibaca karyawan.
-  setTimeout(function () {
-    var boot = document.getElementById('boot-loader');
-    if (boot && document.body.contains(boot)) {
-      boot.innerHTML =
-        '<div style="max-width:300px;text-align:center;padding:24px;">' +
-        '<div style="font-size:15px;color:#4a3a4e;margin-bottom:10px;font-weight:600;">Gagal memuat aplikasi</div>' +
-        '<div style="font-size:13px;color:#9a8a9e;line-height:1.6;">Coba tutup aplikasi lalu buka lagi. ' +
-        'Kalau masih sama, laporkan ke admin.</div></div>';
-    }
-  }, 20000);
-</script>
+<script type="text/babel" data-presets="react" src="lib.jsx"></script>
+<script type="text/babel" data-presets="react" src="components.jsx"></script>
+<script type="text/babel" data-presets="react" src="pages.jsx"></script>
+<script type="text/babel" data-presets="react" src="app.jsx"></script>
 
 <script>
   // Lazy-load xlsx only when Excel export is actually used (not on startup).
