@@ -4206,6 +4206,39 @@ async function distanceFromBranch(branchId, loc) {
   }
 }
 
+// Ambil lokasi dan pastikan berada di area salon.
+// Melempar error dengan pesan jelas kalau izin ditolak, sinyal tidak dapat,
+// atau posisinya jauh dari cabang. Dipakai sebelum foto diupload supaya
+// tidak ada foto nyangkut kalau absennya ditolak.
+async function requireLocationAtBranch(branchId) {
+  const loc = await getDeviceLocation();
+  if (!loc) {
+    throw new Error(
+      'Lokasi tidak terbaca. Aktifkan izin lokasi untuk aplikasi ini di pengaturan HP, ' +
+      'pastikan GPS menyala, lalu coba lagi. Absen wajib dilakukan di salon.'
+    );
+  }
+
+  const geo = await getBranchGeo(branchId);
+  // Cabang belum punya titik lokasi: lokasi tetap dicatat, tapi tidak bisa diperiksa
+  if (!geo) return { loc, distance: null };
+
+  const distance = distanceMeters(loc.lat, loc.lng, Number(geo.lat), Number(geo.lng));
+  const radius = Number(geo.geofence_radius_m) || 200;
+
+  if (distance != null && distance > radius) {
+    const jarak = distance >= 1000
+      ? `${(distance / 1000).toFixed(1)} km`
+      : `${Math.round(distance)} meter`;
+    throw new Error(
+      `Absen ditolak. Kamu terdeteksi ${jarak} dari ${geo.name || 'salon'}. ` +
+      `Absen hanya bisa dilakukan di area salon. Kalau kamu memang sedang di salon, ` +
+      `tunggu sinyal GPS membaik lalu coba lagi.`
+    );
+  }
+  return { loc, distance };
+}
+
 // Catat jam masuk (buat baris baru)
 async function clockIn({ employeeId, branchId, photoBlob, faceVerified = null }) {
   const now = new Date();
@@ -4222,9 +4255,11 @@ async function clockIn({ employeeId, branchId, photoBlob, faceVerified = null })
     throw new Error('Sudah absen masuk hari ini');
   }
 
+  // Lokasi diperiksa lebih dulu. Kalau ditolak, foto tidak jadi diupload.
+  const { loc, distance } = await requireLocationAtBranch(branchId);
+
   const photoPath = photoBlob ? await uploadAttendancePhoto(photoBlob, branchId, employeeId, 'in') : null;
   const createdBy = (await sb.auth.getUser()).data?.user?.id || null;
-  const loc = await getDeviceLocation();
 
   const payload = {
     branch_id: branchId,
@@ -4234,10 +4269,10 @@ async function clockIn({ employeeId, branchId, photoBlob, faceVerified = null })
     clock_in_photo: photoPath,
     late_minutes: calcLateMinutes(now),
     created_by: createdBy,
-    clock_in_lat: loc?.lat ?? null,
-    clock_in_lng: loc?.lng ?? null,
-    clock_in_accuracy: loc?.accuracy ?? null,
-    clock_in_distance_m: await distanceFromBranch(branchId, loc),
+    clock_in_lat: loc.lat,
+    clock_in_lng: loc.lng,
+    clock_in_accuracy: loc.accuracy ?? null,
+    clock_in_distance_m: distance,
     face_verified: faceVerified,
   };
 
@@ -4266,8 +4301,9 @@ async function clockOut({ employeeId, branchId, photoBlob, faceVerified = null }
   if (!existing || !existing.clock_in_at) throw new Error('Belum absen masuk hari ini');
   if (existing.clock_out_at) throw new Error('Sudah absen pulang hari ini');
 
+  const { loc, distance } = await requireLocationAtBranch(branchId);
+
   const photoPath = photoBlob ? await uploadAttendancePhoto(photoBlob, branchId, employeeId, 'out') : null;
-  const loc = await getDeviceLocation();
 
   const { data, error } = await sb
     .from('attendance')
@@ -4275,10 +4311,10 @@ async function clockOut({ employeeId, branchId, photoBlob, faceVerified = null }
       clock_out_at: now.toISOString(),
       clock_out_photo: photoPath,
       early_leave_minutes: calcEarlyLeaveMinutes(now),
-      clock_out_lat: loc?.lat ?? null,
-      clock_out_lng: loc?.lng ?? null,
-      clock_out_accuracy: loc?.accuracy ?? null,
-      clock_out_distance_m: await distanceFromBranch(branchId, loc),
+      clock_out_lat: loc.lat,
+      clock_out_lng: loc.lng,
+      clock_out_accuracy: loc.accuracy ?? null,
+      clock_out_distance_m: distance,
       face_verified: faceVerified,
     })
     .eq('id', existing.id)
@@ -4674,6 +4710,7 @@ Object.assign(window, {
   TOLERANCE_QUOTA_PER_PERIOD, LATE_PENALTY_PER_DAY,
   cleanupOldAttendancePhotos, countOldAttendancePhotos,
   getDeviceLocation, mapsLinkFor, distanceMeters, getBranchGeo, distanceFromBranch,
+  requireLocationAtBranch,
   listHomeServiceJobs, createHomeServiceJob, advanceHomeServiceJob, cancelHomeServiceJob,
   linkHomeServiceTransaction, deleteHomeServiceJob, hsStatusInfo,
   addHomeServiceMember, removeHomeServiceMember, advanceHomeServiceMember,

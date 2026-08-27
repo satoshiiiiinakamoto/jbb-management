@@ -6834,6 +6834,7 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
   const [loading, setLoading] = useStateP(true);
   const [camTarget, setCamTarget] = useStateP(null);  // { employee, kind: 'in'|'out' }
   const [statSaya, setStatSaya] = useStateP(null);   // ringkasan absensi diri sendiri
+  const [cekLokasi, setCekLokasi] = useStateP(null); // id karyawan yang lokasinya sedang diperiksa
   const [riwayatSaya, setRiwayatSaya] = useStateP([]);
   const [bukaRiwayat, setBukaRiwayat] = useStateP(false);
   const [clock, setClock] = useStateP(new Date());
@@ -6964,7 +6965,15 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
           {jam}<span style={{fontSize:24,opacity:0.7}}>:{detik}</span>
         </div>
         <div style={{fontSize:12,opacity:0.85,marginTop:8}}>
-          {semuaCabang ? 'Semua Cabang' : (branch?.name || '—')} · masuk 09:30 (toleransi {toleranceStartLabel()}–{toleranceEndLabel()}) · pulang 19:30 (toleransi {departureToleranceLabel()})
+          {semuaCabang ? 'Semua Cabang' : (branch?.name || '—')}
+        </div>
+        <div style={{fontSize:11.5,opacity:0.9,marginTop:6,lineHeight:1.65}}>
+          Sebelum {toleranceStartLabel()} tepat waktu ·
+          {' '}{toleranceStartLabel()}–{toleranceEndLabel()} toleransi (jatah {TOLERANCE_QUOTA_PER_PERIOD}x, lebih dari itu {fmtRp(TOLERANCE_OVER_PENALTY)}/hari) ·
+          {' '}di atas {toleranceEndLabel()} terlambat ({fmtRp(LATE_PENALTY_PER_DAY)}/hari)
+        </div>
+        <div style={{fontSize:11,opacity:0.75,marginTop:4}}>
+          Pulang 19:30 (toleransi mulai {departureToleranceLabel()}) · absen wajib di area salon
         </div>
       </div>
 
@@ -6994,7 +7003,19 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
             const fmtJam = ts => ts ? new Date(ts).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}) : '';
             return (
               <button key={emp.id} type="button" disabled={disabled}
-                onClick={() => setCamTarget({ employee: emp, kind })}
+                onClick={async () => {
+                  // Cek lokasi dulu supaya tidak sia-sia selfie kalau ternyata ditolak
+                  const cabang = emp.branch_id || effectiveBranchId;
+                  setCekLokasi(emp.id);
+                  try {
+                    await requireLocationAtBranch(cabang);
+                    setCamTarget({ employee: emp, kind });
+                  } catch (err) {
+                    toast(err.message || 'Lokasi tidak bisa diperiksa', 'error');
+                  } finally {
+                    setCekLokasi(null);
+                  }
+                }}
                 style={{
                   textAlign:'left',padding:14,borderRadius:14,
                   background:bg,border:`1.5px solid ${border}`,
@@ -7008,7 +7029,9 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
                 </div>
 
                 {st === 'belum' && (
-                  <div style={{fontSize:12,color:'var(--mauve)',fontWeight:500}}>Tap untuk absen masuk</div>
+                  <div style={{fontSize:12,color:'var(--mauve)',fontWeight:500}}>
+                    {cekLokasi === emp.id ? 'Memeriksa lokasi...' : 'Tap untuk absen masuk'}
+                  </div>
                 )}
                 {st === 'masuk' && (
                   <>
@@ -7021,7 +7044,9 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
                         return null;
                       })()}
                     </div>
-                    <div style={{fontSize:12,color:'var(--mauve)',fontWeight:500,marginTop:4}}>Tap untuk absen pulang</div>
+                    <div style={{fontSize:12,color:'var(--mauve)',fontWeight:500,marginTop:4}}>
+                      {cekLokasi === emp.id ? 'Memeriksa lokasi...' : 'Tap untuk absen pulang'}
+                    </div>
                   </>
                 )}
                 {st === 'selesai' && (
