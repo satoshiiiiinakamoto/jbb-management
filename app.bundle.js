@@ -10,7 +10,7 @@
    Kalau ada perubahan kode: yang diedit tetap file .jsx, lalu bundel
    ini dibuat ulang. Upload keduanya, jangan salah satu saja.
 
-   Dibuat: 2026-08-27
+   Dibuat: 2026-08-28
    ===================================================================== */
 
 /* ============ lib.jsx ============ */
@@ -2433,6 +2433,35 @@ async function getEmployeePeriodTips(employeeId, periodStart, periodEnd) {
     const dB = b.transaction?.date || '';
     return dA < dB ? -1 : dA > dB ? 1 : 0;
   });
+}
+
+// Hitung jatah komisi home service milik SATU karyawan, dari daftar item
+// miliknya sendiri (hasil getEmployeePeriodTransactions).
+//
+// Kenapa perlu fungsi ini: view my_dashboard_stats cuma menjumlahkan
+// commission_amount per treatment. Biaya home service disimpan di tabel
+// transactions, bukan di transaction_items, jadi TIDAK ikut terhitung di sana.
+//
+// Rumusnya sengaja dibuat sama persis dengan yang dipakai di dalam
+// generateSlipHTML dan di getPeriodCommissionByEmployee (sisi admin):
+// biaya home service dibagi rata ke semua beautician yang mengerjakan
+// transaksi itu, bukan diberikan penuh ke masing-masing.
+function computeHSCommissionFromItems(items) {
+  const byTrx = {};
+  for (const it of items || []) {
+    const t = it.transaction;
+    if (!t || !t.is_home_service) continue;
+    if (byTrx[t.id]) continue;
+    byTrx[t.id] = {
+      fee: Number(t.home_service_fee || 0),
+      workerCount: Math.max(1, new Set((t.all_items || []).map(x => x.employee_id).filter(Boolean)).size)
+    };
+  }
+  let total = 0;
+  for (const id in byTrx) {
+    total += Math.round(byTrx[id].fee / byTrx[id].workerCount);
+  }
+  return total;
 }
 
 // Generate slip HTML for one employee
@@ -5339,6 +5368,7 @@ Object.assign(window, {
   getEmployeePeriodTips,
   printSlip,
   printMultipleSlips,
+  computeHSCommissionFromItems,
   getBrandForBranch,
   escapeHtml,
   LOGO_JBB,
@@ -14369,12 +14399,21 @@ function EmployeeDashboardView({
   const [adjustment, setAdjustment] = useStateP(null);
   const [leaveBalance, setLeaveBalance] = useStateP(null);
   const [loading, setLoading] = useStateP(true);
+  // Detail transaksi & tips periode berjalan. Dipakai untuk menghitung komisi
+  // home service dan tips, yang tidak ikut terhitung di view dashboard.
+  const [periodItems, setPeriodItems] = useStateP([]);
+  const [periodTips, setPeriodTips] = useStateP([]);
   const branch = useMemoP(() => branches.find(b => b.id === employee.branch_id) || employee.branch, [branches, employee]);
   async function loadData() {
     setLoading(true);
     try {
       const period = getPayrollPeriod();
       const year = new Date().getFullYear();
+
+      // Dijalankan berbarengan dengan query di bawah supaya tidak menambah
+      // waktu loading. Kalau gagal, dianggap kosong saja, dashboard tetap jalan.
+      const periodItemsPromise = getEmployeePeriodTransactions(employee.id, period.period_start, period.period_end).catch(() => []);
+      const periodTipsPromise = getEmployeePeriodTips(employee.id, period.period_start, period.period_end).catch(() => []);
       if (isAdminViewing) {
         // Admin view: use admin functions (full data)
         const [statsData, services, clients, adj, balance] = await Promise.all([getEmployeeDashboardStatsAdmin(employee.id), getEmployeeTopServicesAdmin(employee.id, 3), getEmployeeTopClientsAdmin(employee.id, 3), getPayrollAdjustment(employee.id, period.period_start), getAnnualLeaveBalanceForEmployee(employee.id, year)]);
@@ -14392,6 +14431,8 @@ function EmployeeDashboardView({
         setAdjustment(adj);
         setLeaveBalance(balance);
       }
+      setPeriodItems(await periodItemsPromise);
+      setPeriodTips(await periodTipsPromise);
     } catch (err) {
       toast('Gagal memuat dashboard: ' + err.message, 'error');
     } finally {
@@ -14401,20 +14442,27 @@ function EmployeeDashboardView({
   useEffectP(() => {
     loadData();
   }, [employee.id, isAdminViewing]);
+  const totalTips = useMemoP(() => (periodTips || []).reduce((s, t) => s + Number(t.amount || 0), 0), [periodTips]);
+  const hsCommission = useMemoP(() => computeHSCommissionFromItems(periodItems), [periodItems]);
 
   // Calculate estimated payroll for current period
   const estimatedPayroll = useMemoP(() => {
     if (!stats) return null;
+    // period_commission dari view HANYA menjumlah commission_amount per treatment.
+    // Komisi home service dan tips tidak termasuk di situ, jadi dihitung sendiri
+    // dari detail transaksi. Tanpa ini, angka di karyawan lebih kecil daripada
+    // angka yang dilihat admin di halaman Gaji.
     const commissions = {
       treatment_commission: stats.period_commission || 0,
-      hs_commission: 0 // will be included in treatment_commission already from view
+      hs_commission: hsCommission,
+      tips: totalTips
     };
     return calculatePayroll({
       employee,
       commissions,
       adjustment
     });
-  }, [stats, adjustment, employee]);
+  }, [stats, adjustment, employee, hsCommission, totalTips]);
 
   // Annual leave info
   const leaveQuota = leaveBalance?.total_quota || 7;
@@ -14434,30 +14482,21 @@ function EmployeeDashboardView({
       const period = getPayrollPeriod();
       const items = await getEmployeePeriodTransactions(employee.id, period.period_start, period.period_end);
       const tipsDetail = await getEmployeePeriodTips(employee.id, period.period_start, period.period_end);
-      const totalTips = tipsDetail.reduce((s, t) => s + Number(t.amount || 0), 0);
+      // Dihitung ulang dari data yang baru diambil, bukan dari state, supaya
+      // slip selalu mencerminkan kondisi terakhir. Rumusnya sama persis dengan
+      // yang dipakai admin di halaman Gaji.
+      const payroll = calculatePayroll({
+        employee,
+        commissions: {
+          treatment_commission: stats?.period_commission || 0,
+          hs_commission: computeHSCommissionFromItems(items),
+          tips: tipsDetail.reduce((s, t) => s + Number(t.amount || 0), 0)
+        },
+        adjustment
+      });
       const slipHtml = generateSlipHTML({
         employee,
-        payroll: estimatedPayroll ? {
-          ...estimatedPayroll,
-          tips: estimatedPayroll.tips != null ? estimatedPayroll.tips : totalTips
-        } : {
-          base_salary: Number(employee.base_salary) || 0,
-          base_salary_actual: Number(employee.base_salary) || 0,
-          salary_deduction: 0,
-          meal_allowance: Number(employee.meal_allowance) || 0,
-          bpjs_kesehatan: 0,
-          treatment_commission: stats?.period_commission || 0,
-          hs_commission: 0,
-          tips: totalTips,
-          annual_leave_days: 0,
-          sick_leave_certified_days: 0,
-          unpaid_leave_days: 0,
-          standard_work_days: 26,
-          bonus: 0,
-          extra_deduction: 0,
-          total_before_deduction: (Number(employee.base_salary) || 0) + (Number(employee.meal_allowance) || 0) + (stats?.period_commission || 0) + totalTips,
-          total: (Number(employee.base_salary) || 0) + (Number(employee.meal_allowance) || 0) + (stats?.period_commission || 0) + totalTips
-        },
+        payroll,
         items,
         period,
         branch,
@@ -14546,6 +14585,18 @@ function EmployeeDashboardView({
     label: "Komisi Treatment",
     value: fmtRp(estimatedPayroll.treatment_commission),
     sub: `${stats?.period_trx_count || 0} transaksi`
+  }), estimatedPayroll.hs_commission > 0 && /*#__PURE__*/React.createElement(Metric, {
+    label: "Komisi Home Service",
+    value: fmtRp(estimatedPayroll.hs_commission),
+    sub: "dibagi rata per beautician"
+  }), estimatedPayroll.tips > 0 && /*#__PURE__*/React.createElement(Metric, {
+    label: "Tips dari Client",
+    value: fmtRp(estimatedPayroll.tips),
+    sub: `${periodTips.length} tips`
+  }), estimatedPayroll.late_deduction > 0 && /*#__PURE__*/React.createElement(Metric, {
+    label: "Potongan Telat",
+    value: `−${fmtRp(estimatedPayroll.late_deduction)}`,
+    sub: "dari absensi"
   }), /*#__PURE__*/React.createElement(Metric, {
     label: "Estimasi Total",
     value: fmtRp(estimatedPayroll.total),

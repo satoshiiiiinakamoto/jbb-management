@@ -5833,6 +5833,10 @@ function EmployeeDashboardView({
   const [adjustment, setAdjustment] = useStateP(null);
   const [leaveBalance, setLeaveBalance] = useStateP(null);
   const [loading, setLoading] = useStateP(true);
+  // Detail transaksi & tips periode berjalan. Dipakai untuk menghitung komisi
+  // home service dan tips, yang tidak ikut terhitung di view dashboard.
+  const [periodItems, setPeriodItems] = useStateP([]);
+  const [periodTips, setPeriodTips] = useStateP([]);
 
   const branch = useMemoP(
     () => branches.find(b => b.id === employee.branch_id) || employee.branch,
@@ -5844,6 +5848,15 @@ function EmployeeDashboardView({
     try {
       const period = getPayrollPeriod();
       const year = new Date().getFullYear();
+
+      // Dijalankan berbarengan dengan query di bawah supaya tidak menambah
+      // waktu loading. Kalau gagal, dianggap kosong saja, dashboard tetap jalan.
+      const periodItemsPromise = getEmployeePeriodTransactions(
+        employee.id, period.period_start, period.period_end
+      ).catch(() => []);
+      const periodTipsPromise = getEmployeePeriodTips(
+        employee.id, period.period_start, period.period_end
+      ).catch(() => []);
 
       if (isAdminViewing) {
         // Admin view: use admin functions (full data)
@@ -5874,6 +5887,9 @@ function EmployeeDashboardView({
         setAdjustment(adj);
         setLeaveBalance(balance);
       }
+
+      setPeriodItems(await periodItemsPromise);
+      setPeriodTips(await periodTipsPromise);
     } catch (err) {
       toast('Gagal memuat dashboard: ' + err.message, 'error');
     } finally {
@@ -5883,19 +5899,34 @@ function EmployeeDashboardView({
 
   useEffectP(() => { loadData(); }, [employee.id, isAdminViewing]);
 
+  const totalTips = useMemoP(
+    () => (periodTips || []).reduce((s, t) => s + Number(t.amount || 0), 0),
+    [periodTips]
+  );
+
+  const hsCommission = useMemoP(
+    () => computeHSCommissionFromItems(periodItems),
+    [periodItems]
+  );
+
   // Calculate estimated payroll for current period
   const estimatedPayroll = useMemoP(() => {
     if (!stats) return null;
+    // period_commission dari view HANYA menjumlah commission_amount per treatment.
+    // Komisi home service dan tips tidak termasuk di situ, jadi dihitung sendiri
+    // dari detail transaksi. Tanpa ini, angka di karyawan lebih kecil daripada
+    // angka yang dilihat admin di halaman Gaji.
     const commissions = {
       treatment_commission: stats.period_commission || 0,
-      hs_commission: 0, // will be included in treatment_commission already from view
+      hs_commission: hsCommission,
+      tips: totalTips,
     };
     return calculatePayroll({
       employee,
       commissions,
       adjustment,
     });
-  }, [stats, adjustment, employee]);
+  }, [stats, adjustment, employee, hsCommission, totalTips]);
 
   // Annual leave info
   const leaveQuota = leaveBalance?.total_quota || 7;
@@ -5926,27 +5957,21 @@ function EmployeeDashboardView({
         period.period_start,
         period.period_end
       );
-      const totalTips = tipsDetail.reduce((s, t) => s + Number(t.amount || 0), 0);
+      // Dihitung ulang dari data yang baru diambil, bukan dari state, supaya
+      // slip selalu mencerminkan kondisi terakhir. Rumusnya sama persis dengan
+      // yang dipakai admin di halaman Gaji.
+      const payroll = calculatePayroll({
+        employee,
+        commissions: {
+          treatment_commission: stats?.period_commission || 0,
+          hs_commission: computeHSCommissionFromItems(items),
+          tips: tipsDetail.reduce((s, t) => s + Number(t.amount || 0), 0),
+        },
+        adjustment,
+      });
       const slipHtml = generateSlipHTML({
         employee,
-        payroll: estimatedPayroll ? { ...estimatedPayroll, tips: estimatedPayroll.tips != null ? estimatedPayroll.tips : totalTips } : {
-          base_salary: Number(employee.base_salary) || 0,
-          base_salary_actual: Number(employee.base_salary) || 0,
-          salary_deduction: 0,
-          meal_allowance: Number(employee.meal_allowance) || 0,
-          bpjs_kesehatan: 0,
-          treatment_commission: stats?.period_commission || 0,
-          hs_commission: 0,
-          tips: totalTips,
-          annual_leave_days: 0,
-          sick_leave_certified_days: 0,
-          unpaid_leave_days: 0,
-          standard_work_days: 26,
-          bonus: 0,
-          extra_deduction: 0,
-          total_before_deduction: (Number(employee.base_salary) || 0) + (Number(employee.meal_allowance) || 0) + (stats?.period_commission || 0) + totalTips,
-          total: (Number(employee.base_salary) || 0) + (Number(employee.meal_allowance) || 0) + (stats?.period_commission || 0) + totalTips,
-        },
+        payroll,
         items,
         period,
         branch,
@@ -6000,6 +6025,18 @@ function EmployeeDashboardView({
                   <Metric label="Uang Makan" value={fmtRp(estimatedPayroll.meal_allowance)}/>
                   <Metric label="Komisi Treatment" value={fmtRp(estimatedPayroll.treatment_commission)}
                     sub={`${stats?.period_trx_count || 0} transaksi`}/>
+                  {estimatedPayroll.hs_commission > 0 && (
+                    <Metric label="Komisi Home Service" value={fmtRp(estimatedPayroll.hs_commission)}
+                      sub="dibagi rata per beautician"/>
+                  )}
+                  {estimatedPayroll.tips > 0 && (
+                    <Metric label="Tips dari Client" value={fmtRp(estimatedPayroll.tips)}
+                      sub={`${periodTips.length} tips`}/>
+                  )}
+                  {estimatedPayroll.late_deduction > 0 && (
+                    <Metric label="Potongan Telat" value={`−${fmtRp(estimatedPayroll.late_deduction)}`}
+                      sub="dari absensi"/>
+                  )}
                   <Metric label="Estimasi Total" value={fmtRp(estimatedPayroll.total)} sub="real-time"/>
                 </div>
 

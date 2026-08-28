@@ -2144,6 +2144,37 @@ async function getEmployeePeriodTips(employeeId, periodStart, periodEnd) {
   });
 }
 
+// Hitung jatah komisi home service milik SATU karyawan, dari daftar item
+// miliknya sendiri (hasil getEmployeePeriodTransactions).
+//
+// Kenapa perlu fungsi ini: view my_dashboard_stats cuma menjumlahkan
+// commission_amount per treatment. Biaya home service disimpan di tabel
+// transactions, bukan di transaction_items, jadi TIDAK ikut terhitung di sana.
+//
+// Rumusnya sengaja dibuat sama persis dengan yang dipakai di dalam
+// generateSlipHTML dan di getPeriodCommissionByEmployee (sisi admin):
+// biaya home service dibagi rata ke semua beautician yang mengerjakan
+// transaksi itu, bukan diberikan penuh ke masing-masing.
+function computeHSCommissionFromItems(items) {
+  const byTrx = {};
+  for (const it of (items || [])) {
+    const t = it.transaction;
+    if (!t || !t.is_home_service) continue;
+    if (byTrx[t.id]) continue;
+    byTrx[t.id] = {
+      fee: Number(t.home_service_fee || 0),
+      workerCount: Math.max(1, new Set(
+        (t.all_items || []).map(x => x.employee_id).filter(Boolean)
+      ).size),
+    };
+  }
+  let total = 0;
+  for (const id in byTrx) {
+    total += Math.round(byTrx[id].fee / byTrx[id].workerCount);
+  }
+  return total;
+}
+
 // Generate slip HTML for one employee
 function generateSlipHTML({ employee, payroll, items, period, branch, generatedBy, isApproved = false, tipsDetail = [], attendance = null }) {
   const brand = getBrandForBranch(employee.branch_id);
@@ -4741,6 +4772,7 @@ Object.assign(window, {
   getActionLabel, getActionColor, getActionBadge, getFieldLabel, formatAuditValue,
   exportToExcel, exportReportToExcel, exportPayrollToExcel,
   generateSlipHTML, getEmployeePeriodTransactions, getEmployeePeriodTips, printSlip, printMultipleSlips,
+  computeHSCommissionFromItems,
   getBrandForBranch, escapeHtml,
   LOGO_JBB, LOGO_VIALI, LOGO_JBB_PNG, LOGO_VIALI_PNG, logoSVG, logoSVGWidth, loadLogoImage,
   generateInvoiceHTML, printInvoice, drawInvoiceToCanvas, downloadInvoicePNG,
