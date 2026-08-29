@@ -4100,6 +4100,12 @@ const GRACE_MINUTES = RULE_NEW.graceMinutes;
 const LATE_TOLERANCE_MINUTES = RULE_NEW.toleranceEndMinutes;
 // Toleransi pulang: pulang 19:15 sampai 19:30 masih dianggap wajar.
 // Di bawah 19:15 dihitung pulang cepat, kecuali memang ambil lembur pagi.
+//
+// PENTING: jam pulang sama sekali TIDAK memengaruhi gaji. Jatah toleransi 7x
+// dan potongan keterlambatan hanya dihitung dari jam MASUK (lihat
+// getAttendanceSummary, yang cuma membaca getArrivalStatus). Angka pulang
+// disimpan sebagai catatan operasional saja. Jangan tambahkan potongan dari
+// sini tanpa keputusan baru dari owner.
 const EARLY_LEAVE_TOLERANCE_MINUTES = 15;
 // Jatah toleransi datang (09:30 sampai 10:00) per periode gaji.
 // Toleransi ke-8 dan seterusnya dihitung sebagai terlambat.
@@ -4165,7 +4171,8 @@ function calcEarlyLeaveMinutes(at = new Date()) {
 }
 
 // Status kepulangan: 'lewat' (>= 19:30), 'toleransi' (19:15 sampai 19:30),
-// atau 'cepat' (sebelum 19:15). Dipakai untuk tampilan.
+// atau 'cepat' (sebelum 19:15). Murni untuk tampilan, tidak dipakai
+// dalam perhitungan gaji mana pun.
 function getDepartureStatus(clockOutAt) {
   if (!clockOutAt) return null;
   const at = new Date(clockOutAt);
@@ -4291,6 +4298,8 @@ async function distanceFromBranch(branchId, loc) {
 }
 
 // Ambil lokasi dan pastikan berada di area salon.
+// HANYA dipakai untuk absen MASUK. Absen pulang tidak memakai fungsi ini,
+// karena beautician sering menutup hari kerjanya di lokasi home service.
 // Melempar error dengan pesan jelas kalau izin ditolak, sinyal tidak dapat,
 // atau posisinya jauh dari cabang. Dipakai sebelum foto diupload supaya
 // tidak ada foto nyangkut kalau absennya ditolak.
@@ -4308,16 +4317,19 @@ async function requireLocationAtBranch(branchId) {
   if (!geo) return { loc, distance: null };
 
   const distance = distanceMeters(loc.lat, loc.lng, Number(geo.lat), Number(geo.lng));
-  const radius = Number(geo.geofence_radius_m) || 200;
+  // Dipersempit dari 200 ke 150 meter mulai 28 Agustus 2026, karena radius lama
+  // masih meloloskan absen dari jalan di depan salon. Nilai per cabang tetap
+  // bisa diatur lewat kolom geofence_radius_m di tabel branches.
+  const radius = Number(geo.geofence_radius_m) || 150;
 
   if (distance != null && distance > radius) {
     const jarak = distance >= 1000
       ? `${(distance / 1000).toFixed(1)} km`
       : `${Math.round(distance)} meter`;
     throw new Error(
-      `Absen ditolak. Kamu terdeteksi ${jarak} dari ${geo.name || 'salon'}. ` +
-      `Absen hanya bisa dilakukan di area salon. Kalau kamu memang sedang di salon, ` +
-      `tunggu sinyal GPS membaik lalu coba lagi.`
+      `Absen masuk ditolak. Kamu terdeteksi ${jarak} dari ${geo.name || 'salon'}, ` +
+      `sedangkan batasnya ${radius} meter. Absen masuk hanya bisa dilakukan di area salon. ` +
+      `Kalau kamu memang sudah di salon, tunggu sinyal GPS membaik lalu coba lagi.`
     );
   }
   return { loc, distance };
@@ -4340,6 +4352,7 @@ async function clockIn({ employeeId, branchId, photoBlob, faceVerified = null })
   }
 
   // Lokasi diperiksa lebih dulu. Kalau ditolak, foto tidak jadi diupload.
+  // Batas jarak hanya berlaku untuk absen masuk.
   const { loc, distance } = await requireLocationAtBranch(branchId);
 
   const photoPath = photoBlob ? await uploadAttendancePhoto(photoBlob, branchId, employeeId, 'in') : null;
@@ -4385,7 +4398,13 @@ async function clockOut({ employeeId, branchId, photoBlob, faceVerified = null }
   if (!existing || !existing.clock_in_at) throw new Error('Belum absen masuk hari ini');
   if (existing.clock_out_at) throw new Error('Sudah absen pulang hari ini');
 
-  const { loc, distance } = await requireLocationAtBranch(branchId);
+  // Absen PULANG tidak diwajibkan berada di area salon. Beautician sering
+  // menutup hari kerjanya di lokasi home service, jadi kalau jaraknya
+  // dipaksakan mereka tidak bisa absen pulang sama sekali.
+  // Lokasi tetap dicatat untuk keperluan pemeriksaan, tapi tidak pernah
+  // menolak absen. Kalau GPS mati atau izin ditolak pun, absen tetap masuk.
+  const loc = await getDeviceLocation();
+  const distance = await distanceFromBranch(branchId, loc);
 
   const photoPath = photoBlob ? await uploadAttendancePhoto(photoBlob, branchId, employeeId, 'out') : null;
 
@@ -4395,9 +4414,9 @@ async function clockOut({ employeeId, branchId, photoBlob, faceVerified = null }
       clock_out_at: now.toISOString(),
       clock_out_photo: photoPath,
       early_leave_minutes: calcEarlyLeaveMinutes(now),
-      clock_out_lat: loc.lat,
-      clock_out_lng: loc.lng,
-      clock_out_accuracy: loc.accuracy ?? null,
+      clock_out_lat: loc ? loc.lat : null,
+      clock_out_lng: loc ? loc.lng : null,
+      clock_out_accuracy: loc && loc.accuracy != null ? loc.accuracy : null,
       clock_out_distance_m: distance,
       face_verified: faceVerified,
     })
@@ -4481,7 +4500,9 @@ async function countOldAttendancePhotos(branchId = null) {
   return { photos, rows: (data || []).length, batas: periode.period_start };
 }
 
-// Ringkasan absensi per karyawan dalam satu periode (untuk gaji)
+// Ringkasan absensi per karyawan dalam satu periode (untuk gaji).
+// Hanya jam MASUK yang dinilai. Jam pulang tidak pernah ikut dihitung,
+// baik toleransi maupun pulang cepat.
 async function getAttendanceSummary(branchId, periodStart, periodEnd) {
   const rows = await listAttendance(branchId, periodStart, periodEnd);
   const byEmployee = {};

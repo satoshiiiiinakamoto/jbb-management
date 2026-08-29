@@ -6881,6 +6881,9 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
     : profile.branch_id;
   const semuaCabang = profile.role === 'super_admin' && !currentBranchId;
   const branch = branches.find(b => b.id === effectiveBranchId);
+  // Batas jarak absen masuk. Diambil dari pengaturan cabang, 150 meter kalau
+  // cabangnya belum punya nilai sendiri.
+  const radiusMasuk = Number(branch?.geofence_radius_m) || 150;
 
   // Jam berjalan
   useEffectP(() => {
@@ -7008,8 +7011,10 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
           {' '}{toleranceStartLabel()}–{toleranceEndLabel()} toleransi (jatah {TOLERANCE_QUOTA_PER_PERIOD}x, lebih dari itu {fmtRp(TOLERANCE_OVER_PENALTY)}/hari) ·
           {' '}di atas {toleranceEndLabel()} terlambat ({fmtRp(LATE_PENALTY_PER_DAY)}/hari)
         </div>
-        <div style={{fontSize:11,opacity:0.75,marginTop:4}}>
-          Pulang 19:30 (toleransi mulai {departureToleranceLabel()}) · absen wajib di area salon
+        <div style={{fontSize:11,opacity:0.75,marginTop:4,lineHeight:1.6}}>
+          Absen masuk wajib di area salon (maksimal {radiusMasuk} meter)
+          <br/>
+          Pulang 19:30 · jam pulang tidak dihitung keterlambatan dan boleh dari mana saja
         </div>
       </div>
 
@@ -7095,8 +7100,9 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
                       return null;
                     })()}
                     {(() => {
+                      // Catatan saja, tidak memotong gaji
                       const dp = getDepartureStatus(r.clock_out_at);
-                      if (dp?.status === 'cepat') return <div style={{color:'var(--red)'}}>pulang cepat {dp.earlyMinutes} menit</div>;
+                      if (dp?.status === 'cepat') return <div style={{color:'var(--muted)'}}>pulang cepat {dp.earlyMinutes} menit</div>;
                       return null;
                     })()}
                     <div style={{color:'var(--hijau)',fontWeight:500,marginTop:2}}>Selesai</div>
@@ -7679,7 +7685,7 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
 
   const fmtJam = ts => ts ? new Date(ts).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '—';
   const fmtJarak = m => m == null ? '' : (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`);
-  const radiusFor = bid => Number(branches.find(b => b.id === bid)?.geofence_radius_m) || 200;
+  const radiusFor = bid => Number(branches.find(b => b.id === bid)?.geofence_radius_m) || 150;
 
   return (
     <div className="page">
@@ -7834,9 +7840,11 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                       disabled={!r.clock_out_at}>
                       Pulang {fmtJam(r.clock_out_at)}
                       {(() => {
+                        // Jam pulang tidak memotong gaji, jadi ditampilkan netral
+                        // sebagai catatan saja. Label "toleransi" sengaja dihapus
+                        // supaya tidak terbaca seperti pelanggaran.
                         const dp = getDepartureStatus(r.clock_out_at);
-                        if (dp?.status === 'cepat') return <span style={{color:'var(--red)'}}> · cepat {dp.earlyMinutes}m</span>;
-                        if (dp?.status === 'toleransi') return <span style={{color:'var(--amber)'}}> · toleransi</span>;
+                        if (dp?.status === 'cepat') return <span style={{color:'var(--muted)'}}> · cepat {dp.earlyMinutes}m</span>;
                         return null;
                       })()}
                     </button>

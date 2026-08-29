@@ -4560,6 +4560,12 @@ const GRACE_MINUTES = RULE_NEW.graceMinutes;
 const LATE_TOLERANCE_MINUTES = RULE_NEW.toleranceEndMinutes;
 // Toleransi pulang: pulang 19:15 sampai 19:30 masih dianggap wajar.
 // Di bawah 19:15 dihitung pulang cepat, kecuali memang ambil lembur pagi.
+//
+// PENTING: jam pulang sama sekali TIDAK memengaruhi gaji. Jatah toleransi 7x
+// dan potongan keterlambatan hanya dihitung dari jam MASUK (lihat
+// getAttendanceSummary, yang cuma membaca getArrivalStatus). Angka pulang
+// disimpan sebagai catatan operasional saja. Jangan tambahkan potongan dari
+// sini tanpa keputusan baru dari owner.
 const EARLY_LEAVE_TOLERANCE_MINUTES = 15;
 // Jatah toleransi datang (09:30 sampai 10:00) per periode gaji.
 // Toleransi ke-8 dan seterusnya dihitung sebagai terlambat.
@@ -4628,7 +4634,8 @@ function calcEarlyLeaveMinutes(at = new Date()) {
 }
 
 // Status kepulangan: 'lewat' (>= 19:30), 'toleransi' (19:15 sampai 19:30),
-// atau 'cepat' (sebelum 19:15). Dipakai untuk tampilan.
+// atau 'cepat' (sebelum 19:15). Murni untuk tampilan, tidak dipakai
+// dalam perhitungan gaji mana pun.
 function getDepartureStatus(clockOutAt) {
   if (!clockOutAt) return null;
   const at = new Date(clockOutAt);
@@ -4767,6 +4774,8 @@ async function distanceFromBranch(branchId, loc) {
 }
 
 // Ambil lokasi dan pastikan berada di area salon.
+// HANYA dipakai untuk absen MASUK. Absen pulang tidak memakai fungsi ini,
+// karena beautician sering menutup hari kerjanya di lokasi home service.
 // Melempar error dengan pesan jelas kalau izin ditolak, sinyal tidak dapat,
 // atau posisinya jauh dari cabang. Dipakai sebelum foto diupload supaya
 // tidak ada foto nyangkut kalau absennya ditolak.
@@ -4782,10 +4791,13 @@ async function requireLocationAtBranch(branchId) {
     distance: null
   };
   const distance = distanceMeters(loc.lat, loc.lng, Number(geo.lat), Number(geo.lng));
-  const radius = Number(geo.geofence_radius_m) || 200;
+  // Dipersempit dari 200 ke 150 meter mulai 28 Agustus 2026, karena radius lama
+  // masih meloloskan absen dari jalan di depan salon. Nilai per cabang tetap
+  // bisa diatur lewat kolom geofence_radius_m di tabel branches.
+  const radius = Number(geo.geofence_radius_m) || 150;
   if (distance != null && distance > radius) {
     const jarak = distance >= 1000 ? `${(distance / 1000).toFixed(1)} km` : `${Math.round(distance)} meter`;
-    throw new Error(`Absen ditolak. Kamu terdeteksi ${jarak} dari ${geo.name || 'salon'}. ` + `Absen hanya bisa dilakukan di area salon. Kalau kamu memang sedang di salon, ` + `tunggu sinyal GPS membaik lalu coba lagi.`);
+    throw new Error(`Absen masuk ditolak. Kamu terdeteksi ${jarak} dari ${geo.name || 'salon'}, ` + `sedangkan batasnya ${radius} meter. Absen masuk hanya bisa dilakukan di area salon. ` + `Kalau kamu memang sudah di salon, tunggu sinyal GPS membaik lalu coba lagi.`);
   }
   return {
     loc,
@@ -4812,6 +4824,7 @@ async function clockIn({
   }
 
   // Lokasi diperiksa lebih dulu. Kalau ditolak, foto tidak jadi diupload.
+  // Batas jarak hanya berlaku untuk absen masuk.
   const {
     loc,
     distance
@@ -4864,10 +4877,14 @@ async function clockOut({
   if (findErr) throw findErr;
   if (!existing || !existing.clock_in_at) throw new Error('Belum absen masuk hari ini');
   if (existing.clock_out_at) throw new Error('Sudah absen pulang hari ini');
-  const {
-    loc,
-    distance
-  } = await requireLocationAtBranch(branchId);
+
+  // Absen PULANG tidak diwajibkan berada di area salon. Beautician sering
+  // menutup hari kerjanya di lokasi home service, jadi kalau jaraknya
+  // dipaksakan mereka tidak bisa absen pulang sama sekali.
+  // Lokasi tetap dicatat untuk keperluan pemeriksaan, tapi tidak pernah
+  // menolak absen. Kalau GPS mati atau izin ditolak pun, absen tetap masuk.
+  const loc = await getDeviceLocation();
+  const distance = await distanceFromBranch(branchId, loc);
   const photoPath = photoBlob ? await uploadAttendancePhoto(photoBlob, branchId, employeeId, 'out') : null;
   const {
     data,
@@ -4876,9 +4893,9 @@ async function clockOut({
     clock_out_at: now.toISOString(),
     clock_out_photo: photoPath,
     early_leave_minutes: calcEarlyLeaveMinutes(now),
-    clock_out_lat: loc.lat,
-    clock_out_lng: loc.lng,
-    clock_out_accuracy: loc.accuracy ?? null,
+    clock_out_lat: loc ? loc.lat : null,
+    clock_out_lng: loc ? loc.lng : null,
+    clock_out_accuracy: loc && loc.accuracy != null ? loc.accuracy : null,
     clock_out_distance_m: distance,
     face_verified: faceVerified
   }).eq('id', existing.id).select().single();
@@ -4973,7 +4990,9 @@ async function countOldAttendancePhotos(branchId = null) {
   };
 }
 
-// Ringkasan absensi per karyawan dalam satu periode (untuk gaji)
+// Ringkasan absensi per karyawan dalam satu periode (untuk gaji).
+// Hanya jam MASUK yang dinilai. Jam pulang tidak pernah ikut dihitung,
+// baik toleransi maupun pulang cepat.
 async function getAttendanceSummary(branchId, periodStart, periodEnd) {
   const rows = await listAttendance(branchId, periodStart, periodEnd);
   const byEmployee = {};
@@ -15643,6 +15662,9 @@ function AbsensiPage({
   const effectiveBranchId = profile.role === 'super_admin' ? currentBranchId : profile.branch_id;
   const semuaCabang = profile.role === 'super_admin' && !currentBranchId;
   const branch = branches.find(b => b.id === effectiveBranchId);
+  // Batas jarak absen masuk. Diambil dari pengaturan cabang, 150 meter kalau
+  // cabangnya belum punya nilai sendiri.
+  const radiusMasuk = Number(branch?.geofence_radius_m) || 150;
 
   // Jam berjalan
   useEffectP(() => {
@@ -15805,9 +15827,10 @@ function AbsensiPage({
     style: {
       fontSize: 11,
       opacity: 0.75,
-      marginTop: 4
+      marginTop: 4,
+      lineHeight: 1.6
     }
-  }, "Pulang 19:30 (toleransi mulai ", departureToleranceLabel(), ") · absen wajib di area salon")), /*#__PURE__*/React.createElement("div", {
+  }, "Absen masuk wajib di area salon (maksimal ", radiusMasuk, " meter)", /*#__PURE__*/React.createElement("br", null), "Pulang 19:30 · jam pulang tidak dihitung keterlambatan dan boleh dari mana saja")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'flex',
       justifyContent: 'space-between',
@@ -15946,10 +15969,11 @@ function AbsensiPage({
       }, "dalam toleransi");
       return null;
     })(), (() => {
+      // Catatan saja, tidak memotong gaji
       const dp = getDepartureStatus(r.clock_out_at);
       if (dp?.status === 'cepat') return /*#__PURE__*/React.createElement("div", {
         style: {
-          color: 'var(--red)'
+          color: 'var(--muted)'
         }
       }, "pulang cepat ", dp.earlyMinutes, " menit");
       return null;
@@ -16791,7 +16815,7 @@ function LaporanAbsensiPage({
     minute: '2-digit'
   }) : '—';
   const fmtJarak = m => m == null ? '' : m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
-  const radiusFor = bid => Number(branches.find(b => b.id === bid)?.geofence_radius_m) || 200;
+  const radiusFor = bid => Number(branches.find(b => b.id === bid)?.geofence_radius_m) || 150;
   return /*#__PURE__*/React.createElement("div", {
     className: "page"
   }, /*#__PURE__*/React.createElement(PageHeader, {
@@ -17033,17 +17057,15 @@ function LaporanAbsensiPage({
     onClick: () => showPhoto(r.clock_out_photo, `${r.employee?.full_name} · pulang`),
     disabled: !r.clock_out_at
   }, "Pulang ", fmtJam(r.clock_out_at), (() => {
+    // Jam pulang tidak memotong gaji, jadi ditampilkan netral
+    // sebagai catatan saja. Label "toleransi" sengaja dihapus
+    // supaya tidak terbaca seperti pelanggaran.
     const dp = getDepartureStatus(r.clock_out_at);
     if (dp?.status === 'cepat') return /*#__PURE__*/React.createElement("span", {
       style: {
-        color: 'var(--red)'
+        color: 'var(--muted)'
       }
     }, " · cepat ", dp.earlyMinutes, "m");
-    if (dp?.status === 'toleransi') return /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: 'var(--amber)'
-      }
-    }, " · toleransi");
     return null;
   })()), canDelete && /*#__PURE__*/React.createElement("button", {
     className: "btn btn-ghost btn-sm",
