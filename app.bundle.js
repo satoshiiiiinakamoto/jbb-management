@@ -10,7 +10,7 @@
    Kalau ada perubahan kode: yang diedit tetap file .jsx, lalu bundel
    ini dibuat ulang. Upload keduanya, jangan salah satu saja.
 
-   Dibuat: 2026-08-28
+   Dibuat: 2026-08-30
    ===================================================================== */
 
 /* ============ lib.jsx ============ */
@@ -4588,9 +4588,14 @@ function calcLateMinutes(at = new Date()) {
   return late > 0 ? late : 0;
 }
 
-// Status kedatangan: 'tepat' (sebelum 09:30), 'toleransi' (09:30 sampai 10:00),
-// atau 'telat' (di atas 10:00). Dipakai untuk tampilan, bukan perhitungan gaji.
-function getArrivalStatus(clockInAt) {
+// Status kedatangan: 'tepat' (sebelum 09:45), 'toleransi' (09:45 sampai 10:00),
+// atau 'telat' (di atas 10:00).
+//
+// Argumen kedua opsional: kalau admin sudah mengoreksi status kedatangan
+// (kolom arrival_override), status hasil koreksi itu yang dipakai. Jam
+// aslinya tetap dihitung dan dikembalikan di rawStatus, supaya tampilan
+// bisa menunjukkan keduanya: "absen 10:05, dikoreksi jadi tepat waktu".
+function getArrivalStatus(clockInAt, override = null) {
   if (!clockInAt) return null;
   const at = new Date(clockInAt);
   const rule = attendanceRuleFor(clockInAt);
@@ -4602,12 +4607,30 @@ function getArrivalStatus(clockInAt) {
   // Tiga tingkat, ambangnya mengikuti aturan yang berlaku pada tanggal itu
   let status = 'tepat';
   if (lateMinutes > 0) status = 'telat';else if (minutesAfterStart > rule.graceMinutes) status = 'toleransi';
+  const rawStatus = status;
+  const rawLateMinutes = lateMinutes;
+  let isOverridden = false;
+  if (override === 'tepat' || override === 'toleransi' || override === 'telat') {
+    isOverridden = override !== rawStatus;
+    status = override;
+  }
   return {
     status,
+    // Menit telat ikut nol kalau dikoreksi jadi tepat/toleransi, karena angka
+    // ini yang dipakai untuk rekap dan potongan gaji.
+    lateMinutes: status === 'telat' ? rawLateMinutes > 0 ? rawLateMinutes : 0 : 0,
     minutesAfterStart,
-    lateMinutes,
-    rule
+    rule,
+    rawStatus,
+    rawLateMinutes,
+    isOverridden
   };
+}
+
+// Versi praktis: terima satu baris absensi, langsung terapkan koreksinya.
+function getArrivalStatusOf(row) {
+  if (!row) return null;
+  return getArrivalStatus(row.clock_in_at, row.arrival_override || null);
 }
 
 // Batas awal toleransi dalam format jam (misal "09:45")
@@ -4990,6 +5013,92 @@ async function countOldAttendancePhotos(branchId = null) {
   };
 }
 
+// Simpan koreksi absensi. Jam aslinya TIDAK diubah, yang disimpan cuma
+// keputusan admin beserta alasannya.
+//   arrivalOverride : 'tepat' | 'toleransi' | 'telat' | null (batalkan koreksi)
+//   reason          : wajib diisi kalau arrivalOverride tidak null
+//   locationExcused : true kalau jarak absen yang jauh sudah dimaklumi
+//   adminNote       : keterangan bebas, ikut terlihat karyawan
+async function saveAttendanceCorrection({
+  id,
+  arrivalOverride = null,
+  reason = '',
+  locationExcused = false,
+  adminNote = ''
+}) {
+  if (!id) throw new Error('Baris absensi tidak dikenali');
+  const bersih = (reason || '').trim();
+  if (arrivalOverride && !bersih) {
+    throw new Error('Alasan koreksi wajib diisi');
+  }
+  if (arrivalOverride && !['tepat', 'toleransi', 'telat'].includes(arrivalOverride)) {
+    throw new Error('Status koreksi tidak dikenali');
+  }
+  const userId = (await sb.auth.getUser()).data?.user?.id || null;
+  const payload = {
+    arrival_override: arrivalOverride || null,
+    override_reason: arrivalOverride ? bersih : null,
+    override_by: arrivalOverride ? userId : null,
+    override_at: arrivalOverride ? new Date().toISOString() : null,
+    location_excused: !!locationExcused,
+    admin_note: (adminNote || '').trim() || null
+  };
+  const {
+    data,
+    error
+  } = await sb.from('attendance').update(payload).eq('id', id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+// Catat absensi secara manual. Dipakai kalau karyawan benar-benar tidak bisa
+// absen sendiri, misalnya GPS tidak terbaca atau HP-nya bermasalah.
+// Alasan wajib diisi, dan barisnya ditandai is_manual supaya jelas asalnya.
+async function createManualAttendance({
+  employeeId,
+  branchId,
+  date,
+  clockInTime,
+  clockOutTime = null,
+  reason = ''
+}) {
+  const bersih = (reason || '').trim();
+  if (!employeeId) throw new Error('Pilih karyawan dulu');
+  if (!branchId) throw new Error('Cabang tidak dikenali');
+  if (!date) throw new Error('Tanggal wajib diisi');
+  if (!clockInTime) throw new Error('Jam masuk wajib diisi');
+  if (!bersih) throw new Error('Alasan pencatatan manual wajib diisi');
+  const {
+    data: existing
+  } = await sb.from('attendance').select('id').eq('employee_id', employeeId).eq('date', date).maybeSingle();
+  if (existing?.id) {
+    throw new Error('Karyawan ini sudah punya catatan absensi di tanggal tersebut');
+  }
+  const masuk = new Date(`${date}T${clockInTime}:00`);
+  const pulang = clockOutTime ? new Date(`${date}T${clockOutTime}:00`) : null;
+  if (pulang && pulang <= masuk) {
+    throw new Error('Jam pulang harus lebih malam dari jam masuk');
+  }
+  const userId = (await sb.auth.getUser()).data?.user?.id || null;
+  const {
+    data,
+    error
+  } = await sb.from('attendance').insert({
+    branch_id: branchId,
+    employee_id: employeeId,
+    date,
+    clock_in_at: masuk.toISOString(),
+    clock_out_at: pulang ? pulang.toISOString() : null,
+    late_minutes: calcLateMinutes(masuk),
+    early_leave_minutes: pulang ? calcEarlyLeaveMinutes(pulang) : 0,
+    is_manual: true,
+    admin_note: bersih,
+    created_by: userId
+  }).select().single();
+  if (error) throw error;
+  return data;
+}
+
 // Ringkasan absensi per karyawan dalam satu periode (untuk gaji).
 // Hanya jam MASUK yang dinilai. Jam pulang tidak pernah ikut dihitung,
 // baik toleransi maupun pulang cepat.
@@ -5007,19 +5116,25 @@ async function getAttendanceSummary(branchId, periodStart, periodEnd) {
         days_over_ten: 0,
         // datang di atas 10:00
         days_no_clockout: 0,
+        days_corrected: 0,
+        // berapa hari statusnya dikoreksi admin
         _toleransi: [] // tanggal-tanggal yang masuk toleransi
       };
     }
     const s = byEmployee[id];
     if (r.clock_in_at) s.days_present += 1;
     if (r.clock_in_at && !r.clock_out_at) s.days_no_clockout += 1;
-    const st = getArrivalStatus(r.clock_in_at);
+
+    // Pakai status hasil koreksi admin kalau ada. Kalau tidak ada,
+    // hasilnya sama persis dengan sebelumnya.
+    const st = getArrivalStatusOf(r);
     if (st?.status === 'telat') {
       s.days_over_ten += 1;
       s.total_late_minutes += st.lateMinutes;
     } else if (st?.status === 'toleransi') {
       s._toleransi.push(r.date);
     }
+    if (st?.isOverridden) s.days_corrected = (s.days_corrected || 0) + 1;
   }
 
   // Hitung jatah toleransi. Yang dipakai lebih dulu (tanggal awal) yang gratis.
@@ -5459,6 +5574,9 @@ Object.assign(window, {
   distanceMeters,
   getBranchGeo,
   distanceFromBranch,
+  getArrivalStatusOf,
+  saveAttendanceCorrection,
+  createManualAttendance,
   requireLocationAtBranch,
   listHomeServiceJobs,
   createHomeServiceJob,
@@ -15956,13 +16074,21 @@ function AbsensiPage({
         color: 'var(--muted)'
       }
     }, fmtJam(r.clock_in_at), " sampai ", fmtJam(r.clock_out_at), (() => {
-      const st = getArrivalStatus(r.clock_in_at);
-      if (st?.status === 'telat') return /*#__PURE__*/React.createElement("div", {
+      const st = getArrivalStatusOf(r);
+      if (!st) return null;
+      if (st.isOverridden) {
+        return /*#__PURE__*/React.createElement("div", {
+          style: {
+            color: 'var(--mauve)'
+          }
+        }, "✎ dikoreksi jadi ", st.status, r.override_reason ? ` · ${r.override_reason}` : '');
+      }
+      if (st.status === 'telat') return /*#__PURE__*/React.createElement("div", {
         style: {
           color: 'var(--red)'
         }
       }, "telat ", st.lateMinutes, " menit");
-      if (st?.status === 'toleransi') return /*#__PURE__*/React.createElement("div", {
+      if (st.status === 'toleransi') return /*#__PURE__*/React.createElement("div", {
         style: {
           color: 'var(--amber)'
         }
@@ -16692,9 +16818,30 @@ function LaporanAbsensiPage({
   const [photoLabel, setPhotoLabel] = useStateP('');
   const [fotoLama, setFotoLama] = useStateP(null);
   const [bersihkan, setBersihkan] = useStateP(false);
+  // Koreksi absensi
+  const [koreksiRow, setKoreksiRow] = useStateP(null);
+  const [koreksiStatus, setKoreksiStatus] = useStateP('');
+  const [koreksiAlasan, setKoreksiAlasan] = useStateP('');
+  const [koreksiJarak, setKoreksiJarak] = useStateP(false);
+  const [koreksiCatatan, setKoreksiCatatan] = useStateP('');
+  const [koreksiSimpan, setKoreksiSimpan] = useStateP(false);
+  // Catat absen manual
+  const [manualBuka, setManualBuka] = useStateP(false);
+  const [manualKaryawan, setManualKaryawan] = useStateP([]);
+  const [manualForm, setManualForm] = useStateP({
+    employee_id: '',
+    date: todayStr(),
+    clock_in: '09:30',
+    clock_out: '',
+    reason: ''
+  });
+  const [manualSimpan, setManualSimpan] = useStateP(false);
   const isSuper = profile.role === 'super_admin';
   const effectiveBranchId = isSuper ? currentBranchId : profile.branch_id;
   const canDelete = isSuper || profile.role === 'branch_admin';
+  // Owner dan manajer cabang boleh mengoreksi. Manajer tidak bisa mengoreksi
+  // absensinya sendiri, itu ditolak di database (lihat koreksi_absensi.sql).
+  const canCorrect = isSuper || profile.role === 'branch_admin';
   const range = useMemoP(() => {
     const today = new Date();
     const pad = n => String(n).padStart(2, '0');
@@ -16758,6 +16905,77 @@ function LaporanAbsensiPage({
     setPhotoLabel(label);
     setPhotoUrl(url);
   }
+  function bukaKoreksi(row) {
+    setKoreksiRow(row);
+    setKoreksiStatus(row.arrival_override || '');
+    setKoreksiAlasan(row.override_reason || '');
+    setKoreksiJarak(!!row.location_excused);
+    setKoreksiCatatan(row.admin_note || '');
+  }
+  function tutupKoreksi() {
+    setKoreksiRow(null);
+    setKoreksiStatus('');
+    setKoreksiAlasan('');
+    setKoreksiJarak(false);
+    setKoreksiCatatan('');
+  }
+  async function simpanKoreksi() {
+    if (!koreksiRow) return;
+    setKoreksiSimpan(true);
+    try {
+      await saveAttendanceCorrection({
+        id: koreksiRow.id,
+        arrivalOverride: koreksiStatus || null,
+        reason: koreksiAlasan,
+        locationExcused: koreksiJarak,
+        adminNote: koreksiCatatan
+      });
+      toast('Koreksi tersimpan', 'success');
+      tutupKoreksi();
+      load();
+    } catch (err) {
+      toast('Gagal menyimpan koreksi: ' + (err.message || err), 'error');
+    } finally {
+      setKoreksiSimpan(false);
+    }
+  }
+  async function bukaManual() {
+    setManualForm({
+      employee_id: '',
+      date: todayStr(),
+      clock_in: '09:30',
+      clock_out: '',
+      reason: ''
+    });
+    setManualBuka(true);
+    try {
+      setManualKaryawan(await listEmployees(effectiveBranchId));
+    } catch (err) {
+      setManualKaryawan([]);
+      toast('Gagal memuat daftar karyawan: ' + (err.message || err), 'error');
+    }
+  }
+  async function simpanManual() {
+    setManualSimpan(true);
+    try {
+      const emp = manualKaryawan.find(e => e.id === manualForm.employee_id);
+      await createManualAttendance({
+        employeeId: manualForm.employee_id,
+        branchId: emp?.branch_id || effectiveBranchId,
+        date: manualForm.date,
+        clockInTime: manualForm.clock_in,
+        clockOutTime: manualForm.clock_out || null,
+        reason: manualForm.reason
+      });
+      toast('Absensi manual tercatat', 'success');
+      setManualBuka(false);
+      load();
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    } finally {
+      setManualSimpan(false);
+    }
+  }
   async function handleDelete(row) {
     if (!window.confirm(`Hapus absensi ${row.employee?.full_name} tanggal ${fmtDate(row.date)}?`)) return;
     try {
@@ -16787,17 +17005,20 @@ function LaporanAbsensiPage({
         toleransi: 0,
         telat: 0,
         menitTelat: 0,
-        lupaPulang: 0
+        lupaPulang: 0,
+        dikoreksi: 0
       };
       const s = by[id];
       if (r.clock_in_at) s.hadir += 1;
-      const st = getArrivalStatus(r.clock_in_at);
+      // Pakai status hasil koreksi admin kalau ada
+      const st = getArrivalStatusOf(r);
       if (st?.status === 'telat') {
         s.telat += 1;
         s.menitTelat += st.lateMinutes;
       } else if (st?.status === 'toleransi') {
         s.toleransi += 1;
       }
+      if (st?.isOverridden) s.dikoreksi += 1;
       if (r.clock_in_at && !r.clock_out_at) s.lupaPulang += 1;
     }
     return Object.values(by).map(s => {
@@ -16821,7 +17042,10 @@ function LaporanAbsensiPage({
   }, /*#__PURE__*/React.createElement(PageHeader, {
     title: "Laporan Absensi",
     sub: "Kehadiran"
-  }, /*#__PURE__*/React.createElement("button", {
+  }, canCorrect && /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-primary btn-sm",
+    onClick: bukaManual
+  }, "+ Catat Absen Manual"), /*#__PURE__*/React.createElement("button", {
     className: "btn btn-ghost btn-sm",
     onClick: load
   }, "Muat ulang")), fotoLama && fotoLama.photos > 0 && /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement("div", {
@@ -16954,7 +17178,9 @@ function LaporanAbsensiPage({
     className: "table-numeric"
   }, "Total Telat"), /*#__PURE__*/React.createElement("th", {
     className: "table-numeric"
-  }, "Lupa Pulang"))), /*#__PURE__*/React.createElement("tbody", null, summary.map(s => /*#__PURE__*/React.createElement("tr", {
+  }, "Lupa Pulang"), /*#__PURE__*/React.createElement("th", {
+    className: "table-numeric"
+  }, "Dikoreksi"))), /*#__PURE__*/React.createElement("tbody", null, summary.map(s => /*#__PURE__*/React.createElement("tr", {
     key: s.name
   }, /*#__PURE__*/React.createElement("td", {
     style: {
@@ -16982,7 +17208,12 @@ function LaporanAbsensiPage({
     style: {
       color: s.lupaPulang > 0 ? 'var(--amber)' : 'inherit'
     }
-  }, s.lupaPulang > 0 ? s.lupaPulang : '—'))))))), /*#__PURE__*/React.createElement(Card, {
+  }, s.lupaPulang > 0 ? s.lupaPulang : '—'), /*#__PURE__*/React.createElement("td", {
+    className: "table-numeric",
+    style: {
+      color: 'var(--muted)'
+    }
+  }, s.dikoreksi > 0 ? `${s.dikoreksi} hari` : '—'))))))), /*#__PURE__*/React.createElement(Card, {
     title: "Rincian Harian",
     sub: "Klik jam untuk melihat foto selfie"
   }, loading ? /*#__PURE__*/React.createElement(Loader, {
@@ -17040,13 +17271,22 @@ function LaporanAbsensiPage({
   }, r.face_verified === false && /*#__PURE__*/React.createElement("span", {
     title: "Pemeriksaan wajah tidak berjalan, perlu dicek manual"
   }, "⚠️ "), "Masuk ", fmtJam(r.clock_in_at), (() => {
-    const st = getArrivalStatus(r.clock_in_at);
-    if (st?.status === 'telat') return /*#__PURE__*/React.createElement("span", {
+    const st = getArrivalStatusOf(r);
+    if (!st) return null;
+    // Kalau dikoreksi, statusnya ditulis netral dengan tanda pensil
+    if (st.isOverridden) {
+      return /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: 'var(--mauve)'
+        }
+      }, " · ✎ ", st.status);
+    }
+    if (st.status === 'telat') return /*#__PURE__*/React.createElement("span", {
       style: {
         color: 'var(--red)'
       }
     }, " · telat ", st.lateMinutes, "m");
-    if (st?.status === 'toleransi') return /*#__PURE__*/React.createElement("span", {
+    if (st.status === 'toleransi') return /*#__PURE__*/React.createElement("span", {
       style: {
         color: 'var(--amber)'
       }
@@ -17067,13 +17307,29 @@ function LaporanAbsensiPage({
       }
     }, " · cepat ", dp.earlyMinutes, "m");
     return null;
-  })()), canDelete && /*#__PURE__*/React.createElement("button", {
+  })()), canCorrect && /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost btn-sm",
+    onClick: () => bukaKoreksi(r)
+  }, "✎ Koreksi"), canDelete && /*#__PURE__*/React.createElement("button", {
     className: "btn btn-ghost btn-sm",
     style: {
       color: 'var(--red)'
     },
     onClick: () => handleDelete(r)
-  }, "Hapus"))), (r.clock_in_lat != null || r.clock_out_lat != null) && /*#__PURE__*/React.createElement("div", {
+  }, "Hapus"))), (r.arrival_override || r.admin_note || r.is_manual) && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8,
+      padding: '8px 10px',
+      borderRadius: 8,
+      background: 'var(--mauve-tint)',
+      fontSize: 11.5,
+      lineHeight: 1.6,
+      color: 'var(--plum)'
+    }
+  }, r.is_manual && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("strong", null, "Dicatat manual oleh admin"), r.admin_note ? ` · ${r.admin_note}` : ''), r.arrival_override && (() => {
+    const st = getArrivalStatusOf(r);
+    return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("strong", null, "Status dikoreksi:"), " ", st?.rawStatus, " menjadi ", r.arrival_override, r.override_reason ? ` · ${r.override_reason}` : '');
+  })(), r.location_excused && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("strong", null, "Jarak absen sudah dimaklumi")), r.admin_note && !r.is_manual && /*#__PURE__*/React.createElement("div", null, r.admin_note)), (r.clock_in_lat != null || r.clock_out_lat != null) && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 8,
       paddingTop: 8,
@@ -17085,7 +17341,7 @@ function LaporanAbsensiPage({
       color: 'var(--muted)'
     }
   }, r.clock_in_lat != null && (() => {
-    const jauh = r.clock_in_distance_m != null && r.clock_in_distance_m > radiusFor(r.branch_id);
+    const jauh = !r.location_excused && r.clock_in_distance_m != null && r.clock_in_distance_m > radiusFor(r.branch_id);
     return /*#__PURE__*/React.createElement("a", {
       href: mapsLinkFor(r.clock_in_lat, r.clock_in_lng),
       target: "_blank",
@@ -17097,7 +17353,9 @@ function LaporanAbsensiPage({
       }
     }, jauh ? '⚠️' : '📍', " Masuk", r.clock_in_distance_m != null ? ` · ${fmtJarak(r.clock_in_distance_m)} dari salon` : '', r.clock_in_accuracy != null ? ` (±${r.clock_in_accuracy}m)` : '');
   })(), r.clock_out_lat != null && (() => {
-    const jauh = r.clock_out_distance_m != null && r.clock_out_distance_m > radiusFor(r.branch_id);
+    // Absen pulang boleh dari mana saja, jadi jaraknya tidak
+    // pernah ditandai merah. Angkanya tetap ditampilkan.
+    const jauh = false;
     return /*#__PURE__*/React.createElement("a", {
       href: mapsLinkFor(r.clock_out_lat, r.clock_out_lng),
       target: "_blank",
@@ -17108,7 +17366,219 @@ function LaporanAbsensiPage({
         fontWeight: jauh ? 600 : 400
       }
     }, jauh ? '⚠️' : '📍', " Pulang", r.clock_out_distance_m != null ? ` · ${fmtJarak(r.clock_out_distance_m)} dari salon` : '', r.clock_out_accuracy != null ? ` (±${r.clock_out_accuracy}m)` : '');
-  })()))))), photoUrl && /*#__PURE__*/React.createElement("div", {
+  })()))))), koreksiRow && (() => {
+    const st = getArrivalStatusOf(koreksiRow);
+    const jarakMasuk = koreksiRow.clock_in_distance_m;
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(36,26,44,0.75)',
+        zIndex: 9000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16
+      },
+      onClick: tutupKoreksi
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "card",
+      style: {
+        maxWidth: 440,
+        width: '100%',
+        maxHeight: '88vh',
+        overflowY: 'auto'
+      },
+      onClick: e => e.stopPropagation()
+    }, /*#__PURE__*/React.createElement("h3", {
+      className: "card-title"
+    }, "Koreksi Absensi"), /*#__PURE__*/React.createElement("p", {
+      className: "card-sub",
+      style: {
+        marginBottom: 16
+      }
+    }, koreksiRow.employee?.full_name, " · ", fmtDate(koreksiRow.date)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: '10px 12px',
+        borderRadius: 8,
+        background: 'var(--mauve-tint)',
+        fontSize: 12,
+        lineHeight: 1.7,
+        marginBottom: 16
+      }
+    }, /*#__PURE__*/React.createElement("div", null, "Absen masuk tercatat ", /*#__PURE__*/React.createElement("strong", null, fmtJam(koreksiRow.clock_in_at)), ", apa adanya ", /*#__PURE__*/React.createElement("strong", null, st?.rawStatus || '—')), jarakMasuk != null && /*#__PURE__*/React.createElement("div", null, "Jarak dari salon ", /*#__PURE__*/React.createElement("strong", null, fmtJarak(jarakMasuk)), koreksiRow.clock_in_accuracy != null ? ` (akurasi GPS ±${koreksiRow.clock_in_accuracy}m)` : ''), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 4,
+        color: 'var(--muted)'
+      }
+    }, "Jam asli tidak diubah. Yang disimpan hanya keputusan koreksinya.")), /*#__PURE__*/React.createElement(Field, {
+      label: "Status kedatangan",
+      hint: "Kosongkan untuk membatalkan koreksi dan kembali ke jam asli"
+    }, /*#__PURE__*/React.createElement("select", {
+      className: "form-select",
+      value: koreksiStatus,
+      onChange: e => setKoreksiStatus(e.target.value)
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, "Pakai jam asli (", st?.rawStatus || '—', ")"), /*#__PURE__*/React.createElement("option", {
+      value: "tepat"
+    }, "Tepat waktu"), /*#__PURE__*/React.createElement("option", {
+      value: "toleransi"
+    }, "Toleransi"), /*#__PURE__*/React.createElement("option", {
+      value: "telat"
+    }, "Telat"))), koreksiStatus && /*#__PURE__*/React.createElement(Field, {
+      label: "Alasan koreksi",
+      hint: "Wajib diisi. Karyawan bisa membaca ini."
+    }, /*#__PURE__*/React.createElement("textarea", {
+      className: "form-input",
+      rows: 2,
+      value: koreksiAlasan,
+      placeholder: "Contoh: GPS ngadat, sudah di salon sejak 09.40, dilihat CCTV",
+      onChange: e => setKoreksiAlasan(e.target.value)
+    })), /*#__PURE__*/React.createElement(Field, null, /*#__PURE__*/React.createElement("label", {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        cursor: 'pointer',
+        fontSize: 13
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "checkbox",
+      checked: koreksiJarak,
+      onChange: e => setKoreksiJarak(e.target.checked)
+    }), "Jarak absen yang jauh sudah dimaklumi")), /*#__PURE__*/React.createElement(Field, {
+      label: "Keterangan tambahan",
+      hint: "Opsional, muncul di laporan"
+    }, /*#__PURE__*/React.createElement("textarea", {
+      className: "form-input",
+      rows: 2,
+      value: koreksiCatatan,
+      placeholder: "Contoh: izin datang siang, ada urusan keluarga",
+      onChange: e => setKoreksiCatatan(e.target.value)
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        gap: 8,
+        marginTop: 16,
+        justifyContent: 'flex-end'
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-ghost btn-sm",
+      onClick: tutupKoreksi,
+      disabled: koreksiSimpan
+    }, "Batal"), /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-primary btn-sm",
+      onClick: simpanKoreksi,
+      disabled: koreksiSimpan
+    }, koreksiSimpan ? 'Menyimpan...' : 'Simpan Koreksi'))));
+  })(), manualBuka && /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: 'fixed',
+      inset: 0,
+      background: 'rgba(36,26,44,0.75)',
+      zIndex: 9000,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 16
+    },
+    onClick: () => setManualBuka(false)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      maxWidth: 440,
+      width: '100%',
+      maxHeight: '88vh',
+      overflowY: 'auto'
+    },
+    onClick: e => e.stopPropagation()
+  }, /*#__PURE__*/React.createElement("h3", {
+    className: "card-title"
+  }, "Catat Absen Manual"), /*#__PURE__*/React.createElement("p", {
+    className: "card-sub",
+    style: {
+      marginBottom: 16
+    }
+  }, "Untuk karyawan yang benar-benar tidak bisa absen sendiri, misalnya GPS tidak terbaca."), /*#__PURE__*/React.createElement(Field, {
+    label: "Karyawan"
+  }, /*#__PURE__*/React.createElement("select", {
+    className: "form-select",
+    value: manualForm.employee_id,
+    onChange: e => setManualForm({
+      ...manualForm,
+      employee_id: e.target.value
+    })
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Pilih karyawan"), manualKaryawan.map(e => /*#__PURE__*/React.createElement("option", {
+    key: e.id,
+    value: e.id
+  }, e.full_name)))), /*#__PURE__*/React.createElement(Field, {
+    label: "Tanggal"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    className: "form-input",
+    value: manualForm.date,
+    onChange: e => setManualForm({
+      ...manualForm,
+      date: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: '1fr 1fr',
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(Field, {
+    label: "Jam masuk"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "time",
+    className: "form-input",
+    value: manualForm.clock_in,
+    onChange: e => setManualForm({
+      ...manualForm,
+      clock_in: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement(Field, {
+    label: "Jam pulang",
+    hint: "Boleh dikosongkan"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "time",
+    className: "form-input",
+    value: manualForm.clock_out,
+    onChange: e => setManualForm({
+      ...manualForm,
+      clock_out: e.target.value
+    })
+  }))), /*#__PURE__*/React.createElement(Field, {
+    label: "Alasan",
+    hint: "Wajib diisi. Tercatat di Audit Log."
+  }, /*#__PURE__*/React.createElement("textarea", {
+    className: "form-input",
+    rows: 2,
+    value: manualForm.reason,
+    placeholder: "Contoh: HP rusak, absen dicatatkan admin",
+    onChange: e => setManualForm({
+      ...manualForm,
+      reason: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8,
+      marginTop: 16,
+      justifyContent: 'flex-end'
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost btn-sm",
+    onClick: () => setManualBuka(false),
+    disabled: manualSimpan
+  }, "Batal"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-primary btn-sm",
+    onClick: simpanManual,
+    disabled: manualSimpan
+  }, manualSimpan ? 'Menyimpan...' : 'Simpan')))), photoUrl && /*#__PURE__*/React.createElement("div", {
     style: {
       position: 'fixed',
       inset: 0,

@@ -7094,9 +7094,18 @@ function AbsensiPage({ profile, currentBranchId, branches }) {
                   <div style={{fontSize:12,color:'var(--muted)'}}>
                     {fmtJam(r.clock_in_at)} sampai {fmtJam(r.clock_out_at)}
                     {(() => {
-                      const st = getArrivalStatus(r.clock_in_at);
-                      if (st?.status === 'telat') return <div style={{color:'var(--red)'}}>telat {st.lateMinutes} menit</div>;
-                      if (st?.status === 'toleransi') return <div style={{color:'var(--amber)'}}>dalam toleransi</div>;
+                      const st = getArrivalStatusOf(r);
+                      if (!st) return null;
+                      if (st.isOverridden) {
+                        return (
+                          <div style={{color:'var(--mauve)'}}>
+                            ✎ dikoreksi jadi {st.status}
+                            {r.override_reason ? ` · ${r.override_reason}` : ''}
+                          </div>
+                        );
+                      }
+                      if (st.status === 'telat') return <div style={{color:'var(--red)'}}>telat {st.lateMinutes} menit</div>;
+                      if (st.status === 'toleransi') return <div style={{color:'var(--amber)'}}>dalam toleransi</div>;
                       return null;
                     })()}
                     {(() => {
@@ -7601,10 +7610,27 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
   const [photoLabel, setPhotoLabel] = useStateP('');
   const [fotoLama, setFotoLama] = useStateP(null);
   const [bersihkan, setBersihkan] = useStateP(false);
+  // Koreksi absensi
+  const [koreksiRow, setKoreksiRow] = useStateP(null);
+  const [koreksiStatus, setKoreksiStatus] = useStateP('');
+  const [koreksiAlasan, setKoreksiAlasan] = useStateP('');
+  const [koreksiJarak, setKoreksiJarak] = useStateP(false);
+  const [koreksiCatatan, setKoreksiCatatan] = useStateP('');
+  const [koreksiSimpan, setKoreksiSimpan] = useStateP(false);
+  // Catat absen manual
+  const [manualBuka, setManualBuka] = useStateP(false);
+  const [manualKaryawan, setManualKaryawan] = useStateP([]);
+  const [manualForm, setManualForm] = useStateP({
+    employee_id: '', date: todayStr(), clock_in: '09:30', clock_out: '', reason: '',
+  });
+  const [manualSimpan, setManualSimpan] = useStateP(false);
 
   const isSuper = profile.role === 'super_admin';
   const effectiveBranchId = isSuper ? currentBranchId : profile.branch_id;
   const canDelete = isSuper || profile.role === 'branch_admin';
+  // Owner dan manajer cabang boleh mengoreksi. Manajer tidak bisa mengoreksi
+  // absensinya sendiri, itu ditolak di database (lihat koreksi_absensi.sql).
+  const canCorrect = isSuper || profile.role === 'branch_admin';
 
   const range = useMemoP(() => {
     const today = new Date();
@@ -7648,6 +7674,76 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
     setPhotoUrl(url);
   }
 
+  function bukaKoreksi(row) {
+    setKoreksiRow(row);
+    setKoreksiStatus(row.arrival_override || '');
+    setKoreksiAlasan(row.override_reason || '');
+    setKoreksiJarak(!!row.location_excused);
+    setKoreksiCatatan(row.admin_note || '');
+  }
+
+  function tutupKoreksi() {
+    setKoreksiRow(null);
+    setKoreksiStatus('');
+    setKoreksiAlasan('');
+    setKoreksiJarak(false);
+    setKoreksiCatatan('');
+  }
+
+  async function simpanKoreksi() {
+    if (!koreksiRow) return;
+    setKoreksiSimpan(true);
+    try {
+      await saveAttendanceCorrection({
+        id: koreksiRow.id,
+        arrivalOverride: koreksiStatus || null,
+        reason: koreksiAlasan,
+        locationExcused: koreksiJarak,
+        adminNote: koreksiCatatan,
+      });
+      toast('Koreksi tersimpan', 'success');
+      tutupKoreksi();
+      load();
+    } catch (err) {
+      toast('Gagal menyimpan koreksi: ' + (err.message || err), 'error');
+    } finally {
+      setKoreksiSimpan(false);
+    }
+  }
+
+  async function bukaManual() {
+    setManualForm({ employee_id: '', date: todayStr(), clock_in: '09:30', clock_out: '', reason: '' });
+    setManualBuka(true);
+    try {
+      setManualKaryawan(await listEmployees(effectiveBranchId));
+    } catch (err) {
+      setManualKaryawan([]);
+      toast('Gagal memuat daftar karyawan: ' + (err.message || err), 'error');
+    }
+  }
+
+  async function simpanManual() {
+    setManualSimpan(true);
+    try {
+      const emp = manualKaryawan.find(e => e.id === manualForm.employee_id);
+      await createManualAttendance({
+        employeeId: manualForm.employee_id,
+        branchId: emp?.branch_id || effectiveBranchId,
+        date: manualForm.date,
+        clockInTime: manualForm.clock_in,
+        clockOutTime: manualForm.clock_out || null,
+        reason: manualForm.reason,
+      });
+      toast('Absensi manual tercatat', 'success');
+      setManualBuka(false);
+      load();
+    } catch (err) {
+      toast('Gagal: ' + (err.message || err), 'error');
+    } finally {
+      setManualSimpan(false);
+    }
+  }
+
   async function handleDelete(row) {
     if (!window.confirm(`Hapus absensi ${row.employee?.full_name} tanggal ${fmtDate(row.date)}?`)) return;
     try {
@@ -7669,12 +7765,14 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
     const kuota = (typeof TOLERANCE_QUOTA_PER_PERIOD !== 'undefined') ? TOLERANCE_QUOTA_PER_PERIOD : 7;
     for (const r of rows) {
       const id = r.employee_id;
-      if (!by[id]) by[id] = { name: r.employee?.full_name || '—', hadir: 0, toleransi: 0, telat: 0, menitTelat: 0, lupaPulang: 0 };
+      if (!by[id]) by[id] = { name: r.employee?.full_name || '—', hadir: 0, toleransi: 0, telat: 0, menitTelat: 0, lupaPulang: 0, dikoreksi: 0 };
       const s = by[id];
       if (r.clock_in_at) s.hadir += 1;
-      const st = getArrivalStatus(r.clock_in_at);
+      // Pakai status hasil koreksi admin kalau ada
+      const st = getArrivalStatusOf(r);
       if (st?.status === 'telat') { s.telat += 1; s.menitTelat += st.lateMinutes; }
       else if (st?.status === 'toleransi') { s.toleransi += 1; }
+      if (st?.isOverridden) s.dikoreksi += 1;
       if (r.clock_in_at && !r.clock_out_at) s.lupaPulang += 1;
     }
     return Object.values(by).map(s => {
@@ -7690,6 +7788,11 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
   return (
     <div className="page">
       <PageHeader title="Laporan Absensi" sub="Kehadiran">
+        {canCorrect && (
+          <button className="btn btn-primary btn-sm" onClick={bukaManual}>
+            + Catat Absen Manual
+          </button>
+        )}
         <button className="btn btn-ghost btn-sm" onClick={load}>Muat ulang</button>
       </PageHeader>
 
@@ -7788,6 +7891,7 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                   <th className="table-numeric">Hari Telat</th>
                   <th className="table-numeric">Total Telat</th>
                   <th className="table-numeric">Lupa Pulang</th>
+                  <th className="table-numeric">Dikoreksi</th>
                 </tr>
               </thead>
               <tbody>
@@ -7804,6 +7908,9 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                     </td>
                     <td className="table-numeric" style={{color: s.lupaPulang > 0 ? 'var(--amber)' : 'inherit'}}>
                       {s.lupaPulang > 0 ? s.lupaPulang : '—'}
+                    </td>
+                    <td className="table-numeric" style={{color:'var(--muted)'}}>
+                      {s.dikoreksi > 0 ? `${s.dikoreksi} hari` : '—'}
                     </td>
                   </tr>
                 ))}
@@ -7830,9 +7937,14 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                       {r.face_verified === false && <span title="Pemeriksaan wajah tidak berjalan, perlu dicek manual">⚠️ </span>}
                       Masuk {fmtJam(r.clock_in_at)}
                       {(() => {
-                        const st = getArrivalStatus(r.clock_in_at);
-                        if (st?.status === 'telat') return <span style={{color:'var(--red)'}}> · telat {st.lateMinutes}m</span>;
-                        if (st?.status === 'toleransi') return <span style={{color:'var(--amber)'}}> · toleransi</span>;
+                        const st = getArrivalStatusOf(r);
+                        if (!st) return null;
+                        // Kalau dikoreksi, statusnya ditulis netral dengan tanda pensil
+                        if (st.isOverridden) {
+                          return <span style={{color:'var(--mauve)'}}> · ✎ {st.status}</span>;
+                        }
+                        if (st.status === 'telat') return <span style={{color:'var(--red)'}}> · telat {st.lateMinutes}m</span>;
+                        if (st.status === 'toleransi') return <span style={{color:'var(--amber)'}}> · toleransi</span>;
                         return null;
                       })()}
                     </button>
@@ -7848,15 +7960,48 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                         return null;
                       })()}
                     </button>
+                    {canCorrect && (
+                      <button className="btn btn-ghost btn-sm" onClick={() => bukaKoreksi(r)}>
+                        ✎ Koreksi
+                      </button>
+                    )}
                     {canDelete && (
                       <button className="btn btn-ghost btn-sm" style={{color:'var(--red)'}} onClick={() => handleDelete(r)}>Hapus</button>
                     )}
                   </div>
                 </div>
+
+                {/* Catatan koreksi. Sengaja ditampilkan terbuka, karyawan juga
+                    bisa membacanya di halaman absensi mereka. */}
+                {(r.arrival_override || r.admin_note || r.is_manual) && (
+                  <div style={{marginTop:8,padding:'8px 10px',borderRadius:8,background:'var(--mauve-tint)',fontSize:11.5,lineHeight:1.6,color:'var(--plum)'}}>
+                    {r.is_manual && (
+                      <div><strong>Dicatat manual oleh admin</strong>{r.admin_note ? ` · ${r.admin_note}` : ''}</div>
+                    )}
+                    {r.arrival_override && (() => {
+                      const st = getArrivalStatusOf(r);
+                      return (
+                        <div>
+                          <strong>Status dikoreksi:</strong> {st?.rawStatus} menjadi {r.arrival_override}
+                          {r.override_reason ? ` · ${r.override_reason}` : ''}
+                        </div>
+                      );
+                    })()}
+                    {r.location_excused && (
+                      <div><strong>Jarak absen sudah dimaklumi</strong></div>
+                    )}
+                    {r.admin_note && !r.is_manual && (
+                      <div>{r.admin_note}</div>
+                    )}
+                    {/* Catatan absen manual sudah ditampilkan di baris pertama */}
+                  </div>
+                )}
                 {(r.clock_in_lat != null || r.clock_out_lat != null) && (
                   <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid var(--line)',display:'flex',gap:14,flexWrap:'wrap',fontSize:11,color:'var(--muted)'}}>
                     {r.clock_in_lat != null && (() => {
-                      const jauh = r.clock_in_distance_m != null && r.clock_in_distance_m > radiusFor(r.branch_id);
+                      const jauh = !r.location_excused
+                        && r.clock_in_distance_m != null
+                        && r.clock_in_distance_m > radiusFor(r.branch_id);
                       return (
                         <a href={mapsLinkFor(r.clock_in_lat, r.clock_in_lng)} target="_blank" rel="noopener noreferrer"
                           style={{color: jauh ? 'var(--red)' : 'var(--mauve)',textDecoration:'none',fontWeight: jauh ? 600 : 400}}>
@@ -7867,7 +8012,9 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
                       );
                     })()}
                     {r.clock_out_lat != null && (() => {
-                      const jauh = r.clock_out_distance_m != null && r.clock_out_distance_m > radiusFor(r.branch_id);
+                      // Absen pulang boleh dari mana saja, jadi jaraknya tidak
+                      // pernah ditandai merah. Angkanya tetap ditampilkan.
+                      const jauh = false;
                       return (
                         <a href={mapsLinkFor(r.clock_out_lat, r.clock_out_lng)} target="_blank" rel="noopener noreferrer"
                           style={{color: jauh ? 'var(--red)' : 'var(--mauve)',textDecoration:'none',fontWeight: jauh ? 600 : 400}}>
@@ -7884,6 +8031,122 @@ function LaporanAbsensiPage({ profile, currentBranchId, branches }) {
           </div>
         )}
       </Card>
+
+      {/* Modal koreksi absensi */}
+      {koreksiRow && (() => {
+        const st = getArrivalStatusOf(koreksiRow);
+        const jarakMasuk = koreksiRow.clock_in_distance_m;
+        return (
+          <div style={{position:'fixed',inset:0,background:'rgba(36,26,44,0.75)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+            onClick={tutupKoreksi}>
+            <div className="card" style={{maxWidth:440,width:'100%',maxHeight:'88vh',overflowY:'auto'}}
+              onClick={e => e.stopPropagation()}>
+              <h3 className="card-title">Koreksi Absensi</h3>
+              <p className="card-sub" style={{marginBottom:16}}>
+                {koreksiRow.employee?.full_name} · {fmtDate(koreksiRow.date)}
+              </p>
+
+              <div style={{padding:'10px 12px',borderRadius:8,background:'var(--mauve-tint)',fontSize:12,lineHeight:1.7,marginBottom:16}}>
+                <div>Absen masuk tercatat <strong>{fmtJam(koreksiRow.clock_in_at)}</strong>, apa adanya <strong>{st?.rawStatus || '—'}</strong></div>
+                {jarakMasuk != null && <div>Jarak dari salon <strong>{fmtJarak(jarakMasuk)}</strong>{koreksiRow.clock_in_accuracy != null ? ` (akurasi GPS ±${koreksiRow.clock_in_accuracy}m)` : ''}</div>}
+                <div style={{marginTop:4,color:'var(--muted)'}}>Jam asli tidak diubah. Yang disimpan hanya keputusan koreksinya.</div>
+              </div>
+
+              <Field label="Status kedatangan" hint="Kosongkan untuk membatalkan koreksi dan kembali ke jam asli">
+                <select className="form-select" value={koreksiStatus}
+                  onChange={e => setKoreksiStatus(e.target.value)}>
+                  <option value="">Pakai jam asli ({st?.rawStatus || '—'})</option>
+                  <option value="tepat">Tepat waktu</option>
+                  <option value="toleransi">Toleransi</option>
+                  <option value="telat">Telat</option>
+                </select>
+              </Field>
+
+              {koreksiStatus && (
+                <Field label="Alasan koreksi" hint="Wajib diisi. Karyawan bisa membaca ini.">
+                  <textarea className="form-input" rows={2} value={koreksiAlasan}
+                    placeholder="Contoh: GPS ngadat, sudah di salon sejak 09.40, dilihat CCTV"
+                    onChange={e => setKoreksiAlasan(e.target.value)}/>
+                </Field>
+              )}
+
+              <Field>
+                <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13}}>
+                  <input type="checkbox" checked={koreksiJarak}
+                    onChange={e => setKoreksiJarak(e.target.checked)}/>
+                  Jarak absen yang jauh sudah dimaklumi
+                </label>
+              </Field>
+
+              <Field label="Keterangan tambahan" hint="Opsional, muncul di laporan">
+                <textarea className="form-input" rows={2} value={koreksiCatatan}
+                  placeholder="Contoh: izin datang siang, ada urusan keluarga"
+                  onChange={e => setKoreksiCatatan(e.target.value)}/>
+              </Field>
+
+              <div style={{display:'flex',gap:8,marginTop:16,justifyContent:'flex-end'}}>
+                <button className="btn btn-ghost btn-sm" onClick={tutupKoreksi} disabled={koreksiSimpan}>Batal</button>
+                <button className="btn btn-primary btn-sm" onClick={simpanKoreksi} disabled={koreksiSimpan}>
+                  {koreksiSimpan ? 'Menyimpan...' : 'Simpan Koreksi'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Modal catat absen manual */}
+      {manualBuka && (
+        <div style={{position:'fixed',inset:0,background:'rgba(36,26,44,0.75)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+          onClick={() => setManualBuka(false)}>
+          <div className="card" style={{maxWidth:440,width:'100%',maxHeight:'88vh',overflowY:'auto'}}
+            onClick={e => e.stopPropagation()}>
+            <h3 className="card-title">Catat Absen Manual</h3>
+            <p className="card-sub" style={{marginBottom:16}}>
+              Untuk karyawan yang benar-benar tidak bisa absen sendiri, misalnya GPS tidak terbaca.
+            </p>
+
+            <Field label="Karyawan">
+              <select className="form-select" value={manualForm.employee_id}
+                onChange={e => setManualForm({ ...manualForm, employee_id: e.target.value })}>
+                <option value="">Pilih karyawan</option>
+                {manualKaryawan.map(e => (
+                  <option key={e.id} value={e.id}>{e.full_name}</option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Tanggal">
+              <input type="date" className="form-input" value={manualForm.date}
+                onChange={e => setManualForm({ ...manualForm, date: e.target.value })}/>
+            </Field>
+
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+              <Field label="Jam masuk">
+                <input type="time" className="form-input" value={manualForm.clock_in}
+                  onChange={e => setManualForm({ ...manualForm, clock_in: e.target.value })}/>
+              </Field>
+              <Field label="Jam pulang" hint="Boleh dikosongkan">
+                <input type="time" className="form-input" value={manualForm.clock_out}
+                  onChange={e => setManualForm({ ...manualForm, clock_out: e.target.value })}/>
+              </Field>
+            </div>
+
+            <Field label="Alasan" hint="Wajib diisi. Tercatat di Audit Log.">
+              <textarea className="form-input" rows={2} value={manualForm.reason}
+                placeholder="Contoh: HP rusak, absen dicatatkan admin"
+                onChange={e => setManualForm({ ...manualForm, reason: e.target.value })}/>
+            </Field>
+
+            <div style={{display:'flex',gap:8,marginTop:16,justifyContent:'flex-end'}}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setManualBuka(false)} disabled={manualSimpan}>Batal</button>
+              <button className="btn btn-primary btn-sm" onClick={simpanManual} disabled={manualSimpan}>
+                {manualSimpan ? 'Menyimpan...' : 'Simpan'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal foto */}
       {photoUrl && (

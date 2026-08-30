@@ -4129,9 +4129,14 @@ function calcLateMinutes(at = new Date()) {
   return late > 0 ? late : 0;
 }
 
-// Status kedatangan: 'tepat' (sebelum 09:30), 'toleransi' (09:30 sampai 10:00),
-// atau 'telat' (di atas 10:00). Dipakai untuk tampilan, bukan perhitungan gaji.
-function getArrivalStatus(clockInAt) {
+// Status kedatangan: 'tepat' (sebelum 09:45), 'toleransi' (09:45 sampai 10:00),
+// atau 'telat' (di atas 10:00).
+//
+// Argumen kedua opsional: kalau admin sudah mengoreksi status kedatangan
+// (kolom arrival_override), status hasil koreksi itu yang dipakai. Jam
+// aslinya tetap dihitung dan dikembalikan di rawStatus, supaya tampilan
+// bisa menunjukkan keduanya: "absen 10:05, dikoreksi jadi tepat waktu".
+function getArrivalStatus(clockInAt, override = null) {
   if (!clockInAt) return null;
   const at = new Date(clockInAt);
   const rule = attendanceRuleFor(clockInAt);
@@ -4144,7 +4149,33 @@ function getArrivalStatus(clockInAt) {
   let status = 'tepat';
   if (lateMinutes > 0) status = 'telat';
   else if (minutesAfterStart > rule.graceMinutes) status = 'toleransi';
-  return { status, minutesAfterStart, lateMinutes, rule };
+
+  const rawStatus = status;
+  const rawLateMinutes = lateMinutes;
+  let isOverridden = false;
+
+  if (override === 'tepat' || override === 'toleransi' || override === 'telat') {
+    isOverridden = override !== rawStatus;
+    status = override;
+  }
+
+  return {
+    status,
+    // Menit telat ikut nol kalau dikoreksi jadi tepat/toleransi, karena angka
+    // ini yang dipakai untuk rekap dan potongan gaji.
+    lateMinutes: status === 'telat' ? (rawLateMinutes > 0 ? rawLateMinutes : 0) : 0,
+    minutesAfterStart,
+    rule,
+    rawStatus,
+    rawLateMinutes,
+    isOverridden,
+  };
+}
+
+// Versi praktis: terima satu baris absensi, langsung terapkan koreksinya.
+function getArrivalStatusOf(row) {
+  if (!row) return null;
+  return getArrivalStatus(row.clock_in_at, row.arrival_override || null);
 }
 
 // Batas awal toleransi dalam format jam (misal "09:45")
@@ -4500,6 +4531,95 @@ async function countOldAttendancePhotos(branchId = null) {
   return { photos, rows: (data || []).length, batas: periode.period_start };
 }
 
+// Simpan koreksi absensi. Jam aslinya TIDAK diubah, yang disimpan cuma
+// keputusan admin beserta alasannya.
+//   arrivalOverride : 'tepat' | 'toleransi' | 'telat' | null (batalkan koreksi)
+//   reason          : wajib diisi kalau arrivalOverride tidak null
+//   locationExcused : true kalau jarak absen yang jauh sudah dimaklumi
+//   adminNote       : keterangan bebas, ikut terlihat karyawan
+async function saveAttendanceCorrection({ id, arrivalOverride = null, reason = '',
+                                          locationExcused = false, adminNote = '' }) {
+  if (!id) throw new Error('Baris absensi tidak dikenali');
+
+  const bersih = (reason || '').trim();
+  if (arrivalOverride && !bersih) {
+    throw new Error('Alasan koreksi wajib diisi');
+  }
+  if (arrivalOverride && !['tepat', 'toleransi', 'telat'].includes(arrivalOverride)) {
+    throw new Error('Status koreksi tidak dikenali');
+  }
+
+  const userId = (await sb.auth.getUser()).data?.user?.id || null;
+
+  const payload = {
+    arrival_override: arrivalOverride || null,
+    override_reason: arrivalOverride ? bersih : null,
+    override_by: arrivalOverride ? userId : null,
+    override_at: arrivalOverride ? new Date().toISOString() : null,
+    location_excused: !!locationExcused,
+    admin_note: (adminNote || '').trim() || null,
+  };
+
+  const { data, error } = await sb
+    .from('attendance')
+    .update(payload)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// Catat absensi secara manual. Dipakai kalau karyawan benar-benar tidak bisa
+// absen sendiri, misalnya GPS tidak terbaca atau HP-nya bermasalah.
+// Alasan wajib diisi, dan barisnya ditandai is_manual supaya jelas asalnya.
+async function createManualAttendance({ employeeId, branchId, date, clockInTime,
+                                        clockOutTime = null, reason = '' }) {
+  const bersih = (reason || '').trim();
+  if (!employeeId) throw new Error('Pilih karyawan dulu');
+  if (!branchId) throw new Error('Cabang tidak dikenali');
+  if (!date) throw new Error('Tanggal wajib diisi');
+  if (!clockInTime) throw new Error('Jam masuk wajib diisi');
+  if (!bersih) throw new Error('Alasan pencatatan manual wajib diisi');
+
+  const { data: existing } = await sb
+    .from('attendance')
+    .select('id')
+    .eq('employee_id', employeeId)
+    .eq('date', date)
+    .maybeSingle();
+  if (existing?.id) {
+    throw new Error('Karyawan ini sudah punya catatan absensi di tanggal tersebut');
+  }
+
+  const masuk = new Date(`${date}T${clockInTime}:00`);
+  const pulang = clockOutTime ? new Date(`${date}T${clockOutTime}:00`) : null;
+  if (pulang && pulang <= masuk) {
+    throw new Error('Jam pulang harus lebih malam dari jam masuk');
+  }
+
+  const userId = (await sb.auth.getUser()).data?.user?.id || null;
+
+  const { data, error } = await sb
+    .from('attendance')
+    .insert({
+      branch_id: branchId,
+      employee_id: employeeId,
+      date,
+      clock_in_at: masuk.toISOString(),
+      clock_out_at: pulang ? pulang.toISOString() : null,
+      late_minutes: calcLateMinutes(masuk),
+      early_leave_minutes: pulang ? calcEarlyLeaveMinutes(pulang) : 0,
+      is_manual: true,
+      admin_note: bersih,
+      created_by: userId,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 // Ringkasan absensi per karyawan dalam satu periode (untuk gaji).
 // Hanya jam MASUK yang dinilai. Jam pulang tidak pernah ikut dihitung,
 // baik toleransi maupun pulang cepat.
@@ -4517,6 +4637,7 @@ async function getAttendanceSummary(branchId, periodStart, periodEnd) {
         total_late_minutes: 0,
         days_over_ten: 0,        // datang di atas 10:00
         days_no_clockout: 0,
+        days_corrected: 0,       // berapa hari statusnya dikoreksi admin
         _toleransi: [],          // tanggal-tanggal yang masuk toleransi
       };
     }
@@ -4524,13 +4645,16 @@ async function getAttendanceSummary(branchId, periodStart, periodEnd) {
     if (r.clock_in_at) s.days_present += 1;
     if (r.clock_in_at && !r.clock_out_at) s.days_no_clockout += 1;
 
-    const st = getArrivalStatus(r.clock_in_at);
+    // Pakai status hasil koreksi admin kalau ada. Kalau tidak ada,
+    // hasilnya sama persis dengan sebelumnya.
+    const st = getArrivalStatusOf(r);
     if (st?.status === 'telat') {
       s.days_over_ten += 1;
       s.total_late_minutes += st.lateMinutes;
     } else if (st?.status === 'toleransi') {
       s._toleransi.push(r.date);
     }
+    if (st?.isOverridden) s.days_corrected = (s.days_corrected || 0) + 1;
   }
 
   // Hitung jatah toleransi. Yang dipakai lebih dulu (tanggal awal) yang gratis.
@@ -4817,6 +4941,7 @@ Object.assign(window, {
   TOLERANCE_QUOTA_PER_PERIOD, LATE_PENALTY_PER_DAY,
   cleanupOldAttendancePhotos, countOldAttendancePhotos,
   getDeviceLocation, mapsLinkFor, distanceMeters, getBranchGeo, distanceFromBranch,
+  getArrivalStatusOf, saveAttendanceCorrection, createManualAttendance,
   requireLocationAtBranch,
   listHomeServiceJobs, createHomeServiceJob, advanceHomeServiceJob, cancelHomeServiceJob,
   linkHomeServiceTransaction, deleteHomeServiceJob, hsStatusInfo,
