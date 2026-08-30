@@ -156,6 +156,11 @@ const SERVICES = [{
   commission_type: 'percent',
   baseRate: 5
 }, {
+  name: 'Threading Alis',
+  category: 'brow',
+  commission_type: 'percent',
+  baseRate: 10
+}, {
   name: 'Korean Vit C Glow',
   category: 'facial',
   commission_type: 'percent',
@@ -196,8 +201,37 @@ const SERVICES = [{
   commission_type: 'percent',
   baseRate: 10
 }, {
+  name: 'Menipedi Rendam',
+  category: 'nail',
+  commission_type: 'percent',
+  baseRate: 10
+}, {
+  name: 'Pedi Rendam',
+  category: 'nail',
+  commission_type: 'percent',
+  baseRate: 10
+}, {
   name: 'Removal Nails',
   category: 'nail',
+  commission_type: 'percent',
+  baseRate: 10
+},
+// Waxing sengaja dipisah dari nail supaya di Laporan angkanya terbaca sendiri.
+// Komisi 10 persen, dan otomatis jadi 15 persen kalau lembur, sama seperti nail
+// (tambahan 5 persen saat lembur diatur di calcCommission).
+{
+  name: 'Brazilian Waxing',
+  category: 'waxing',
+  commission_type: 'percent',
+  baseRate: 10
+}, {
+  name: 'Underarm Waxing',
+  category: 'waxing',
+  commission_type: 'percent',
+  baseRate: 10
+}, {
+  name: 'Waxing (Area Lain)',
+  category: 'waxing',
   commission_type: 'percent',
   baseRate: 10
 }];
@@ -4135,6 +4169,7 @@ const CATEGORY_LABELS = {
   brow: 'Brow & Sulam',
   facial: 'Facial',
   nail: 'Nail',
+  waxing: 'Waxing',
   other: 'Lainnya'
 };
 
@@ -11759,11 +11794,14 @@ function ReportsPage({
   const branchLabel = effectiveBranchId ? branches.find(b => b.id === effectiveBranchId)?.name : isSuper ? 'Semua Cabang' : '—';
 
   // Category labels
+  // Daftar ini kembaran dari CATEGORY_LABELS di lib.jsx. Kalau menambah
+  // kategori baru, dua-duanya harus ikut diubah.
   const categoryLabels = {
     lash: 'Eyelash',
     brow: 'Brow & Sulam',
     facial: 'Facial',
     nail: 'Nail',
+    waxing: 'Waxing',
     other: 'Lainnya'
   };
   return /*#__PURE__*/React.createElement("div", {

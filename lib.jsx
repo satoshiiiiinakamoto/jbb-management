@@ -69,6 +69,7 @@ const SERVICES = [
   { name: 'Sulam Alis by Senior', category: 'brow', commission_type: 'fixed_amount', baseRate: 0 },
   { name: 'Retouch Sulam Alis', category: 'brow', commission_type: 'fixed_amount', baseRate: 0 },
   { name: 'Cukur Alis', category: 'brow', commission_type: 'percent', baseRate: 5 },
+  { name: 'Threading Alis', category: 'brow', commission_type: 'percent', baseRate: 10 },
   { name: 'Korean Vit C Glow', category: 'facial', commission_type: 'percent', baseRate: 5 },
   { name: 'Korean BB Glow', category: 'facial', commission_type: 'percent', baseRate: 5 },
   { name: 'Nail Art', category: 'nail', commission_type: 'percent', baseRate: 10 },
@@ -77,7 +78,15 @@ const SERVICES = [
   { name: 'Manicure', category: 'nail', commission_type: 'percent', baseRate: 10 },
   { name: 'Pedicure', category: 'nail', commission_type: 'percent', baseRate: 10 },
   { name: 'Menipedi', category: 'nail', commission_type: 'percent', baseRate: 10 },
+  { name: 'Menipedi Rendam', category: 'nail', commission_type: 'percent', baseRate: 10 },
+  { name: 'Pedi Rendam', category: 'nail', commission_type: 'percent', baseRate: 10 },
   { name: 'Removal Nails', category: 'nail', commission_type: 'percent', baseRate: 10 },
+  // Waxing sengaja dipisah dari nail supaya di Laporan angkanya terbaca sendiri.
+  // Komisi 10 persen, dan otomatis jadi 15 persen kalau lembur, sama seperti nail
+  // (tambahan 5 persen saat lembur diatur di calcCommission).
+  { name: 'Brazilian Waxing', category: 'waxing', commission_type: 'percent', baseRate: 10 },
+  { name: 'Underarm Waxing', category: 'waxing', commission_type: 'percent', baseRate: 10 },
+  { name: 'Waxing (Area Lain)', category: 'waxing', commission_type: 'percent', baseRate: 10 },
 ];
 
 const JOB_TITLES = [
@@ -3802,6 +3811,7 @@ const CATEGORY_LABELS = {
   brow: 'Brow & Sulam',
   facial: 'Facial',
   nail: 'Nail',
+  waxing: 'Waxing',
   other: 'Lainnya',
 };
 

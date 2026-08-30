@@ -3857,9 +3857,11 @@ function ReportsPage({ profile, currentBranchId, branches }) {
     : (isSuper ? 'Semua Cabang' : '—');
 
   // Category labels
+  // Daftar ini kembaran dari CATEGORY_LABELS di lib.jsx. Kalau menambah
+  // kategori baru, dua-duanya harus ikut diubah.
   const categoryLabels = {
     lash: 'Eyelash', brow: 'Brow & Sulam', facial: 'Facial',
-    nail: 'Nail', other: 'Lainnya'
+    nail: 'Nail', waxing: 'Waxing', other: 'Lainnya'
   };
 
   return (
