@@ -5832,13 +5832,26 @@ function EmployeeDashboardView({
   const [stats, setStats] = useStateP(null);
   const [topServices, setTopServices] = useStateP([]);
   const [topClients, setTopClients] = useStateP([]);
-  const [adjustment, setAdjustment] = useStateP(null);
   const [leaveBalance, setLeaveBalance] = useStateP(null);
   const [loading, setLoading] = useStateP(true);
-  // Detail transaksi & tips periode berjalan. Dipakai untuk menghitung komisi
-  // home service dan tips, yang tidak ikut terhitung di view dashboard.
+  // Detail transaksi & tips periode yang sedang dipilih. Dipakai untuk
+  // menghitung komisi home service dan tips, yang tidak ikut terhitung di
+  // view dashboard.
   const [periodItems, setPeriodItems] = useStateP([]);
   const [periodTips, setPeriodTips] = useStateP([]);
+  const [periodAdjustment, setPeriodAdjustment] = useStateP(null);
+  const [periodLoading, setPeriodLoading] = useStateP(false);
+
+  // Karyawan boleh melihat slip periode berjalan plus 2 periode sebelumnya.
+  // Kalau jumlahnya mau diubah, cukup ganti angka 3 di sini.
+  const periodOptions = useMemoP(() => listRecentPayrollPeriods(3), []);
+  const [slipPeriodId, setSlipPeriodId] = useStateP(() => listRecentPayrollPeriods(1)[0].id);
+
+  const selectedPeriod = useMemoP(
+    () => periodOptions.find(p => p.id === slipPeriodId) || periodOptions[0],
+    [periodOptions, slipPeriodId]
+  );
+  const isCurrentPeriod = selectedPeriod?.id === periodOptions[0]?.id;
 
   const branch = useMemoP(
     () => branches.find(b => b.id === employee.branch_id) || employee.branch,
@@ -5848,50 +5861,33 @@ function EmployeeDashboardView({
   async function loadData() {
     setLoading(true);
     try {
-      const period = getPayrollPeriod();
       const year = new Date().getFullYear();
-
-      // Dijalankan berbarengan dengan query di bawah supaya tidak menambah
-      // waktu loading. Kalau gagal, dianggap kosong saja, dashboard tetap jalan.
-      const periodItemsPromise = getEmployeePeriodTransactions(
-        employee.id, period.period_start, period.period_end
-      ).catch(() => []);
-      const periodTipsPromise = getEmployeePeriodTips(
-        employee.id, period.period_start, period.period_end
-      ).catch(() => []);
 
       if (isAdminViewing) {
         // Admin view: use admin functions (full data)
-        const [statsData, services, clients, adj, balance] = await Promise.all([
+        const [statsData, services, clients, balance] = await Promise.all([
           getEmployeeDashboardStatsAdmin(employee.id),
           getEmployeeTopServicesAdmin(employee.id, 3),
           getEmployeeTopClientsAdmin(employee.id, 3),
-          getPayrollAdjustment(employee.id, period.period_start),
           getAnnualLeaveBalanceForEmployee(employee.id, year),
         ]);
         setStats(statsData);
         setTopServices(services);
         setTopClients(clients);
-        setAdjustment(adj);
         setLeaveBalance(balance);
       } else {
         // Self view: use self-view functions (privacy filtered)
-        const [statsData, services, clients, adj, balance] = await Promise.all([
+        const [statsData, services, clients, balance] = await Promise.all([
           getMyDashboardStats(),
           getMyTopServices(3),
           getMyTopClients(3),
-          getPayrollAdjustment(employee.id, period.period_start),
           getAnnualLeaveBalanceForEmployee(employee.id, year),
         ]);
         setStats(statsData);
         setTopServices(services);
         setTopClients(clients);
-        setAdjustment(adj);
         setLeaveBalance(balance);
       }
-
-      setPeriodItems(await periodItemsPromise);
-      setPeriodTips(await periodTipsPromise);
     } catch (err) {
       toast('Gagal memuat dashboard: ' + err.message, 'error');
     } finally {
@@ -5899,7 +5895,31 @@ function EmployeeDashboardView({
     }
   }
 
+  // Data yang tergantung periode dimuat terpisah, supaya ganti periode tidak
+  // perlu memuat ulang seluruh dashboard.
+  async function loadPeriodData() {
+    if (!selectedPeriod) return;
+    setPeriodLoading(true);
+    try {
+      const [items, tips, adj] = await Promise.all([
+        getEmployeePeriodTransactions(
+          employee.id, selectedPeriod.period_start, selectedPeriod.period_end
+        ).catch(() => []),
+        getEmployeePeriodTips(
+          employee.id, selectedPeriod.period_start, selectedPeriod.period_end
+        ).catch(() => []),
+        getPayrollAdjustment(employee.id, selectedPeriod.period_start).catch(() => null),
+      ]);
+      setPeriodItems(items);
+      setPeriodTips(tips);
+      setPeriodAdjustment(adj);
+    } finally {
+      setPeriodLoading(false);
+    }
+  }
+
   useEffectP(() => { loadData(); }, [employee.id, isAdminViewing]);
+  useEffectP(() => { loadPeriodData(); }, [employee.id, slipPeriodId]);
 
   const totalTips = useMemoP(
     () => (periodTips || []).reduce((s, t) => s + Number(t.amount || 0), 0),
@@ -5911,24 +5931,42 @@ function EmployeeDashboardView({
     [periodItems]
   );
 
-  // Calculate estimated payroll for current period
+  // Komisi treatment dijumlah dari detail transaksi, bukan dari view dashboard.
+  // Alasannya: view my_dashboard_stats selalu memakai periode berjalan, jadi
+  // tidak bisa dipakai untuk melihat periode yang sudah lewat. Rumusnya sendiri
+  // sama persis dengan view tersebut, yaitu menjumlah commission_amount dari
+  // transaction_items milik karyawan dalam rentang tanggal periode.
+  const treatmentCommission = useMemoP(
+    () => (periodItems || []).reduce((s, it) => s + Number(it.commission_amount || 0), 0),
+    [periodItems]
+  );
+
+  // Jumlah transaksi pada periode terpilih, untuk keterangan di kartu komisi.
+  const periodTrxCount = useMemoP(() => {
+    const ids = new Set();
+    for (const it of (periodItems || [])) {
+      if (it.transaction?.id) ids.add(it.transaction.id);
+    }
+    return ids.size;
+  }, [periodItems]);
+
+  // Hitung gaji untuk periode yang sedang dipilih
   const estimatedPayroll = useMemoP(() => {
     if (!stats) return null;
-    // period_commission dari view HANYA menjumlah commission_amount per treatment.
-    // Komisi home service dan tips tidak termasuk di situ, jadi dihitung sendiri
-    // dari detail transaksi. Tanpa ini, angka di karyawan lebih kecil daripada
-    // angka yang dilihat admin di halaman Gaji.
+    // Komisi home service dan tips tidak pernah ikut terhitung di view
+    // dashboard, jadi dihitung sendiri dari detail transaksi. Tanpa ini,
+    // angka di karyawan lebih kecil daripada angka yang dilihat admin.
     const commissions = {
-      treatment_commission: stats.period_commission || 0,
+      treatment_commission: treatmentCommission,
       hs_commission: hsCommission,
       tips: totalTips,
     };
     return calculatePayroll({
       employee,
       commissions,
-      adjustment,
+      adjustment: periodAdjustment,
     });
-  }, [stats, adjustment, employee, hsCommission, totalTips]);
+  }, [stats, periodAdjustment, employee, treatmentCommission, hsCommission, totalTips]);
 
   // Annual leave info
   const leaveQuota = leaveBalance?.total_quota || 7;
@@ -5937,39 +5975,34 @@ function EmployeeDashboardView({
   const leaveProgressPct = Math.min(100, (leaveUsed / leaveQuota) * 100);
 
   const firstName = employee.full_name?.split(' ')[0] || 'Karyawan';
-  const periodLabel = stats
-    ? `${fmtDate(stats.period_start)} – ${fmtDate(stats.period_end)}`
+  const periodLabel = selectedPeriod
+    ? `${fmtDate(selectedPeriod.period_start)} sampai ${fmtDate(selectedPeriod.period_end)}`
     : '';
 
   // Determine if slip is approved
-  const isApproved = adjustment?.is_approved === true;
+  const isApproved = periodAdjustment?.is_approved === true;
 
   // Handle slip printing (only available for self-view in this dashboard)
   async function handlePrintMySlip() {
-    if (!employee) return;
+    if (!employee || !selectedPeriod) return;
     try {
-      const period = getPayrollPeriod();
-      const items = await getEmployeePeriodTransactions(
-        employee.id,
-        period.period_start,
-        period.period_end
-      );
-      const tipsDetail = await getEmployeePeriodTips(
-        employee.id,
-        period.period_start,
-        period.period_end
-      );
-      // Dihitung ulang dari data yang baru diambil, bukan dari state, supaya
-      // slip selalu mencerminkan kondisi terakhir. Rumusnya sama persis dengan
-      // yang dipakai admin di halaman Gaji.
+      const period = selectedPeriod;
+      // Diambil ulang, bukan dari state, supaya slip selalu mencerminkan
+      // kondisi terakhir saat tombol ditekan.
+      const [items, tipsDetail, adj] = await Promise.all([
+        getEmployeePeriodTransactions(employee.id, period.period_start, period.period_end),
+        getEmployeePeriodTips(employee.id, period.period_start, period.period_end),
+        getPayrollAdjustment(employee.id, period.period_start).catch(() => null),
+      ]);
+      // Rumusnya sama persis dengan yang dipakai admin di halaman Gaji.
       const payroll = calculatePayroll({
         employee,
         commissions: {
-          treatment_commission: stats?.period_commission || 0,
+          treatment_commission: items.reduce((s, it) => s + Number(it.commission_amount || 0), 0),
           hs_commission: computeHSCommissionFromItems(items),
           tips: tipsDetail.reduce((s, t) => s + Number(t.amount || 0), 0),
         },
-        adjustment,
+        adjustment: adj,
       });
       const slipHtml = generateSlipHTML({
         employee,
@@ -5978,7 +6011,7 @@ function EmployeeDashboardView({
         period,
         branch,
         generatedBy: profile,
-        isApproved,
+        isApproved: adj?.is_approved === true,
         tipsDetail,
       });
       printSlip(slipHtml);
@@ -6010,23 +6043,38 @@ function EmployeeDashboardView({
           <div className="metrics-grid" style={{marginBottom:20}}>
             <Metric label="Omset Hari Ini" value={fmtRp(stats?.today_revenue || 0)} sub={`${stats?.today_trx_count || 0} transaksi`}/>
             <Metric label="Komisi Hari Ini" value={fmtRp(stats?.today_commission || 0)} sub={`${stats?.today_item_count || 0} treatment`}/>
-            <Metric label="Omset Minggu Ini" value={fmtRp(stats?.week_revenue || 0)} sub="Senin – sekarang"/>
+            <Metric label="Omset Minggu Ini" value={fmtRp(stats?.week_revenue || 0)} sub="Senin sampai sekarang"/>
             <Metric label="Komisi Minggu Ini" value={fmtRp(stats?.week_commission || 0)} sub={`${stats?.week_trx_count || 0} transaksi`}/>
           </div>
 
-          {/* CURRENT PERIOD PAYROLL ESTIMATE */}
+          {/* PAYROLL PER PERIODE (berjalan + 2 periode sebelumnya) */}
           <Card
-            title={`Estimasi Gaji Periode Ini${isApproved ? ' · ✓ Disetujui' : ' · Preview'}`}
+            title={`${isCurrentPeriod ? 'Estimasi Gaji' : 'Gaji'}${isApproved ? ' · ✓ Disetujui' : ' · Preview'}`}
             sub={periodLabel}
+            action={
+              <select
+                className="form-select"
+                style={{padding:'6px 12px',fontSize:12,borderRadius:100,minWidth:150}}
+                value={slipPeriodId}
+                onChange={e => setSlipPeriodId(e.target.value)}
+              >
+                {periodOptions.map((p, i) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}{i === 0 ? ' (berjalan)' : ''}
+                  </option>
+                ))}
+              </select>
+            }
           >
-            {!estimatedPayroll ? <Empty title="Belum ada data" sub="Estimasi gaji akan muncul setelah ada transaksi."/> : (
+            {periodLoading ? <Loader text="Memuat periode..."/> :
+             !estimatedPayroll ? <Empty title="Belum ada data" sub="Estimasi gaji akan muncul setelah ada transaksi."/> : (
               <>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:12,marginBottom:18}}>
                   <Metric label="Gaji Pokok" value={fmtRp(estimatedPayroll.base_salary_actual)}
                     sub={estimatedPayroll.salary_deduction > 0 ? `−${fmtRp(estimatedPayroll.salary_deduction)} potongan` : 'full'}/>
                   <Metric label="Uang Makan" value={fmtRp(estimatedPayroll.meal_allowance)}/>
                   <Metric label="Komisi Treatment" value={fmtRp(estimatedPayroll.treatment_commission)}
-                    sub={`${stats?.period_trx_count || 0} transaksi`}/>
+                    sub={`${periodTrxCount} transaksi`}/>
                   {estimatedPayroll.hs_commission > 0 && (
                     <Metric label="Komisi Home Service" value={fmtRp(estimatedPayroll.hs_commission)}
                       sub="dibagi rata per beautician"/>
@@ -6039,13 +6087,16 @@ function EmployeeDashboardView({
                     <Metric label="Potongan Telat" value={`−${fmtRp(estimatedPayroll.late_deduction)}`}
                       sub="dari absensi"/>
                   )}
-                  <Metric label="Estimasi Total" value={fmtRp(estimatedPayroll.total)} sub="real-time"/>
+                  <Metric
+                    label={isCurrentPeriod ? 'Estimasi Total' : 'Total'}
+                    value={fmtRp(estimatedPayroll.total)}
+                    sub={isApproved ? 'final' : isCurrentPeriod ? 'real-time' : 'belum final'}/>
                 </div>
 
                 <div style={{display:'flex',gap:10,flexWrap:'wrap',justifyContent:isAdminViewing ? 'flex-start' : 'space-between',alignItems:'center'}}>
                   {!isAdminViewing && (
                     <button className="btn btn-primary btn-sm" onClick={handlePrintMySlip}>
-                      🖨 Print Slip Gaji {!isApproved && '(Preview)'}
+                      🖨 Print Slip {selectedPeriod?.label || ''} {!isApproved && '(Preview)'}
                     </button>
                   )}
                   {isAdminViewing && onViewPayroll && (
@@ -6056,8 +6107,10 @@ function EmployeeDashboardView({
                   <div style={{fontSize:11,color:'var(--muted)',lineHeight:1.5}}>
                     {isApproved ? (
                       <>✓ Slip sudah di-approve admin · final</>
-                    ) : (
+                    ) : isCurrentPeriod ? (
                       <>⚠️ Estimasi real-time, belum di-approve admin</>
+                    ) : (
+                      <>⚠️ Periode sudah lewat tapi belum di-approve admin</>
                     )}
                   </div>
                 </div>
